@@ -2,6 +2,7 @@
 
 import { startTransition, useActionState, useEffect, useState } from 'react'
 import Image from 'next/image'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -16,11 +17,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 
 const adminLoginSchema = z.object({
   email: z
-    .string({ required_error: 'E-mail é obrigatório' })
+    .string()
     .min(1, 'E-mail é obrigatório')
     .email('Digite um e-mail válido'),
   password: z
-    .string({ required_error: 'Senha é obrigatória' })
+    .string()
     .min(1, 'Senha é obrigatória')
     .min(6, 'A senha deve ter no mínimo 6 caracteres'),
 })
@@ -137,6 +138,11 @@ export default function AdminLoginForm() {
             </Button>
           </form>
 
+          <div className="mt-4 text-center text-xs text-muted-foreground">
+            <Link href="/privacy" className="underline underline-offset-4 hover:text-foreground">
+              Privacy Policy
+            </Link>
+          </div>
         </CardContent>
       </Card>
     </div>

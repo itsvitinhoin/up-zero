@@ -1,6 +1,15 @@
 import fs from 'fs'
 import path from 'path'
-import type { WaAutomationRule, WaConnection, WaMessageLog, WaSettings, WaTemplate } from './types'
+import type {
+  WaAutomationRule,
+  WaConnection,
+  WaIntegrationLog,
+  WaMessageLog,
+  WaMetaReviewState,
+  WaSettings,
+  WaTemplate,
+  WaWebhookEvent,
+} from './types'
 
 export interface PersistedData {
   connections: WaConnection[]
@@ -8,6 +17,9 @@ export interface PersistedData {
   templates: WaTemplate[]
   logs: WaMessageLog[]
   settings: WaSettings
+  webhookEvents?: WaWebhookEvent[]
+  integrationLogs?: WaIntegrationLog[]
+  metaReview?: WaMetaReviewState
   seeded?: boolean
 }
 
@@ -48,6 +60,21 @@ function rehydrateDates(parsed: PersistedData): PersistedData {
     sentAt: new Date(l.sentAt),
     deliveredAt: l.deliveredAt ? new Date(l.deliveredAt) : undefined,
   }))
+  parsed.webhookEvents = (parsed.webhookEvents ?? []).map((evt) => ({
+    ...evt,
+    receivedAt: new Date(evt.receivedAt),
+  }))
+  parsed.integrationLogs = (parsed.integrationLogs ?? []).map((log) => ({
+    ...log,
+    createdAt: new Date(log.createdAt),
+  }))
+  if (parsed.metaReview?.oauth) {
+    parsed.metaReview.oauth = {
+      ...parsed.metaReview.oauth,
+      connectedAt: new Date(parsed.metaReview.oauth.connectedAt),
+      expiresAt: parsed.metaReview.oauth.expiresAt ? new Date(parsed.metaReview.oauth.expiresAt) : null,
+    }
+  }
   return parsed
 }
 

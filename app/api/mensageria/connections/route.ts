@@ -7,6 +7,7 @@ import {
   upsertConnection,
 } from '@/lib/whatsapp/store'
 import { getProvider } from '@/lib/whatsapp/provider'
+import { maskId } from '@/lib/whatsapp/meta'
 import type { WaConnection } from '@/lib/whatsapp/types'
 
 export const dynamic = 'force-dynamic'
@@ -40,18 +41,21 @@ async function getRequestStoreId(): Promise<number | null> {
   return Number.isInteger(fromEnv) && fromEnv > 0 ? fromEnv : null
 }
 
+function sanitizeConnection(conn: WaConnection): WaConnection {
+  return { ...conn, accessToken: '' }
+}
+
 // ─── GET — list connections for this tenant ───────────────────────────────────
 
 export async function GET() {
   const storeId = await getRequestStoreId()
   const list = getConnections(storeId ?? undefined)
 
-  console.log(
-    `[connections/GET] storeId=${storeId ?? 'none'} → returning ${list.length} connection(s):`,
-    list.map((c) => ({ id: c.id, phoneNumberId: c.phoneNumberId, status: c.status })),
+  console.info(
+    `[connections/GET] storeId=${storeId ?? 'none'} returning ${list.length} connection(s).`,
   )
 
-  return NextResponse.json(list)
+  return NextResponse.json(list.map(sanitizeConnection))
 }
 
 // ─── POST — create new connection ────────────────────────────────────────────
@@ -63,9 +67,9 @@ export async function POST(req: NextRequest) {
   console.log('[connections/POST] incoming payload:', {
     name: body.name,
     provider: body.provider,
-    phoneNumberId: body.phoneNumberId,
-    businessAccountId: body.businessAccountId,
-    businessId: body.businessId,
+    phoneNumberId: maskId(body.phoneNumberId),
+    businessAccountId: maskId(body.businessAccountId),
+    businessId: maskId(body.businessId),
     storeId,
   })
 
@@ -107,7 +111,7 @@ export async function POST(req: NextRequest) {
     storeId: connection.storeId,
   })
 
-  return NextResponse.json(connection, { status: 201 })
+  return NextResponse.json(sanitizeConnection(connection), { status: 201 })
 }
 
 // ─── PATCH — update existing connection ──────────────────────────────────────
@@ -118,9 +122,9 @@ export async function PATCH(req: NextRequest) {
 
   console.log('[connections/PATCH] incoming patch:', {
     id: body.id,
-    phoneNumberId: body.phoneNumberId,
-    businessAccountId: body.businessAccountId,
-    businessId: body.businessId,
+    phoneNumberId: maskId(body.phoneNumberId),
+    businessAccountId: maskId(body.businessAccountId),
+    businessId: maskId(body.businessId),
     storeId,
   })
 
@@ -142,6 +146,7 @@ export async function PATCH(req: NextRequest) {
   const updated: WaConnection = {
     ...existing,
     ...body,
+    accessToken: body.accessToken?.trim() ? body.accessToken : existing.accessToken,
     // Preserve the storeId from the original connection (or set from session)
     storeId: existing.storeId ?? storeId ?? undefined,
   }
@@ -165,7 +170,7 @@ export async function PATCH(req: NextRequest) {
     storeId: updated.storeId,
   })
 
-  return NextResponse.json(updated)
+  return NextResponse.json(sanitizeConnection(updated))
 }
 
 // ─── DELETE ───────────────────────────────────────────────────────────────────

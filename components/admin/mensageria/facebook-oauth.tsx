@@ -16,12 +16,18 @@ import type { WabaVerifyResult } from '@/app/api/mensageria/connections/verify-w
 // in App Review for production traffic.
 
 const REQUIRED_SCOPES = [
+  'public_profile',
+  'email',
   'business_management',
   'whatsapp_business_management',
   'whatsapp_business_messaging',
-  'manage_app_solution',
-  'whatsapp_business_manage_events',
 ]
+
+function maskIdentifier(value?: string | null): string | null {
+  if (!value) return null
+  if (value.length <= 8) return `${value.slice(0, 2)}...${value.slice(-2)}`
+  return `${value.slice(0, 4)}...${value.slice(-4)}`
+}
 
 // ─── Timeline types ───────────────────────────────────────────────────────────
 
@@ -127,7 +133,7 @@ export function FacebookOAuthButton({ onSuccess, isReconnect = false, className 
   const addStepRef = useRef<(
     stepNum: number, title: string, status: TimelineStatus,
     details?: Record<string, string | boolean | null>
-  ) => void>()
+  ) => void>(undefined)
 
   addStepRef.current = (stepNum, title, status, details) => {
     const entry: TimelineEntry = {
@@ -160,28 +166,35 @@ export function FacebookOAuthButton({ onSuccess, isReconnect = false, className 
         const msg = raw as EmbeddedSignupMessage
         if (msg?.type !== 'WA_EMBEDDED_SIGNUP') return
 
-        console.log('[FacebookOAuth] WA_EMBEDDED_SIGNUP message:', msg)
+        console.log('[FacebookOAuth] WA_EMBEDDED_SIGNUP message received:', {
+          event: msg.event,
+          version: msg.version ?? null,
+        })
 
         if (msg.event === 'FINISH') {
           const info: SessionInfo = { ...(msg.data ?? {}), ...(msg.sessionInfo ?? {}) }
-          console.log('[FacebookOAuth] sessionInfo merged:', info)
+          console.log('[FacebookOAuth] sessionInfo merged:', {
+            waba_id: maskIdentifier(info.waba_id),
+            phone_number_id: maskIdentifier(info.phone_number_id),
+            business_id: maskIdentifier(info.business_id),
+          })
 
           // Step 3: Raw event received
           addStepRef.current?.(3, 'WA_EMBEDDED_SIGNUP recebido (FINISH)', 'success', {
             event: msg.event,
             version: msg.version ?? null,
-            raw_waba_id: (msg.data?.waba_id ?? msg.sessionInfo?.waba_id) ?? null,
-            raw_phone_number_id: (msg.data?.phone_number_id ?? msg.sessionInfo?.phone_number_id) ?? null,
-            raw_business_id: (msg.data?.business_id ?? msg.sessionInfo?.business_id) ?? null,
+            raw_waba_id: maskIdentifier(msg.data?.waba_id ?? msg.sessionInfo?.waba_id),
+            raw_phone_number_id: maskIdentifier(msg.data?.phone_number_id ?? msg.sessionInfo?.phone_number_id),
+            raw_business_id: maskIdentifier(msg.data?.business_id ?? msg.sessionInfo?.business_id),
           })
 
           // Step 4: Merged session info
           const hasPayload = !!(info.waba_id || info.phone_number_id)
           const step4Status: TimelineStatus = !hasPayload ? 'failed' : !info.phone_number_id ? 'warning' : 'success'
           addStepRef.current?.(4, 'Session info merged/parsed', step4Status, {
-            waba_id: info.waba_id ?? null,
-            business_id: info.business_id ?? null,
-            phone_number_id: info.phone_number_id ?? null,
+            waba_id: maskIdentifier(info.waba_id),
+            business_id: maskIdentifier(info.business_id),
+            phone_number_id: maskIdentifier(info.phone_number_id),
           })
 
           if (info.phone_number_id || info.waba_id) {
@@ -218,16 +231,16 @@ export function FacebookOAuthButton({ onSuccess, isReconnect = false, className 
     // Step 7: Calling server
     addStep(7, 'Verificação no servidor iniciada', 'info', {
       has_code: !!code,
-      waba_id: info.waba_id ?? null,
-      business_id: info.business_id ?? null,
-      phone_number_id: info.phone_number_id ?? null,
+      waba_id: maskIdentifier(info.waba_id),
+      business_id: maskIdentifier(info.business_id),
+      phone_number_id: maskIdentifier(info.phone_number_id),
     })
 
     console.log('[FacebookOAuth] calling /api/mensageria/connections/verify-waba:', {
       has_code: !!code,
-      phone_number_id: info.phone_number_id,
-      waba_id: info.waba_id,
-      business_id: info.business_id,
+      phone_number_id: maskIdentifier(info.phone_number_id),
+      waba_id: maskIdentifier(info.waba_id),
+      business_id: maskIdentifier(info.business_id),
     })
 
     try {
@@ -243,7 +256,13 @@ export function FacebookOAuthButton({ onSuccess, isReconnect = false, className 
       })
 
       const result = await res.json() as WabaVerifyResult
-      console.log('[FacebookOAuth] verify-waba result:', result)
+      console.log('[FacebookOAuth] verify-waba result:', {
+        ok: result.ok,
+        onboardingType: result.onboardingType,
+        failureReason: result.failureReason,
+        hasConfirmedWaba: !!result.confirmedWaba,
+        hasPhoneDetails: !!result.phoneDetails,
+      })
 
       // ── Token debug logging ───────────────────────────────────────────────
       if (result.tokenDiag) {
@@ -275,14 +294,14 @@ export function FacebookOAuthButton({ onSuccess, isReconnect = false, className 
         if (result.phoneNumberPending || (!phoneId && wabaId)) {
           addStep(8, 'Status: WABA_CONNECTED_PHONE_PENDING', 'warning', {
             onboarding_status: 'WABA_CONNECTED_PHONE_PENDING' as OnboardingStatus,
-            waba_id: wabaId || null,
+            waba_id: maskIdentifier(wabaId),
             waba_name: result.confirmedWaba?.name ?? null,
-            business_id: info.business_id ?? null,
+            business_id: maskIdentifier(info.business_id),
             phone_number_id: null,
           })
 
           setPendingCreds({
-            accessToken: code ?? '',
+            accessToken: '',
             businessAccountId: wabaId,
             phoneNumberId: '',
             phoneNumber: '',
@@ -307,7 +326,7 @@ export function FacebookOAuthButton({ onSuccess, isReconnect = false, className 
 
         // ── Migration scenarios ───────────────────────────────────────────
         const creds: WaOAuthCredentials = {
-          accessToken: code ?? '',
+          accessToken: '',
           businessAccountId: wabaId,
           phoneNumberId: phoneId,
           phoneNumber: result.phoneDetails?.displayPhone ?? '',
@@ -332,8 +351,8 @@ export function FacebookOAuthButton({ onSuccess, isReconnect = false, className 
         addStep(8, 'Status: FULLY_CONNECTED', 'success', {
           onboarding_status: 'FULLY_CONNECTED' as OnboardingStatus,
           onboarding_type: onboardingType,
-          waba_id: wabaId,
-          phone_number_id: phoneId,
+          waba_id: maskIdentifier(wabaId),
+          phone_number_id: maskIdentifier(phoneId),
           phone_number: result.phoneDetails?.displayPhone ?? null,
           verified_name: result.confirmedWaba?.name ?? result.phoneDetails?.verifiedName ?? null,
         })
@@ -392,7 +411,7 @@ export function FacebookOAuthButton({ onSuccess, isReconnect = false, className 
     })
 
     // Step 2: Embedded Signup popup will open
-    addStep(2, 'Embedded Signup aberto', 'info', null)
+    addStep(2, 'Embedded Signup aberto', 'info')
 
     console.log('[FacebookOAuth] FB.login called:', { appId, configId })
 
@@ -417,7 +436,11 @@ export function FacebookOAuthButton({ onSuccess, isReconnect = false, className 
           const code = response.authResponse.code ?? null
           const info = sessionInfoRef.current ?? {}
 
-          console.log('[FacebookOAuth] sessionInfo at callback time:', info)
+          console.log('[FacebookOAuth] sessionInfo at callback time:', {
+            business_id: maskIdentifier(info.business_id),
+            waba_id: maskIdentifier(info.waba_id),
+            phone_number_id: maskIdentifier(info.phone_number_id),
+          })
 
           // Step 6: Classify onboarding status from extracted identifiers
           const onboardingStatus: OnboardingStatus =
@@ -433,9 +456,9 @@ export function FacebookOAuthButton({ onSuccess, isReconnect = false, className 
             : 'failed'
 
           addStepRef.current?.(6, 'Identificadores extraídos', step6Status, {
-            business_id: info.business_id ?? null,
-            waba_id: info.waba_id ?? null,
-            phone_number_id: info.phone_number_id ?? null,
+            business_id: maskIdentifier(info.business_id),
+            waba_id: maskIdentifier(info.waba_id),
+            phone_number_id: maskIdentifier(info.phone_number_id),
             auth_code: code ? 'presente' : null,
             onboarding_status: onboardingStatus,
           })
@@ -652,8 +675,8 @@ function PhonePendingGuidance({
           {/* Structured ID debug block */}
           <div className="rounded bg-amber-100/60 dark:bg-amber-900/30 border border-amber-200/60 dark:border-amber-700/40 px-2.5 py-2 font-mono text-[10px] space-y-0.5 mt-1">
             <div className="text-[9px] uppercase tracking-wide font-sans font-semibold text-amber-700 dark:text-amber-400 mb-1">Identifiers</div>
-            <IdRow label="business_id" value={businessId ?? null} />
-            <IdRow label="waba_id" value={wabaId} />
+            <IdRow label="business_id" value={maskIdentifier(businessId)} />
+            <IdRow label="waba_id" value={maskIdentifier(wabaId)} />
             <IdRow label="phone_number_id" value={null} missing />
             <IdRow label="onboarding_status" value="PHONE_NUMBER_PENDING" highlight />
           </div>
@@ -1047,8 +1070,10 @@ function VerifyDiagnosticPanel({
                 <ScopeRow label="business_management" granted={td.hasBusinessManagement} note={!td.hasBusinessManagement ? 'Advanced Access required' : undefined} />
                 <ScopeRow label="whatsapp_business_management" granted={td.hasWhatsappManagement} />
                 <ScopeRow label="whatsapp_business_messaging" granted={td.hasWhatsappMessaging} />
-                <ScopeRow label="manage_app_solution" granted={td.hasManageAppSolution ?? false} />
-                <ScopeRow label="whatsapp_business_manage_events" granted={td.hasWabaManageEvents ?? false} />
+              </div>
+              <div className="px-2 py-1 rounded bg-muted/60 text-muted-foreground text-[10px] leading-snug">
+                Not requested in this review: <code className="font-mono">manage_app_solution</code> and{' '}
+                <code className="font-mono">whatsapp_business_manage_events</code>.
               </div>
               {td.grantedScopes.length > 0 && (
                 <div className="mt-1">
@@ -1089,7 +1114,7 @@ function VerifyDiagnosticPanel({
 
           {result.allWabaIds && result.allWabaIds.length > 0 && (
             <div className="px-3 py-2 font-mono text-[10px] text-muted-foreground">
-              WABAs disponíveis: {result.allWabaIds.join(', ')}
+              WABAs disponíveis: {result.allWabaIds.map((id) => maskIdentifier(id)).join(', ')}
             </div>
           )}
         </div>

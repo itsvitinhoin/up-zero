@@ -161,7 +161,12 @@ export class MetaCloudWaProvider implements WaProvider {
 
     try {
       const res = await fetch(
-        `https://graph.facebook.com/v19.0/${connection.phoneNumberId}?fields=id,display_phone_number,verified_name,quality_rating,status&access_token=${bearerToken}`,
+        `https://graph.facebook.com/v19.0/${connection.phoneNumberId}?fields=id,display_phone_number,verified_name,quality_rating,status`,
+        {
+          headers: {
+            Authorization: `Bearer ${bearerToken}`,
+          },
+        },
       )
       let data: {
         id?: string

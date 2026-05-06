@@ -59,6 +59,7 @@ import type {
 } from '@/lib/whatsapp/types'
 import { FacebookOAuthButton } from '@/components/admin/mensageria/facebook-oauth'
 import type { WaOAuthCredentials } from '@/components/admin/mensageria/facebook-oauth'
+import { MetaReviewTab } from '@/components/admin/mensageria/meta-review-tab'
 
 // ─── API helpers ──────────────────────────────────────────────────────────────
 
@@ -66,6 +67,12 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, options)
   if (!res.ok) throw new Error(await res.text())
   return res.json() as Promise<T>
+}
+
+function maskIdentifier(value?: string | null): string {
+  if (!value) return 'Not available'
+  if (value.length <= 8) return `${value.slice(0, 2)}...${value.slice(-2)}`
+  return `${value.slice(0, 4)}...${value.slice(-4)}`
 }
 
 // ─── event type labels ────────────────────────────────────────────────────────
@@ -286,7 +293,7 @@ function ConnectionsTab() {
       console.log(
         '[ConnectionsTab] connections loaded:',
         data.length,
-        data.map((c) => ({ id: c.id, phoneNumberId: c.phoneNumberId, status: c.status })),
+        data.map((c) => ({ id: c.id, phoneNumberId: maskIdentifier(c.phoneNumberId), status: c.status })),
       )
     } finally {
       setLoading(false)
@@ -328,10 +335,10 @@ function ConnectionsTab() {
   // ── Auto-save immediately when Embedded Signup onSuccess fires ──────────────
   async function saveFromOAuth(creds: WaOAuthCredentials) {
     console.log('[ConnectionsTab] Embedded Signup onSuccess received:', {
-      phone_number_id: creds.phoneNumberId,
-      waba_id: creds.businessAccountId,
-      business_id: creds.businessId ?? '(not returned)',
-      has_token: !!creds.accessToken,
+      phone_number_id: maskIdentifier(creds.phoneNumberId),
+      waba_id: maskIdentifier(creds.businessAccountId),
+      business_id: maskIdentifier(creds.businessId),
+      has_token: false,
     })
 
     setAutoSaveState('saving')
@@ -345,12 +352,12 @@ function ConnectionsTab() {
       editConn.webhookVerifyToken ??
       `verify-${Math.random().toString(36).slice(2, 10)}`
 
-    const fallbackName = creds.verifiedName || `WhatsApp ${creds.phoneNumberId}`
+    const fallbackName = creds.verifiedName || `WhatsApp ${maskIdentifier(creds.phoneNumberId)}`
     const payload: Partial<WaConnection> = {
       ...(connId ? { id: connId } : {}),
       provider: 'META_CLOUD' as const,
       name: editConn.name?.trim() || fallbackName,
-      accessToken: creds.accessToken,
+      accessToken: '',
       businessAccountId: creds.businessAccountId,
       businessId: creds.businessId,
       phoneNumberId: creds.phoneNumberId,
@@ -363,9 +370,9 @@ function ConnectionsTab() {
     console.log('[ConnectionsTab] persisting connection:', {
       method: connId ? 'PATCH (upsert)' : 'POST (new)',
       id: connId,
-      phone_number_id: payload.phoneNumberId,
-      waba_id: payload.businessAccountId,
-      business_id: payload.businessId,
+      phone_number_id: maskIdentifier(payload.phoneNumberId),
+      waba_id: maskIdentifier(payload.businessAccountId),
+      business_id: maskIdentifier(payload.businessId),
     })
 
     try {
@@ -394,9 +401,9 @@ function ConnectionsTab() {
       console.log('[ConnectionsTab] connection persisted successfully:', {
         id: saved.id,
         status: saved.status,
-        phone_number_id: saved.phoneNumberId,
-        waba_id: saved.businessAccountId,
-        business_id: saved.businessId,
+        phone_number_id: maskIdentifier(saved.phoneNumberId),
+        waba_id: maskIdentifier(saved.businessAccountId),
+        business_id: maskIdentifier(saved.businessId),
         storeId: saved.storeId,
       })
 
@@ -519,9 +526,9 @@ function ConnectionsTab() {
                         ? <Wifi className="h-5 w-5 text-emerald-600" />
                         : <WifiOff className={cn('h-5 w-5', conn.status === 'ERROR' ? 'text-rose-500' : 'text-muted-foreground')} />}
                     </div>
-                    <div className="min-w-0">
+                  <div className="min-w-0">
                       <div className="font-semibold text-sm truncate">{conn.name}</div>
-                      <div className="text-xs text-muted-foreground">{conn.phoneNumber || conn.phoneNumberId || conn.provider}</div>
+                      <div className="text-xs text-muted-foreground">{conn.phoneNumber || maskIdentifier(conn.phoneNumberId) || conn.provider}</div>
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-1 shrink-0">
@@ -536,13 +543,13 @@ function ConnectionsTab() {
                 {(conn.phoneNumberId || conn.businessAccountId || conn.businessId) && (
                   <div className="mt-2 space-y-0.5 text-[10px] font-mono text-muted-foreground">
                     {conn.phoneNumberId && (
-                      <div>phone_number_id: <span className="text-foreground select-all">{conn.phoneNumberId}</span></div>
+                      <div>phone_number_id: <span className="text-foreground">{maskIdentifier(conn.phoneNumberId)}</span></div>
                     )}
                     {conn.businessAccountId && (
-                      <div>waba_id: <span className="text-foreground select-all">{conn.businessAccountId}</span></div>
+                      <div>waba_id: <span className="text-foreground">{maskIdentifier(conn.businessAccountId)}</span></div>
                     )}
                     {conn.businessId && (
-                      <div>business_id: <span className="text-foreground select-all">{conn.businessId}</span></div>
+                      <div>business_id: <span className="text-foreground">{maskIdentifier(conn.businessId)}</span></div>
                     )}
                   </div>
                 )}
@@ -643,9 +650,9 @@ function ConnectionsTab() {
             {editConn.phoneNumberId && (
               <div className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2.5 space-y-0.5 text-[10px] font-mono text-muted-foreground">
                 <div className="text-xs font-semibold text-foreground mb-1 font-sans">IDs do Embedded Signup</div>
-                <div>phone_number_id: <span className="text-foreground select-all">{editConn.phoneNumberId}</span></div>
-                <div>waba_id: <span className="text-foreground select-all">{editConn.businessAccountId || '—'}</span></div>
-                <div>business_id: <span className="text-foreground select-all">{editConn.businessId ?? '—'}</span></div>
+                <div>phone_number_id: <span className="text-foreground">{maskIdentifier(editConn.phoneNumberId)}</span></div>
+                <div>waba_id: <span className="text-foreground">{maskIdentifier(editConn.businessAccountId)}</span></div>
+                <div>business_id: <span className="text-foreground">{maskIdentifier(editConn.businessId)}</span></div>
                 {editConn.phoneNumber && (
                   <div>nome verificado: <span className="text-foreground">{editConn.phoneNumber}</span></div>
                 )}
@@ -1818,6 +1825,14 @@ function SettingsTab() {
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function MensageriaPage() {
+  const [activeTab, setActiveTab] = useState('overview')
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const searchParams = new URLSearchParams(window.location.search)
+    if (searchParams.get('tab') === 'meta-review') setActiveTab('meta-review')
+  }, [])
+
   return (
     <AdminPage>
       <AdminHero
@@ -1825,9 +1840,10 @@ export default function MensageriaPage() {
         description="Automação de mensagens WhatsApp Business"
       />
 
-      <Tabs defaultValue="overview" className="mt-4">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="mt-4">
         <div className="overflow-x-auto pb-0.5 -mx-4 px-4 md:mx-0 md:px-0">
           <TabsList className="h-9 w-max min-w-full md:w-auto">
+            <TabsTrigger value="meta-review" className="text-xs px-3">Meta Review Demo</TabsTrigger>
             <TabsTrigger value="overview" className="text-xs px-3">Visão Geral</TabsTrigger>
             <TabsTrigger value="connections" className="text-xs px-3">Conexões</TabsTrigger>
             <TabsTrigger value="automations" className="text-xs px-3">Automações</TabsTrigger>
@@ -1839,6 +1855,7 @@ export default function MensageriaPage() {
         </div>
 
         <div className="mt-4">
+          <TabsContent value="meta-review" className="mt-0"><MetaReviewTab /></TabsContent>
           <TabsContent value="overview" className="mt-0"><OverviewTab /></TabsContent>
           <TabsContent value="connections" className="mt-0"><ConnectionsTab /></TabsContent>
           <TabsContent value="automations" className="mt-0"><AutomationsTab /></TabsContent>

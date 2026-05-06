@@ -1,4 +1,14 @@
-import type { WaAutomationRule, WaConnection, WaEvent, WaMessageLog, WaSettings, WaTemplate } from './types'
+import type {
+  WaAutomationRule,
+  WaConnection,
+  WaEvent,
+  WaIntegrationLog,
+  WaMessageLog,
+  WaMetaReviewState,
+  WaSettings,
+  WaTemplate,
+  WaWebhookEvent,
+} from './types'
 import { loadFromDisk, saveToDisk, type PersistedData } from './persist'
 
 // ─── runtime-only state (never persisted) ─────────────────────────────────────
@@ -25,6 +35,9 @@ function read(): PersistedData {
   const saved = loadFromDisk()
   if (saved && (saved.seeded || saved.connections.length > 0)) {
     if (!saved.settings) saved.settings = { ...DEFAULT_SETTINGS }
+    if (!saved.webhookEvents) saved.webhookEvents = []
+    if (!saved.integrationLogs) saved.integrationLogs = []
+    if (!saved.metaReview) saved.metaReview = {}
     return saved
   }
 
@@ -199,6 +212,9 @@ function read(): PersistedData {
       },
     ],
     logs: [],
+    webhookEvents: [],
+    integrationLogs: [],
+    metaReview: {},
     settings: {
       ...DEFAULT_SETTINGS,
       defaultConnectionId: 'conn-1',
@@ -317,6 +333,66 @@ export function clearLogs(): void {
   const state = read()
   state.logs = []
   saveToDisk(state)
+}
+
+// ─── webhook inbox ───────────────────────────────────────────────────────────
+
+export function getWebhookEvents(limit = 100): WaWebhookEvent[] {
+  return (read().webhookEvents ?? []).slice(0, limit)
+}
+
+export function addWebhookEvent(evt: WaWebhookEvent): void {
+  const state = read()
+  state.webhookEvents = [evt, ...(state.webhookEvents ?? [])]
+  if (state.webhookEvents.length > 500) state.webhookEvents.length = 500
+  saveToDisk(state)
+}
+
+// ─── Meta review state + integration logs ────────────────────────────────────
+
+export function getMetaReviewState(): WaMetaReviewState {
+  return read().metaReview ?? {}
+}
+
+export function updateMetaReviewState(patch: Partial<WaMetaReviewState>): WaMetaReviewState {
+  const state = read()
+  state.metaReview = {
+    ...(state.metaReview ?? {}),
+    ...patch,
+    selection: {
+      ...(state.metaReview?.selection ?? {}),
+      ...(patch.selection ?? {}),
+    },
+  }
+  saveToDisk(state)
+  return state.metaReview
+}
+
+export function clearMetaReviewOAuth(): WaMetaReviewState {
+  const state = read()
+  state.metaReview = {
+    ...(state.metaReview ?? {}),
+    oauth: undefined,
+  }
+  saveToDisk(state)
+  return state.metaReview
+}
+
+export function getIntegrationLogs(limit = 100): WaIntegrationLog[] {
+  return (read().integrationLogs ?? []).slice(0, limit)
+}
+
+export function addIntegrationLog(log: Omit<WaIntegrationLog, 'id' | 'createdAt'>): WaIntegrationLog {
+  const state = read()
+  const entry: WaIntegrationLog = {
+    ...log,
+    id: `int-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    createdAt: new Date(),
+  }
+  state.integrationLogs = [entry, ...(state.integrationLogs ?? [])]
+  if (state.integrationLogs.length > 500) state.integrationLogs.length = 500
+  saveToDisk(state)
+  return entry
 }
 
 // ─── events (runtime only — not persisted) ────────────────────────────────────

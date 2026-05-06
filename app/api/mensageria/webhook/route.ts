@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getConnections } from '@/lib/whatsapp/store'
+import { createHmac, timingSafeEqual } from 'crypto'
+import { addIntegrationLog, addWebhookEvent, getConnections } from '@/lib/whatsapp/store'
+import { maskPhone } from '@/lib/whatsapp/meta'
 
 // GET — Meta webhook verification challenge
 export async function GET(req: NextRequest) {
@@ -12,29 +14,50 @@ export async function GET(req: NextRequest) {
     return new NextResponse('Bad Request', { status: 400 })
   }
 
-  // Check against all configured connections
+  // Check against all configured connections and optional shared env token.
   const connections = getConnections()
+  const envVerifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN
   const matched = connections.find((c) => c.webhookVerifyToken && c.webhookVerifyToken === token)
+  const matchedEnv = envVerifyToken && envVerifyToken === token
 
-  if (!matched) {
-    console.warn('[WA Webhook] Verification failed — token not matched:', token)
+  if (!matched && !matchedEnv) {
+    console.warn('[WA Webhook] Verification failed — verify token did not match any configured value.')
     return new NextResponse('Forbidden', { status: 403 })
   }
 
-  console.log('[WA Webhook] Verified for connection:', matched.name)
+  console.info('[WA Webhook] Verified callback URL.')
   return new NextResponse(challenge, { status: 200 })
+}
+
+function isValidSignature(rawBody: string, signature: string | null): boolean {
+  const appSecret = process.env.FACEBOOK_APP_SECRET
+  if (!appSecret) return true
+  if (!signature?.startsWith('sha256=')) return false
+
+  const expected = `sha256=${createHmac('sha256', appSecret).update(rawBody).digest('hex')}`
+  const expectedBuffer = Buffer.from(expected)
+  const receivedBuffer = Buffer.from(signature)
+  if (expectedBuffer.length !== receivedBuffer.length) return false
+  return timingSafeEqual(expectedBuffer, receivedBuffer)
 }
 
 // POST — incoming messages from Meta (read receipts, incoming messages, status updates)
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json() as {
+    const rawBody = await req.text()
+    if (!isValidSignature(rawBody, req.headers.get('x-hub-signature-256'))) {
+      console.warn('[WA Webhook] Rejected payload with invalid signature.')
+      return NextResponse.json({ ok: false }, { status: 401 })
+    }
+
+    const body = JSON.parse(rawBody) as {
       object?: string
       entry?: {
         id: string
         changes: {
           value: {
             messaging_product: string
+            metadata?: { display_phone_number?: string; phone_number_id?: string }
             statuses?: { id: string; status: string; timestamp: string; recipient_id: string }[]
             messages?: { from: string; id: string; timestamp: string; text?: { body: string }; type: string }[]
           }
@@ -53,12 +76,45 @@ export async function POST(req: NextRequest) {
 
         // Status updates (sent, delivered, read, failed)
         for (const status of val.statuses ?? []) {
-          console.log(`[WA Webhook] Status update: msg ${status.id} → ${status.status} for ${status.recipient_id}`)
+          addWebhookEvent({
+            id: `wh-status-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            eventType: 'status',
+            receivedAt: new Date(),
+            from: status.recipient_id,
+            messageId: status.id,
+            phoneNumberId: val.metadata?.phone_number_id,
+            displayPhoneNumber: val.metadata?.display_phone_number,
+            status: status.status,
+            rawSummary: `Message status ${status.status}`,
+          })
+          addIntegrationLog({
+            type: 'WEBHOOK_RECEIVED',
+            label: 'Webhook received',
+            status: 'RECEIVED',
+            detail: `Delivery status ${status.status} received for ${maskPhone(status.recipient_id)}.`,
+          })
         }
 
         // Incoming messages
         for (const msg of val.messages ?? []) {
-          console.log(`[WA Webhook] Incoming message from ${msg.from}: ${msg.text?.body ?? `[${msg.type}]`}`)
+          addWebhookEvent({
+            id: `wh-msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            eventType: 'message',
+            receivedAt: new Date(Number(msg.timestamp) * 1000 || Date.now()),
+            from: msg.from,
+            messageId: msg.id,
+            phoneNumberId: val.metadata?.phone_number_id,
+            displayPhoneNumber: val.metadata?.display_phone_number,
+            messageType: msg.type,
+            textBody: msg.type === 'text' ? msg.text?.body : undefined,
+            rawSummary: msg.type === 'text' ? 'Incoming text message' : `Incoming ${msg.type} message`,
+          })
+          addIntegrationLog({
+            type: 'WEBHOOK_RECEIVED',
+            label: 'Webhook received',
+            status: 'RECEIVED',
+            detail: `Customer reply received from ${maskPhone(msg.from)}.`,
+          })
         }
       }
     }

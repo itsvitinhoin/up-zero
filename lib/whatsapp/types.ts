@@ -36,6 +36,71 @@ export interface WaConnection {
   messagesTotal: number
 }
 
+export interface WaMetaProfile {
+  id: string
+  name: string
+  email?: string
+}
+
+export interface WaMetaReviewOAuth {
+  profile: WaMetaProfile
+  accessToken: string
+  tokenType?: string
+  expiresAt?: Date | null
+  connectedAt: Date
+}
+
+export interface WaMetaReviewSelection {
+  businessId?: string
+  businessName?: string
+  wabaId?: string
+  wabaName?: string
+  phoneNumberId?: string
+  phoneNumberDisplay?: string
+  phoneVerifiedName?: string
+  templateName?: string
+  templateLanguage?: string
+  templateStatus?: string
+}
+
+export interface WaMetaReviewState {
+  oauth?: WaMetaReviewOAuth
+  selection?: WaMetaReviewSelection
+}
+
+export type WaIntegrationLogType =
+  | 'OAUTH_CONNECTED'
+  | 'BUSINESS_SELECTED'
+  | 'WABA_SELECTED'
+  | 'PHONE_NUMBER_SELECTED'
+  | 'TEMPLATES_FETCHED'
+  | 'MESSAGE_SENT'
+  | 'WEBHOOK_RECEIVED'
+  | 'ERROR'
+
+export interface WaIntegrationLog {
+  id: string
+  type: WaIntegrationLogType
+  label: string
+  status: 'READY' | 'SENT' | 'RECEIVED' | 'ERROR'
+  detail?: string
+  createdAt: Date
+}
+
+export interface WaWebhookEvent {
+  id: string
+  eventType: 'message' | 'status' | 'unknown'
+  receivedAt: Date
+  from?: string
+  messageId?: string
+  phoneNumberId?: string
+  displayPhoneNumber?: string
+  messageType?: string
+  textBody?: string
+  status?: string
+  rawSummary?: string
+}
+
 export type WaEventType =
   | 'CUSTOMER_REGISTERED'
   | 'CUSTOMER_APPROVED'
@@ -104,8 +169,22 @@ export interface WaTemplate {
   body: string
   variables: string[]
   isActive: boolean
+  language?: string
+  category?: string
+  status?: string
+  components?: WaTemplateComponent[]
+  source?: 'LOCAL' | 'META'
+  wabaId?: string
   createdAt: Date
   updatedAt: Date
+}
+
+export interface WaTemplateComponent {
+  type: string
+  format?: string
+  text?: string
+  example?: unknown
+  buttons?: unknown[]
 }
 
 export type WaMessageStatus = 'SENT' | 'DELIVERED' | 'FAILED' | 'SKIPPED'
