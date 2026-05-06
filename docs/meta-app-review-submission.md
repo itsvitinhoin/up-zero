@@ -16,6 +16,8 @@
 ## Environment variables required
 
 - `NEXT_PUBLIC_FACEBOOK_APP_ID`: Meta app ID used for the visible Meta OAuth flow.
+- `META_OAUTH_REDIRECT_ORIGIN`: optional public app origin used to build the Meta OAuth callback URL, for example `https://app.example.com`. Use this when testing behind Vercel, ngrok, a tunnel, or any public domain that differs from the incoming local request origin.
+- `NEXT_PUBLIC_APP_URL`: optional public app URL fallback used for the Meta OAuth callback URL when `META_OAUTH_REDIRECT_ORIGIN` is not set.
 - `FACEBOOK_APP_SECRET`: server-only app secret used to exchange OAuth codes and validate webhook signatures.
 - `FACEBOOK_SYSTEM_USER_TOKEN`: optional server-side System User token used for server-to-server Graph API calls. Never expose this as a `NEXT_PUBLIC_` variable.
 - `WHATSAPP_WEBHOOK_VERIFY_TOKEN`: optional shared webhook verification token. Connection-specific verify tokens are also supported.

@@ -6,14 +6,22 @@ import {
   getWebhookEvents,
   updateMetaReviewState,
 } from '@/lib/whatsapp/store'
-import { maskId, maskPhone, META_REVIEW_REMOVED_SCOPES, META_REVIEW_SCOPES } from '@/lib/whatsapp/meta'
+import {
+  getMetaOAuthRedirectUri,
+  maskId,
+  maskPhone,
+  META_REVIEW_REMOVED_SCOPES,
+  META_REVIEW_SCOPES,
+} from '@/lib/whatsapp/meta'
 import type { WaMetaReviewSelection } from '@/lib/whatsapp/types'
 
 export const dynamic = 'force-dynamic'
 
-function sanitizeState() {
+function sanitizeState(requestOrigin: string) {
   const state = getMetaReviewState()
   const selection = state.selection ?? {}
+  const oauthRedirectUri = getMetaOAuthRedirectUri(requestOrigin)
+  const oauthRedirectUrl = new URL(oauthRedirectUri)
 
   return {
     oauth: state.oauth
@@ -33,6 +41,8 @@ function sanitizeState() {
       phoneNumberDisplay: maskPhone(selection.phoneNumberDisplay),
     },
     serverToServerAuthConfigured: Boolean(process.env.FACEBOOK_SYSTEM_USER_TOKEN),
+    oauthRedirectUri,
+    oauthAppDomain: oauthRedirectUrl.hostname,
     requiredScopes: META_REVIEW_SCOPES,
     removedScopes: META_REVIEW_REMOVED_SCOPES,
     webhookEvents: getWebhookEvents(20).map((evt) => ({
@@ -44,8 +54,8 @@ function sanitizeState() {
   }
 }
 
-export async function GET() {
-  return NextResponse.json(sanitizeState())
+export async function GET(req: NextRequest) {
+  return NextResponse.json(sanitizeState(req.nextUrl.origin))
 }
 
 export async function PATCH(req: NextRequest) {
@@ -78,5 +88,5 @@ export async function PATCH(req: NextRequest) {
     })
   }
 
-  return NextResponse.json({ ...sanitizeState(), selection: updated.selection ?? {} })
+  return NextResponse.json({ ...sanitizeState(req.nextUrl.origin), selection: updated.selection ?? {} })
 }

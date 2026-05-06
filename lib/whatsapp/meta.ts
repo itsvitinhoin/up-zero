@@ -16,6 +16,8 @@ export const META_REVIEW_REMOVED_SCOPES = [
   'whatsapp_business_manage_events',
 ] as const
 
+const META_OAUTH_CALLBACK_PATH = '/api/mensageria/meta/oauth/callback'
+
 export interface MetaGraphError {
   message: string
   type?: string
@@ -44,6 +46,18 @@ export function safeMetaError(error?: MetaGraphError, fallback = 'Meta Graph API
   const subcode = error.error_subcode ? `/${error.error_subcode}` : ''
   const trace = error.fbtrace_id ? ` Trace: ${error.fbtrace_id}.` : ''
   return `${code}${subcode}: ${error.message}.${trace}`
+}
+
+export function getMetaOAuthRedirectUri(requestOrigin: string): string {
+  const configuredOrigin = process.env.META_OAUTH_REDIRECT_ORIGIN || process.env.NEXT_PUBLIC_APP_URL
+  const origin = configuredOrigin?.trim() || requestOrigin
+
+  try {
+    const url = new URL(origin)
+    return `${url.origin}${META_OAUTH_CALLBACK_PATH}`
+  } catch {
+    return `${requestOrigin}${META_OAUTH_CALLBACK_PATH}`
+  }
 }
 
 export function getMetaAccessToken(): { token: string; source: 'oauth_user' | 'system_user' } | null {

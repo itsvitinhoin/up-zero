@@ -1,6 +1,6 @@
 import { randomBytes } from 'crypto'
 import { NextRequest, NextResponse } from 'next/server'
-import { META_GRAPH_VERSION, META_REVIEW_SCOPES } from '@/lib/whatsapp/meta'
+import { getMetaOAuthRedirectUri, META_GRAPH_VERSION, META_REVIEW_SCOPES } from '@/lib/whatsapp/meta'
 
 export const dynamic = 'force-dynamic'
 
@@ -10,7 +10,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'NEXT_PUBLIC_FACEBOOK_APP_ID is not configured.' }, { status: 500 })
   }
 
-  const redirectUri = `${req.nextUrl.origin}/api/mensageria/meta/oauth/callback`
+  const redirectUri = getMetaOAuthRedirectUri(req.nextUrl.origin)
   const state = randomBytes(24).toString('hex')
   const authUrl = new URL(`https://www.facebook.com/${META_GRAPH_VERSION}/dialog/oauth`)
   authUrl.searchParams.set('client_id', appId)

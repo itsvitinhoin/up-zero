@@ -1,7 +1,7 @@
 import { cookies } from 'next/headers'
 import { NextRequest, NextResponse } from 'next/server'
 import { addIntegrationLog, updateMetaReviewState } from '@/lib/whatsapp/store'
-import { META_GRAPH_BASE, metaGraphGet } from '@/lib/whatsapp/meta'
+import { getMetaOAuthRedirectUri, META_GRAPH_BASE, metaGraphGet } from '@/lib/whatsapp/meta'
 
 export const dynamic = 'force-dynamic'
 
@@ -58,7 +58,7 @@ export async function GET(req: NextRequest) {
     return res
   }
 
-  const redirectUri = `${req.nextUrl.origin}/api/mensageria/meta/oauth/callback`
+  const redirectUri = getMetaOAuthRedirectUri(req.nextUrl.origin)
   const tokenParams = new URLSearchParams({
     client_id: appId,
     client_secret: appSecret,

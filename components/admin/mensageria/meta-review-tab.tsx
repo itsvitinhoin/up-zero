@@ -41,6 +41,8 @@ interface ReviewState {
     phoneNumberDisplay: string
   }
   serverToServerAuthConfigured: boolean
+  oauthRedirectUri?: string
+  oauthAppDomain?: string
   requiredScopes: string[]
   removedScopes: string[]
   webhookEvents: (WaWebhookEvent & { fromMasked?: string; phoneNumberIdMasked?: string })[]
@@ -426,6 +428,16 @@ export function MetaReviewTab() {
         </div>
         <div className="mt-2 text-muted-foreground">
           Not requested now: {state?.removedScopes.join(', ')}.
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-xs leading-relaxed text-amber-900 dark:border-amber-800/50 dark:bg-amber-900/20 dark:text-amber-200">
+        <div className="font-semibold">Meta Login domain checklist</div>
+        <div className="mt-1">
+          Add <span className="font-mono">{state?.oauthAppDomain ?? 'your public app domain'}</span> to Meta App Domains and add this exact OAuth redirect URI in Facebook Login settings:
+        </div>
+        <div className="mt-2 overflow-x-auto rounded-md bg-background/80 px-2 py-1.5 font-mono text-[11px] text-foreground">
+          {state?.oauthRedirectUri ?? '/api/mensageria/meta/oauth/callback'}
         </div>
       </div>
 
