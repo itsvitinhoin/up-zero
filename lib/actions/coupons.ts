@@ -40,7 +40,23 @@ async function getStoreIdFromBackend(_base: string, _cookieHeader?: string): Pro
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null
 }
 
-function mapRustCouponToLocal(c: any): Coupon {
+type RustCoupon = {
+  id: string | number
+  name?: string | null
+  code?: string | null
+  discount_type?: string | null
+  percentage_bps?: string | number | null
+  value_cents?: string | number | null
+  created_at?: string | null
+  updated_at?: string | null
+  expiration_date?: string | null
+  max_uses?: number | null
+  current_uses?: number | null
+  minimum_purchase_value_cents?: number | null
+  status?: boolean | null
+}
+
+function mapRustCouponToLocal(c: RustCoupon): Coupon {
   const percentageBps = c.percentage_bps != null ? Number(c.percentage_bps) : null
   const percentageValue = percentageBps != null ? percentageBps / 100 : null
   const fixedValueCents = c.value_cents != null ? Number(c.value_cents) : null
@@ -51,8 +67,11 @@ function mapRustCouponToLocal(c: any): Coupon {
 
   return {
     id: String(c.id),
-    code: c.code,
+    name: String(c.name || c.code || ''),
+    code: String(c.code || ''),
     type: couponType,
+    ruleType: 'coupon',
+    discountType: couponType === 'percentage' ? 'percentage' : 'fixed_amount',
     valueCents: couponValueCents,
     startsAt: c.created_at ? new Date(c.created_at) : new Date(),
     endsAt: c.expiration_date ? new Date(c.expiration_date) : new Date(),
@@ -66,6 +85,7 @@ function mapRustCouponToLocal(c: any): Coupon {
     },
     isActive: c.status ?? true,
     createdAt: new Date(c.created_at || new Date()),
+    updatedAt: c.updated_at ? new Date(c.updated_at) : undefined,
   }
 }
 
@@ -126,7 +146,7 @@ export async function getCouponsAction(): Promise<ApiResponse<Coupon[]>> {
       return { success: false, error: 'Erro ao buscar coupons' }
     }
 
-    const rustCoupons = await response.json()
+    const rustCoupons = (await response.json()) as RustCoupon[]
     const coupons = rustCoupons.map(mapRustCouponToLocal)
 
     return { success: true, data: coupons }
@@ -212,7 +232,7 @@ export async function createCouponAction(formData: FormData): Promise<ApiRespons
       return { success: false, error: errorText || 'Erro ao criar cupom' }
     }
 
-    const createdCoupon = await response.json()
+    const createdCoupon = (await response.json()) as RustCoupon
 
     return { success: true, data: mapRustCouponToLocal(createdCoupon) }
   } catch (error) {
@@ -307,7 +327,7 @@ export async function updateCouponAction(id: string, formData: FormData): Promis
       return { success: false, error: errorText || 'Cupom não encontrado' }
     }
 
-    const updatedCoupon = await response.json()
+    const updatedCoupon = (await response.json()) as RustCoupon
 
     return { success: true, data: mapRustCouponToLocal(updatedCoupon) }
   } catch (error) {

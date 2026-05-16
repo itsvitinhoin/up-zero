@@ -9,6 +9,16 @@ export type CustomerType = 'RETAIL' | 'WHOLESALE'
 export type PriceTableType = 'PERCENTAGE' | 'OVERRIDE'
 
 export type CouponType = 'percentage' | 'fixed'
+export type DiscountRuleType = 'coupon' | 'automatic' | 'payment_method'
+export type DiscountType = 'percentage' | 'fixed_amount' | 'free_shipping'
+export type DiscountPriority = 'low' | 'medium' | 'high'
+export type DiscountTargetType = 'product' | 'category' | 'collection' | 'brand' | 'tag'
+
+export interface DiscountTarget {
+  type: DiscountTargetType
+  id: string
+  name: string
+}
 
 export type OrderStatus = 'PENDING' | 'CONFIRMED' | 'PROCESSING' | 'INVOICED' | 'SHIPPED' | 'DELIVERED' | 'CANCELLED'
 
@@ -240,17 +250,34 @@ export interface PriceTableItem {
 
 export interface Coupon {
   id: string
+  name?: string
   code: string
   type: CouponType
+  ruleType?: DiscountRuleType
+  discountType?: DiscountType
   valueCents: number
   startsAt: Date
   endsAt: Date
   maxUses: number | null
   currentUses: number
   minOrderValueCents: number | null
+  minItemsQuantity?: number | null
+  firstPurchaseOnly?: boolean
+  firstPurchaseMinOrderValueCents?: number | null
+  firstPurchaseMinItemsQuantity?: number | null
+  maxUsesPerCustomer?: number | null
+  canStack?: boolean
+  priority?: DiscountPriority
+  paymentMethod?: string | null
+  applyToAllProducts?: boolean
+  includeTargets?: DiscountTarget[]
+  excludeTargets?: DiscountTarget[]
+  excludePromotionalProducts?: boolean
+  excludeDiscountedProducts?: boolean
   scope: CouponScope
   isActive: boolean
   createdAt: Date
+  updatedAt?: Date
 }
 
 export interface CouponScope {

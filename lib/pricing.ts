@@ -61,7 +61,8 @@ export async function getTierDiscount(totalPieces: number): Promise<number> {
 export async function validateCoupon(
   code: string,
   subtotal: number,
-  items: { productId: string; categoryId: string }[],
+  items: { productId: string; categoryId: string; lineSubtotal?: number; quantity?: number }[],
+  context?: { customerOrderCount?: number },
 ): Promise<{ valid: boolean; coupon?: Coupon; error?: string }> {
   const coupon = await getCouponByCode(code)
   
@@ -86,8 +87,35 @@ export async function validateCoupon(
     return { valid: false, error: 'Cupom esgotado' }
   }
   
-  if (coupon.minOrderValue !== null && subtotal < coupon.minOrderValue) {
-    return { valid: false, error: `Pedido mínimo de R$ ${coupon.minOrderValue.toFixed(2)} para este cupom` }
+  const minOrderValue = coupon.minOrderValueCents != null ? coupon.minOrderValueCents / 100 : null
+  if (minOrderValue !== null && subtotal < minOrderValue) {
+    return { valid: false, error: `Pedido mínimo de R$ ${minOrderValue.toFixed(2)} para este cupom` }
+  }
+
+  if (coupon.firstPurchaseOnly) {
+    if (typeof context?.customerOrderCount === 'number' && context.customerOrderCount > 0) {
+      return { valid: false, error: 'Cupom disponível apenas para primeira compra' }
+    }
+
+    const firstPurchaseMinOrderValue =
+      coupon.firstPurchaseMinOrderValueCents != null ? coupon.firstPurchaseMinOrderValueCents / 100 : null
+    if (firstPurchaseMinOrderValue !== null && subtotal < firstPurchaseMinOrderValue) {
+      return {
+        valid: false,
+        error: `Pedido mínimo de R$ ${firstPurchaseMinOrderValue.toFixed(2)} para primeira compra`,
+      }
+    }
+
+    const firstPurchaseMinItems = coupon.firstPurchaseMinItemsQuantity ?? null
+    if (firstPurchaseMinItems !== null) {
+      const itemCount = items.reduce((sum, item) => sum + (item.quantity ?? 0), 0)
+      if (itemCount < firstPurchaseMinItems) {
+        return {
+          valid: false,
+          error: `Quantidade mínima de ${firstPurchaseMinItems} itens para primeira compra`,
+        }
+      }
+    }
   }
   
   // Check scope
@@ -112,12 +140,52 @@ export async function validateCoupon(
   return { valid: true, coupon }
 }
 
+function isCouponItemEligible(coupon: Coupon, item: { productId: string; categoryId: string }): boolean {
+  const includeTargets = coupon.includeTargets ?? []
+  const excludeTargets = coupon.excludeTargets ?? []
+
+  const excluded = excludeTargets.some((target) => {
+    if (target.type === 'product') return target.id === item.productId
+    if (target.type === 'category') return target.id === item.categoryId
+    return false
+  })
+  if (excluded) return false
+
+  if (coupon.applyToAllProducts === false && includeTargets.length > 0) {
+    return includeTargets.some((target) => {
+      if (target.type === 'product') return target.id === item.productId
+      if (target.type === 'category') return target.id === item.categoryId
+      return false
+    })
+  }
+
+  return true
+}
+
+function getEligibleCouponSubtotal(
+  coupon: Coupon,
+  items: { productId: string; categoryId: string; lineSubtotal?: number }[],
+  fallbackSubtotal: number,
+): number {
+  const subtotalFromItems = items.reduce((sum, item) => {
+    if (!isCouponItemEligible(coupon, item)) return sum
+    return sum + (item.lineSubtotal ?? 0)
+  }, 0)
+
+  return subtotalFromItems > 0 ? subtotalFromItems : fallbackSubtotal
+}
+
 // Calculate coupon discount
 export function calculateCouponDiscount(coupon: Coupon, subtotal: number): number {
-  if (coupon.type === 'PERCENT') {
-    return subtotal * (coupon.value / 100)
+  if (coupon.discountType === 'free_shipping') {
+    return 0
   }
-  return Math.min(coupon.value, subtotal)
+
+  if (coupon.type === 'percentage') {
+    return subtotal * (coupon.valueCents / 100)
+  }
+
+  return Math.min(coupon.valueCents / 100, subtotal)
 }
 
 // Full price calculation for cart
@@ -128,7 +196,7 @@ export async function calculateCartPrice(
 ): Promise<PriceCalculation> {
   let subtotal = 0
   let totalPieces = 0
-  const itemDetails: { productId: string; categoryId: string }[] = []
+  const itemDetails: { productId: string; categoryId: string; lineSubtotal: number; quantity: number }[] = []
   
   // Get price table
   let priceTable: PriceTable | null = null
@@ -151,9 +219,10 @@ export async function calculateCartPrice(
       unitPrice = await getProductPrice(product, priceTable)
     }
     
-    subtotal += unitPrice * item.quantity
+    const lineSubtotal = unitPrice * item.quantity
+    subtotal += lineSubtotal
     totalPieces += item.quantity
-    itemDetails.push({ productId: product.id, categoryId: product.categoryId })
+    itemDetails.push({ productId: product.id, categoryId: product.categoryId, lineSubtotal, quantity: item.quantity })
   }
   
   const tablePrice = subtotal
@@ -178,7 +247,8 @@ export async function calculateCartPrice(
   if (couponCode) {
     const validation = await validateCoupon(couponCode, subtotal, itemDetails)
     if (validation.valid && validation.coupon) {
-      couponDiscount = calculateCouponDiscount(validation.coupon, subtotal)
+      const eligibleSubtotal = getEligibleCouponSubtotal(validation.coupon, itemDetails, subtotal)
+      couponDiscount = calculateCouponDiscount(validation.coupon, eligibleSubtotal)
       subtotal -= couponDiscount
     }
   }
