@@ -2134,10 +2134,10 @@ export default function AdminOrderDetailPageClient({
 
                                     if (isOrderConfirmed || isRemoved) {
                                       return (
-                                        <td key={size} className={`min-w-24 text-center px-2 py-3.5 ${isRemoved ? 'opacity-40' : isZeroRequested ? 'bg-red-500 text-white' : isAttended ? 'bg-emerald-50/40 dark:bg-emerald-950/10' : ''}`}>
+                                        <td key={size} className={`min-w-24 text-center px-2 py-3.5 ${isRemoved ? 'opacity-40' : isZeroRequested ? 'bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-100 dark:bg-rose-950/30 dark:text-rose-200 dark:ring-rose-900/60' : isAttended ? 'bg-emerald-50/40 dark:bg-emerald-950/10' : ''}`}>
                                           <div className="flex flex-col items-center gap-1">
-                                            <span className={cn("text-xs font-medium tabular-nums", isZeroRequested ? "text-white/80" : "text-muted-foreground")}>{requestedQty}</span>
-                                            <span className={cn("text-xl font-semibold tabular-nums", isRemoved ? "line-through text-muted-foreground/40" : isZeroRequested ? "text-white" : isAttended ? "text-emerald-600" : "text-foreground")}>
+                                            <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-md border border-border/50 bg-slate-100 px-2 text-xs font-semibold tabular-nums text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">{requestedQty}</span>
+                                            <span className={cn("text-xl font-semibold tabular-nums", isRemoved ? "line-through text-muted-foreground/40" : isZeroRequested ? "text-rose-700 dark:text-rose-200" : isAttended ? "text-emerald-600" : "text-foreground")}>
                                               {normalizedAttendedQty}
                                             </span>
                                           </div>
@@ -2150,7 +2150,7 @@ export default function AdminOrderDetailPageClient({
                                         key={size}
                                         className={`min-w-24 text-center px-2 py-2 transition-colors ${
                                           isZeroRequested
-                                            ? 'bg-red-500 text-white'
+                                            ? 'bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-100 dark:bg-rose-950/30 dark:text-rose-200 dark:ring-rose-900/60'
                                             : isAttended
                                               ? 'bg-emerald-50/40 dark:bg-emerald-950/10'
                                               : 'bg-background'
@@ -2162,7 +2162,7 @@ export default function AdminOrderDetailPageClient({
                                             className={cn(
                                               "flex h-9 w-9 items-center justify-center rounded-full border text-2xl leading-none transition-colors disabled:opacity-30",
                                               isZeroRequested
-                                                ? "border-white/50 bg-white/15 text-white hover:bg-white/25"
+                                                ? "border-rose-200 bg-white/70 text-rose-600 hover:bg-white dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-200"
                                                 : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
                                             )}
                                             disabled={!canIncrease}
@@ -2172,17 +2172,45 @@ export default function AdminOrderDetailPageClient({
                                             +
                                           </button>
                                           <div className="flex flex-col items-center gap-1 select-none">
-                                            <span className={cn("text-xs font-medium tabular-nums", isZeroRequested ? "text-white/80" : "text-muted-foreground")}>{requestedQty}</span>
-                                            <span className={cn("text-3xl font-semibold tabular-nums leading-none", isZeroRequested ? "text-white" : isAttended ? "text-emerald-600" : "text-foreground")}>
-                                              {normalizedAttendedQty}
-                                            </span>
+                                            <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-md border border-border/50 bg-slate-100 px-2 text-xs font-semibold tabular-nums text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">{requestedQty}</span>
+                                            <input
+                                              type="text"
+                                              inputMode="numeric"
+                                              pattern="[0-9]*"
+                                              value={normalizedAttendedQty}
+                                              disabled={isSaving}
+                                              onFocus={(event) => event.currentTarget.select()}
+                                              onChange={(event) => {
+                                                const nextRawValue = event.currentTarget.value
+                                                const parsedValue = nextRawValue === '' ? 0 : Number(nextRawValue)
+                                                if (!Number.isFinite(parsedValue)) return
+                                                const nextDraft = Math.max(0, Math.min(Math.floor(Number(stockLimit || 0)), Math.floor(parsedValue)))
+                                                setAttendedQtyDraft(prev => ({ ...prev, [item.id]: nextDraft }))
+                                              }}
+                                              onBlur={() => handleChangeAttendedQty(item, Number(attendedQtyDraft[item.id] ?? item.qty))}
+                                              onKeyDown={(event) => {
+                                                if (event.key === 'Enter') {
+                                                  event.preventDefault()
+                                                  event.currentTarget.blur()
+                                                }
+                                              }}
+                                              aria-label={`Quantidade atendida de ${group.productName}`}
+                                              className={cn(
+                                                "h-10 w-16 rounded-lg border border-transparent bg-transparent text-center text-3xl font-semibold leading-none tabular-nums outline-none transition-colors [appearance:textfield] focus:border-ring focus:bg-background/80 focus:ring-2 focus:ring-ring/25 disabled:opacity-70 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
+                                                isZeroRequested
+                                                  ? "text-rose-700 focus:bg-white dark:text-rose-200 dark:focus:bg-rose-950/50"
+                                                  : isAttended
+                                                    ? "text-emerald-600"
+                                                    : "text-foreground"
+                                              )}
+                                            />
                                           </div>
                                           <button
                                             type="button"
                                             className={cn(
                                               "flex h-9 w-9 items-center justify-center rounded-full border text-2xl leading-none transition-colors disabled:opacity-30",
                                               isZeroRequested
-                                                ? "border-white/50 bg-white/15 text-white hover:bg-white/25"
+                                                ? "border-rose-200 bg-white/70 text-rose-600 hover:bg-white dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-200"
                                                 : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
                                             )}
                                             disabled={!canDecrease}
