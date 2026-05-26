@@ -2130,15 +2130,16 @@ export default function AdminOrderDetailPageClient({
                                     const normalizedAttendedQty = Math.max(0, Math.min(Math.floor(Number(stockLimit || 0)), Math.floor(attendedQtyVal)))
                                     const isZeroRequested = requestedQty > 0 && normalizedAttendedQty === 0 && !isRemoved
                                     const isDifferentRequested = requestedQty > 0 && normalizedAttendedQty !== requestedQty && normalizedAttendedQty !== 0 && !isRemoved
+                                    const isMatchingRequested = requestedQty > 0 && normalizedAttendedQty === requestedQty && !isRemoved
                                     const canDecrease = !isSaving && normalizedAttendedQty > 0 && !isOrderConfirmed && !isRemoved
                                     const canIncrease = !isSaving && normalizedAttendedQty < stockLimit && !isOrderConfirmed && !isRemoved
 
                                     if (isOrderConfirmed || isRemoved) {
                                       return (
-                                        <td key={size} className={`min-w-24 text-center px-2 py-3.5 ${isRemoved ? 'opacity-40' : isZeroRequested ? 'bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-100 dark:bg-rose-950/30 dark:text-rose-200 dark:ring-rose-900/60' : isDifferentRequested ? 'bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-100 dark:bg-amber-950/30 dark:text-amber-200 dark:ring-amber-900/60' : isAttended ? 'bg-emerald-50/40 dark:bg-emerald-950/10' : ''}`}>
+                                        <td key={size} className={`min-w-24 text-center px-2 py-3.5 ${isRemoved ? 'opacity-40' : isZeroRequested ? 'bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-100 dark:bg-rose-950/30 dark:text-rose-200 dark:ring-rose-900/60' : isDifferentRequested ? 'bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-100 dark:bg-amber-950/30 dark:text-amber-200 dark:ring-amber-900/60' : isMatchingRequested ? 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-100 dark:bg-emerald-950/30 dark:text-emerald-200 dark:ring-emerald-900/60' : isAttended ? 'bg-emerald-50/40 dark:bg-emerald-950/10' : ''}`}>
                                           <div className="flex flex-col items-center gap-1">
                                             <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-md border border-border/50 bg-slate-100 px-2 text-xs font-semibold tabular-nums text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">{requestedQty}</span>
-                                            <span className={cn("text-xl font-semibold tabular-nums", isRemoved ? "line-through text-muted-foreground/40" : isZeroRequested ? "text-rose-700 dark:text-rose-200" : isDifferentRequested ? "text-amber-700 dark:text-amber-200" : isAttended ? "text-emerald-600" : "text-foreground")}>
+                                            <span className={cn("text-xl font-semibold tabular-nums", isRemoved ? "line-through text-muted-foreground/40" : isZeroRequested ? "text-rose-700 dark:text-rose-200" : isDifferentRequested ? "text-amber-700 dark:text-amber-200" : isMatchingRequested || isAttended ? "text-emerald-600 dark:text-emerald-200" : "text-foreground")}>
                                               {normalizedAttendedQty}
                                             </span>
                                           </div>
@@ -2154,9 +2155,11 @@ export default function AdminOrderDetailPageClient({
                                             ? 'bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-100 dark:bg-rose-950/30 dark:text-rose-200 dark:ring-rose-900/60'
                                             : isDifferentRequested
                                               ? 'bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-100 dark:bg-amber-950/30 dark:text-amber-200 dark:ring-amber-900/60'
-                                            : isAttended
-                                              ? 'bg-emerald-50/40 dark:bg-emerald-950/10'
-                                              : 'bg-background'
+                                              : isMatchingRequested
+                                                ? 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-100 dark:bg-emerald-950/30 dark:text-emerald-200 dark:ring-emerald-900/60'
+                                                : isAttended
+                                                  ? 'bg-emerald-50/40 dark:bg-emerald-950/10'
+                                                  : 'bg-background'
                                         }`}
                                       >
                                         <div className="flex min-h-32 flex-col items-center justify-between gap-2">
@@ -2168,7 +2171,9 @@ export default function AdminOrderDetailPageClient({
                                                 ? "border-rose-200 bg-white/70 text-rose-600 hover:bg-white dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-200"
                                                 : isDifferentRequested
                                                   ? "border-amber-200 bg-white/70 text-amber-700 hover:bg-white dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"
-                                                : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                                                  : isMatchingRequested
+                                                    ? "border-emerald-200 bg-white/70 text-emerald-700 hover:bg-white dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200"
+                                                    : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
                                             )}
                                             disabled={!canIncrease}
                                             onClick={() => handleChangeAttendedQty(item, normalizedAttendedQty + 1)}
@@ -2206,9 +2211,9 @@ export default function AdminOrderDetailPageClient({
                                                   ? "text-rose-700 focus:bg-white dark:text-rose-200 dark:focus:bg-rose-950/50"
                                                   : isDifferentRequested
                                                     ? "text-amber-700 focus:bg-white dark:text-amber-200 dark:focus:bg-amber-950/50"
-                                                  : isAttended
-                                                    ? "text-emerald-600"
-                                                    : "text-foreground"
+                                                    : isMatchingRequested || isAttended
+                                                      ? "text-emerald-600 focus:bg-white dark:text-emerald-200 dark:focus:bg-emerald-950/50"
+                                                      : "text-foreground"
                                               )}
                                             />
                                           </div>
@@ -2220,7 +2225,9 @@ export default function AdminOrderDetailPageClient({
                                                 ? "border-rose-200 bg-white/70 text-rose-600 hover:bg-white dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-200"
                                                 : isDifferentRequested
                                                   ? "border-amber-200 bg-white/70 text-amber-700 hover:bg-white dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"
-                                                : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                                                  : isMatchingRequested
+                                                    ? "border-emerald-200 bg-white/70 text-emerald-700 hover:bg-white dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200"
+                                                    : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
                                             )}
                                             disabled={!canDecrease}
                                             onClick={() => handleChangeAttendedQty(item, normalizedAttendedQty - 1)}
