@@ -29,7 +29,7 @@ import {
 } from '@/lib/backend-data'
 import { calculateCartPrice } from '@/lib/pricing'
 import { checkoutSchema, assistedOrderSchema } from '@/lib/validations'
-import type { ApiResponse, Customer, Order, OrderInvoice, OrderLabel, OrderItem, OrderWithItems, OrderStatus, StockMode } from '@/lib/types'
+import type { ApiResponse, Customer, Order, OrderInvoice, OrderLabel, OrderItem, OrderWithItems, OrderStatus, StockMode, PaymentMethod } from '@/lib/types'
 
 type StorefrontOrderItem = {
   id: string
@@ -417,10 +417,22 @@ function mapBackendB2BCustomerToCustomer(raw: BackendB2BCustomer): Customer {
     ? (meta as Record<string, unknown>).payment_terms as unknown[]
     : []
 
+  const supportedPaymentMethods: PaymentMethod[] = [
+    'PIX',
+    'BOLETO',
+    'FATURADO',
+    'CARTAO_EXTERNO',
+    'CARTAO_CREDITO',
+    'CARTAO_DEBITO',
+    'CHEQUE',
+    'DINHEIRO',
+    'TRANSFERENCIA',
+  ]
+
   const paymentTerms = paymentTermsRaw
     .map((value) => String(value || '').toUpperCase())
     .filter((value): value is Customer['paymentTerms'][number] =>
-      ['PIX', 'BOLETO', 'FATURADO', 'CARTAO_EXTERNO'].includes(value)
+      supportedPaymentMethods.includes(value as PaymentMethod)
     )
 
   return {
@@ -569,6 +581,11 @@ function mapBackendOrderDetailToAdminOrder(
     'BOLETO',
     'FATURADO',
     'CARTAO_EXTERNO',
+    'CARTAO_CREDITO',
+    'CARTAO_DEBITO',
+    'CHEQUE',
+    'DINHEIRO',
+    'TRANSFERENCIA',
   ].includes(paymentCode)
     ? paymentCode
     : 'PIX'
@@ -1882,7 +1899,7 @@ export async function updateOrderAction(
     trackingUrl?: string
     notes?: string
     internalNotes?: string
-    paymentMethod?: 'PIX' | 'BOLETO' | 'FATURADO' | 'CARTAO_EXTERNO'
+    paymentMethod?: PaymentMethod
   }
 ): Promise<ApiResponse<Order>> {
   const session = await getSession()
@@ -2413,12 +2430,12 @@ export async function updateOrderItemAction(
 
       if (data.quantity !== undefined) {
         const quantity = Number(data.quantity)
-        if (!Number.isFinite(quantity) || quantity <= 0) {
+        if (!Number.isFinite(quantity) || quantity < 0) {
           return { success: false, error: 'Quantidade atendida inválida' }
         }
 
         const stockConfig = await getStockModeConfig()
-        const normalizedQty = normalizeQuantityByStockMode(quantity, stockConfig)
+        const normalizedQty = quantity === 0 ? 0 : normalizeQuantityByStockMode(quantity, stockConfig)
 
         response = await fetch(new URL(`/orders/${numericOrderId}/items/${numericItemId}`, base), {
           method: 'PUT',

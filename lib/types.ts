@@ -22,7 +22,16 @@ export interface DiscountTarget {
 
 export type OrderStatus = 'PENDING' | 'CONFIRMED' | 'PROCESSING' | 'INVOICED' | 'SHIPPED' | 'DELIVERED' | 'CANCELLED'
 
-export type PaymentMethod = 'PIX' | 'BOLETO' | 'FATURADO' | 'CARTAO_EXTERNO'
+export type PaymentMethod =
+  | 'PIX'
+  | 'BOLETO'
+  | 'FATURADO'
+  | 'CARTAO_EXTERNO'
+  | 'CARTAO_CREDITO'
+  | 'CARTAO_DEBITO'
+  | 'CHEQUE'
+  | 'DINHEIRO'
+  | 'TRANSFERENCIA'
 
 export type PriceVisibilityMode = 'LOGIN_REQUIRED' | 'PUBLIC'
 

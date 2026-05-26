@@ -36,7 +36,6 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Separator } from "@/components/ui/separator";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   ArrowLeft,
@@ -73,7 +72,7 @@ import { getCustomerDetailAction } from "@/lib/actions/customers";
 import { getSiteSettingsAction } from "@/lib/actions/settings";
 import { getOrderProductVariantsCatalogAction, getProductFullAction } from "@/lib/actions/products";
 import { INFINITE_STOCK_MAX_QTY } from "@/lib/stock-mode";
-import type { Order, Customer, OrderItem, Product, StockMode } from "@/lib/types";
+import type { Order, Customer, OrderItem, Product, StockMode, PaymentMethod } from "@/lib/types";
 import CurrencyInput from "@/components/form/CurrencyInput";
 import IntegerInput from "@/components/form/IntegerInput";
 import OrderPaymentsCard from "@/components/admin/order-payments-card";
@@ -184,6 +183,22 @@ const SIZE_ORDER = [
   'P/M', 'M/G', 'G/GG', 'Único', 'U',
 ]
 
+const PAYMENT_METHOD_OPTIONS: Array<{ value: PaymentMethod; label: string }> = [
+  { value: 'PIX', label: 'PIX' },
+  { value: 'CARTAO_EXTERNO', label: 'Cartão' },
+  { value: 'CARTAO_CREDITO', label: 'Cartão de crédito' },
+  { value: 'CARTAO_DEBITO', label: 'Cartão de débito' },
+  { value: 'BOLETO', label: 'Boleto' },
+  { value: 'CHEQUE', label: 'Cheque' },
+  { value: 'FATURADO', label: 'Faturado' },
+  { value: 'DINHEIRO', label: 'Dinheiro' },
+  { value: 'TRANSFERENCIA', label: 'Transferência' },
+]
+
+function getPaymentMethodLabel(value?: PaymentMethod | null): string {
+  return PAYMENT_METHOD_OPTIONS.find((option) => option.value === value)?.label || 'Selecionar'
+}
+
 // ─── Mock data for offline/demo mode ────────────────────────────────────────
 // Helpers to build a complete mock OrderItem (all fields the renderer reads)
 function mkItem(
@@ -232,7 +247,7 @@ const MOCK_DETAIL_CUSTOMERS: Record<string, ReturnType<typeof mkCustomer>> = {
 function mkOrder(
   id: string, customerId: string, status: string, paymentStatus: string,
   items: ReturnType<typeof mkItem>[],
-  opts: { notes?: string; internalNotes?: string; trackingCode?: string | null; shippingPrice?: number; discountTotal?: number; manualDiscount?: number; hoursAgo?: number } = {}
+  opts: { notes?: string; internalNotes?: string; trackingCode?: string | null; shippingPrice?: number; discountTotal?: number; manualDiscount?: number; paymentMethod?: PaymentMethod; hoursAgo?: number } = {}
 ) {
   const c = MOCK_DETAIL_CUSTOMERS[customerId]
   const subtotal = items.reduce((s, i) => s + i.total, 0)
@@ -245,6 +260,7 @@ function mkOrder(
     discountTotal, manualDiscount: opts.manualDiscount ?? 0,
     couponDiscount: 0, tierDiscount: 0,
     shippingPrice,
+    paymentMethod: opts.paymentMethod ?? 'PIX',
     trackingCode: opts.trackingCode ?? null, trackingUrl: '',
     totalItems: items.reduce((s, i) => s + (i.originalQty ?? i.qty), 0),
     fulfilledItems: items.filter(i => i.fulfilled).reduce((s, i) => s + i.qty, 0),
@@ -429,7 +445,6 @@ export default function AdminOrderDetailPageClient({
 
   const [attendedQtyDraft, setAttendedQtyDraft] = useState<Record<string, number>>({});
   const [productPreview, setProductPreview] = useState<ProductPreviewState | null>(null)
-  const [openCellId, setOpenCellId] = useState<string | null>(null)
   
   function resolveAttributeLabel(
     value: string | null | undefined,
@@ -839,7 +854,7 @@ export default function AdminOrderDetailPageClient({
     if (!order) return;
     setIsSaving(true);
     const result = await updateOrderAction(order.id, {
-      paymentMethod: value as 'PIX' | 'BOLETO' | 'FATURADO' | 'CARTAO_EXTERNO'
+      paymentMethod: value as PaymentMethod
     });
     if (result.success) {
       await refreshOrderDataOnly();
@@ -1010,26 +1025,31 @@ export default function AdminOrderDetailPageClient({
     setIsSaving(false);
   }
 
-  async function handleSaveAttendedQty(item: OrderItem) {
+  async function handleChangeAttendedQty(item: OrderItem, nextValue: number) {
     if (!order) return;
     if (order.status === 'CONFIRMED') return;
+    if (item.status === 'removed') return;
 
     const stockLimit = getMaxOrderEditQty({
       currentQty: item.qty,
       availableQty: item.variantAvailableQty,
     });
-    const rawDraft = Number(attendedQtyDraft[item.id] ?? item.qty);
-    const nextQty = Math.max(0, Math.min(Math.floor(Number(stockLimit || 1)), Math.round(rawDraft)));
+    const nextQty = Math.max(0, Math.min(Math.floor(Number(stockLimit || 0)), Math.round(Number(nextValue || 0))));
 
     if (nextQty === Number(item.qty)) return;
 
+    const previousDraft = Number(attendedQtyDraft[item.id] ?? item.qty);
+    setAttendedQtyDraft(prev => ({ ...prev, [item.id]: nextQty }));
     setIsSaving(true);
     const result = await updateOrderItemAction(order.id, item.id, {
       quantity: nextQty,
       unitPrice: item.unitPrice,
     });
     if (result.success) {
-      await refreshOrderDataOnly();
+      await refreshOrderDataOnly(true);
+    } else {
+      setAttendedQtyDraft(prev => ({ ...prev, [item.id]: previousDraft }));
+      window.alert(result.error || 'Não foi possível atualizar a quantidade atendida');
     }
     setIsSaving(false);
   }
@@ -1249,7 +1269,9 @@ export default function AdminOrderDetailPageClient({
   const appliedManualDiscount = Math.min(Math.max(0, manualDiscount), maxManualDiscount);
   const totalDiscount = (order.discountTotal || 0) + appliedManualDiscount;
   const total = Math.max(0, subtotal - totalDiscount + (order.shippingPrice || 0));
-  const fulfilledTotal = order.items.filter(i => i.status !== 'removed' && i.fulfilled).reduce((sum, item) => sum + item.total, 0);
+  const fulfilledTotal = order.items
+    .filter(i => i.status !== 'removed')
+    .reduce((sum, item) => sum + Number(item.qty || 0) * Number(item.unitPrice || 0), 0);
 
   const productGroups = order.items
     .reduce((acc, item) => {
@@ -1317,7 +1339,50 @@ export default function AdminOrderDetailPageClient({
 
       <div className="space-y-4">
 
-        {/* ── 1. Metrics ──────────────────────────────────────────────────── */}
+        {/* ── 1. Customer Information ──────────────────────────────────────── */}
+        <Card className="rounded-xl border-border/20 shadow-none gap-0">
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Package className="h-4 w-4" />
+              {tr('admin.orders.customerInfo', 'Customer Information')}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="border-t border-border/20 pt-6">
+            {customer ? (
+              <div className="grid grid-cols-1 gap-6 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                <div className="space-y-1">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Empresa</p>
+                  <p className="font-semibold">{customer.companyName}</p>
+                  <p className="text-muted-foreground">{customer.cnpj}</p>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Contato</p>
+                  <p className="font-medium">{customer.contactName}</p>
+                  <p className="text-muted-foreground flex items-center gap-2"><Phone className="h-3.5 w-3.5 shrink-0" />{customer.phone}</p>
+                  <p className="text-muted-foreground flex items-center gap-2"><Mail className="h-3.5 w-3.5 shrink-0" />{customer.email}</p>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Endereço</p>
+                  <p className="text-muted-foreground flex items-start gap-2">
+                    <MapPin className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                    <span>{order.shippingStreet}, {order.shippingNumber}{order.shippingComplement ? ` — ${order.shippingComplement}` : ''}</span>
+                  </p>
+                  <p className="text-muted-foreground pl-5">{order.shippingCity} — {order.shippingState}</p>
+                  <p className="text-muted-foreground pl-5">CEP: {order.shippingZipCode}</p>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Histórico</p>
+                  <p className="text-muted-foreground flex items-center gap-2"><CalendarDays className="h-3.5 w-3.5 shrink-0" />Cadastro: {formatDate(customer.createdAt)}</p>
+                  <p className="text-muted-foreground flex items-center gap-2"><Activity className="h-3.5 w-3.5 shrink-0" />Última atividade: {formatDate(customer.updatedAt)}</p>
+                </div>
+              </div>
+            ) : (
+              <p className="text-muted-foreground text-sm">{tr('admin.orders.customerNotFound', 'Customer not found')}</p>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* ── 2. Metrics ──────────────────────────────────────────────────── */}
         <div className="print:hidden flex flex-col divide-y divide-border/30 rounded-xl border border-border/20 bg-card shadow-none overflow-hidden">
           <div className="flex items-center justify-between gap-3 px-3 py-2.5">
             <div className="flex items-center gap-2.5 min-w-0">
@@ -1350,14 +1415,13 @@ export default function AdminOrderDetailPageClient({
           </div>
         </div>
 
-        {/* ── 2. Order Status ──────────────────────────────────────────────── */}
+        {/* ── 3. Order Status ──────────────────────────────────────────────── */}
         <Card className="print:hidden rounded-xl border-border/20 shadow-none gap-0">
           <CardHeader>
             <CardTitle className="text-base">{tr('admin.orders.statusSection', 'Order Status')}</CardTitle>
           </CardHeader>
           <CardContent className="border-t border-border/20 pt-5 space-y-3">
-            {/* 3 dropdowns in one row */}
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {/* Fulfillment */}
               <div className="space-y-1.5">
                 <div className="flex items-center gap-1.5">
@@ -1373,7 +1437,7 @@ export default function AdminOrderDetailPageClient({
                 </div>
                 <Select value={order.status} onValueChange={handleStatusChange} disabled={isSaving}>
                   <SelectTrigger className="w-full h-11 text-sm">
-                    <SelectValue />
+                    <span className="truncate">{ORDER_STATUS_LABELS[order.status]?.label ?? order.status}</span>
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="PENDING">{ORDER_STATUS_LABELS.PENDING.label}</SelectItem>
@@ -1400,7 +1464,7 @@ export default function AdminOrderDetailPageClient({
                 </div>
                 <Select value={order.paymentStatus || 'PENDING'} onValueChange={handlePaymentStatusChange} disabled={isSaving}>
                   <SelectTrigger className="w-full h-11 text-sm">
-                    <SelectValue />
+                    <span className="truncate">{PAYMENT_STATUS_LABELS[order.paymentStatus || 'PENDING']?.label ?? order.paymentStatus ?? 'Pendente'}</span>
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="PENDING">{PAYMENT_STATUS_LABELS.PENDING.label}</SelectItem>
@@ -1408,6 +1472,26 @@ export default function AdminOrderDetailPageClient({
                     <SelectItem value="PARTIAL">{PAYMENT_STATUS_LABELS.PARTIAL.label}</SelectItem>
                     <SelectItem value="REFUNDED">{PAYMENT_STATUS_LABELS.REFUNDED.label}</SelectItem>
                     <SelectItem value="CANCELLED">{PAYMENT_STATUS_LABELS.CANCELLED.label}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Payment Method */}
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 shrink-0 rounded-full bg-indigo-500" />
+                  <Label className="text-xs text-muted-foreground">Método</Label>
+                </div>
+                <Select value={order.paymentMethod || undefined} onValueChange={handlePaymentMethodChange} disabled={isSaving}>
+                  <SelectTrigger className="w-full h-11 text-sm">
+                    <span className="truncate">{getPaymentMethodLabel(order.paymentMethod)}</span>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PAYMENT_METHOD_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -1427,7 +1511,19 @@ export default function AdminOrderDetailPageClient({
                 </div>
                 <Select value={order.status} onValueChange={handleStatusChange} disabled={isSaving}>
                   <SelectTrigger className="w-full h-11 text-sm">
-                    <SelectValue />
+                    <span className="truncate">
+                      {order.status === 'PENDING'
+                        ? tr('admin.orders.deliveryStatus.pending', 'Pending')
+                        : order.status === 'PROCESSING'
+                          ? tr('admin.orders.deliveryStatus.processing', 'Preparing')
+                          : order.status === 'SHIPPED'
+                            ? tr('admin.orders.deliveryStatus.shipped', 'In Transit')
+                            : order.status === 'DELIVERED'
+                              ? tr('admin.orders.deliveryStatus.delivered', 'Delivered')
+                              : order.status === 'CANCELLED'
+                                ? tr('admin.orders.deliveryStatus.cancelled', 'Returned')
+                                : '-'}
+                    </span>
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="PENDING">{tr('admin.orders.deliveryStatus.pending', 'Pending')}</SelectItem>
@@ -1461,49 +1557,6 @@ export default function AdminOrderDetailPageClient({
                 <p className="text-xs text-emerald-600">{tr('admin.orders.saved', 'Saved')}</p>
               )}
             </div>
-          </CardContent>
-        </Card>
-
-        {/* ── 3. Customer Information ──────────────────────────────────────── */}
-        <Card className="rounded-xl border-border/20 shadow-none gap-0">
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <Package className="h-4 w-4" />
-              {tr('admin.orders.customerInfo', 'Customer Information')}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="border-t border-border/20 pt-6">
-            {customer ? (
-              <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4 text-sm">
-                <div className="space-y-1">
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Empresa</p>
-                  <p className="font-semibold">{customer.companyName}</p>
-                  <p className="text-muted-foreground">{customer.cnpj}</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Contato</p>
-                  <p className="font-medium">{customer.contactName}</p>
-                  <p className="text-muted-foreground flex items-center gap-2"><Phone className="h-3.5 w-3.5 shrink-0" />{customer.phone}</p>
-                  <p className="text-muted-foreground flex items-center gap-2"><Mail className="h-3.5 w-3.5 shrink-0" />{customer.email}</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Endereço</p>
-                  <p className="text-muted-foreground flex items-start gap-2">
-                    <MapPin className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                    <span>{order.shippingStreet}, {order.shippingNumber}{order.shippingComplement ? ` — ${order.shippingComplement}` : ''}</span>
-                  </p>
-                  <p className="text-muted-foreground pl-5">{order.shippingCity} — {order.shippingState}</p>
-                  <p className="text-muted-foreground pl-5">CEP: {order.shippingZipCode}</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Histórico</p>
-                  <p className="text-muted-foreground flex items-center gap-2"><CalendarDays className="h-3.5 w-3.5 shrink-0" />Cadastro: {formatDate(customer.createdAt)}</p>
-                  <p className="text-muted-foreground flex items-center gap-2"><Activity className="h-3.5 w-3.5 shrink-0" />Última atividade: {formatDate(customer.updatedAt)}</p>
-                </div>
-              </div>
-            ) : (
-              <p className="text-muted-foreground text-sm">{tr('admin.orders.customerNotFound', 'Customer not found')}</p>
-            )}
           </CardContent>
         </Card>
 
@@ -1721,7 +1774,7 @@ export default function AdminOrderDetailPageClient({
                   const activeItems = group.items.filter(i => i.status !== 'removed')
                   const groupAllFulfilled = activeItems.length > 0 && activeItems.every(i => i.fulfilled || i.status === 'attended')
                   const groupRequested = group.items.reduce((sum, item) => sum + Number(item.originalQty ?? item.qty), 0)
-                  const groupFulfilled = group.items.filter(i => (i.fulfilled || i.status === 'attended') && i.status !== 'removed').reduce((sum, i) => sum + Number(i.qty || 0), 0)
+                  const groupFulfilled = group.items.filter(i => i.status !== 'removed').reduce((sum, i) => sum + Number(i.qty || 0), 0)
                   const groupTotal = group.items.reduce((sum, item) => sum + Number(item.originalQty ?? item.qty) * Number(item.unitPrice || 0), 0)
 
                   // Build unique sizes and colors for the matrix
@@ -1767,7 +1820,9 @@ export default function AdminOrderDetailPageClient({
                                 const variantKey = attributes.map(a => `${a.key}:${a.value}`).join('|')
                                 if (!acc[variantKey]) acc[variantKey] = { variantKey, attributes, requestedQty: 0, attendedQty: 0 }
                                 acc[variantKey].requestedQty += Number(entry.originalQty ?? entry.qty)
-                                acc[variantKey].attendedQty += Number(entry.qty || 0)
+                                if (entry.status !== 'removed') {
+                                  acc[variantKey].attendedQty += Number(entry.qty || 0)
+                                }
                                 return acc
                               }, {} as Record<string, { variantKey: string; attributes: Array<{ key: string; value: string }>; requestedQty: number; attendedQty: number }>)
                               setProductPreview({ productName: group.productName, imageUrl: group.imageUrl, sku: group.sku, variants: Object.values(groupedVariants) })
@@ -1873,12 +1928,12 @@ export default function AdminOrderDetailPageClient({
                                     </div>
                                   </td>
 
-                                  {/* Size cells — click to edit via popover */}
+                                  {/* Size cells with inline attended quantity controls */}
                                   {rawSizes.map(size => {
                                     const item = matrixLookup[color]?.[size]
                                     if (!item) {
                                       return (
-                                        <td key={size} className="text-center px-4 py-3.5">
+                                        <td key={size} className="min-w-24 text-center px-2 py-3.5">
                                           <span className="text-muted-foreground/25 text-xs select-none">—</span>
                                         </td>
                                       )
@@ -1889,26 +1944,20 @@ export default function AdminOrderDetailPageClient({
                                     const isAttended = item.status === 'attended' || item.fulfilled
                                     const isRemoved = item.status === 'removed'
                                     const stockLimit = getMaxOrderEditQty({ currentQty: item.qty, availableQty: item.variantAvailableQty })
-                                    const normalizedAttendedQty = Math.max(0, Math.min(Math.floor(Number(stockLimit || 1)), Math.floor(attendedQtyVal)))
-                                    const hasChanges = normalizedAttendedQty !== Number(item.qty)
-                                    const isOpen = openCellId === item.id
-
-                                    const cellContent = (
-                                      <div className="flex flex-col items-center gap-0.5 select-none">
-                                        <span className="text-[10px] text-muted-foreground/60 tabular-nums leading-none">{requestedQty}</span>
-                                        <span className={`text-sm font-semibold tabular-nums leading-none ${isRemoved ? 'line-through text-muted-foreground/40' : isAttended ? 'text-emerald-600' : 'text-foreground'}`}>
-                                          {normalizedAttendedQty}
-                                        </span>
-                                        {isAttended && !isRemoved && (
-                                          <span className="h-1 w-1 rounded-full bg-emerald-500 mt-0.5" />
-                                        )}
-                                      </div>
-                                    )
+                                    const normalizedAttendedQty = Math.max(0, Math.min(Math.floor(Number(stockLimit || 0)), Math.floor(attendedQtyVal)))
+                                    const isZeroRequested = requestedQty > 0 && normalizedAttendedQty === 0 && !isRemoved
+                                    const canDecrease = !isSaving && normalizedAttendedQty > 0 && !isOrderConfirmed && !isRemoved
+                                    const canIncrease = !isSaving && normalizedAttendedQty < stockLimit && !isOrderConfirmed && !isRemoved
 
                                     if (isOrderConfirmed || isRemoved) {
                                       return (
-                                        <td key={size} className={`text-center px-4 py-3.5 ${isRemoved ? 'opacity-40' : isAttended ? 'bg-emerald-50/40 dark:bg-emerald-950/10' : ''}`}>
-                                          {cellContent}
+                                        <td key={size} className={`min-w-24 text-center px-2 py-3.5 ${isRemoved ? 'opacity-40' : isZeroRequested ? 'bg-red-500 text-white' : isAttended ? 'bg-emerald-50/40 dark:bg-emerald-950/10' : ''}`}>
+                                          <div className="flex flex-col items-center gap-1">
+                                            <span className={cn("text-xs font-medium tabular-nums", isZeroRequested ? "text-white/80" : "text-muted-foreground")}>{requestedQty}</span>
+                                            <span className={cn("text-xl font-semibold tabular-nums", isRemoved ? "line-through text-muted-foreground/40" : isZeroRequested ? "text-white" : isAttended ? "text-emerald-600" : "text-foreground")}>
+                                              {normalizedAttendedQty}
+                                            </span>
+                                          </div>
                                         </td>
                                       )
                                     }
@@ -1916,122 +1965,50 @@ export default function AdminOrderDetailPageClient({
                                     return (
                                       <td
                                         key={size}
-                                        className={`text-center px-4 py-3.5 transition-colors ${
-                                          isOpen
-                                            ? 'bg-primary/8 ring-1 ring-inset ring-primary/30'
+                                        className={`min-w-24 text-center px-2 py-2 transition-colors ${
+                                          isZeroRequested
+                                            ? 'bg-red-500 text-white'
                                             : isAttended
-                                              ? 'bg-emerald-50/40 dark:bg-emerald-950/10 hover:bg-emerald-50 dark:hover:bg-emerald-950/20'
-                                              : 'hover:bg-muted/60 cursor-pointer'
+                                              ? 'bg-emerald-50/40 dark:bg-emerald-950/10'
+                                              : 'bg-background'
                                         }`}
                                       >
-                                        <Popover
-                                          open={isOpen}
-                                          onOpenChange={(open) => {
-                                            if (!open && hasChanges) {
-                                              void handleSaveAttendedQty(item)
-                                            }
-                                            setOpenCellId(open ? item.id : null)
-                                          }}
-                                        >
-                                          <PopoverTrigger asChild>
-                                            <button type="button" className="w-full focus:outline-none">
-                                              {cellContent}
-                                            </button>
-                                          </PopoverTrigger>
-                                          <PopoverContent
-                                            className="w-64 p-0 shadow-lg border-border/50"
-                                            side="top"
-                                            align="center"
-                                            sideOffset={8}
+                                        <div className="flex min-h-32 flex-col items-center justify-between gap-2">
+                                          <button
+                                            type="button"
+                                            className={cn(
+                                              "flex h-9 w-9 items-center justify-center rounded-full border text-2xl leading-none transition-colors disabled:opacity-30",
+                                              isZeroRequested
+                                                ? "border-white/50 bg-white/15 text-white hover:bg-white/25"
+                                                : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                                            )}
+                                            disabled={!canIncrease}
+                                            onClick={() => handleChangeAttendedQty(item, normalizedAttendedQty + 1)}
+                                            aria-label={`Aumentar quantidade atendida de ${group.productName}`}
                                           >
-                                            {/* Context header */}
-                                            <div className="px-4 pt-3 pb-2 border-b border-border/40">
-                                              <p className="font-semibold text-sm text-foreground leading-tight">{group.productName}</p>
-                                              <p className="text-xs text-muted-foreground mt-0.5">SKU: {group.sku}</p>
-                                              <div className="flex items-center gap-2 mt-1.5">
-                                                <div className="flex items-center gap-1.5">
-                                                  <span
-                                                    className="inline-block h-2.5 w-2.5 rounded-full border border-black/10 shrink-0"
-                                                    style={{ background: colorDot }}
-                                                  />
-                                                  <span className="text-xs text-muted-foreground">{colorLabel}</span>
-                                                </div>
-                                                <span className="text-muted-foreground/40 text-xs">·</span>
-                                                <span className="text-xs text-muted-foreground font-medium">{resolveAttributeLabel(size, initialAttributeLabels.size)}</span>
-                                              </div>
-                                            </div>
-
-                                            {/* Qty info + stepper */}
-                                            <div className="px-4 py-3 space-y-3">
-                                              <div className="flex items-center justify-between text-xs text-muted-foreground">
-                                                <span>Solicitado</span>
-                                                <span className="font-semibold text-foreground tabular-nums">{requestedQty}</span>
-                                              </div>
-
-                                              <div className="flex items-center justify-between">
-                                                <span className="text-xs text-muted-foreground">Atendido</span>
-                                                <div className="flex items-center gap-2">
-                                                  <button
-                                                    type="button"
-                                                    className="h-7 w-7 rounded-md border border-border bg-background hover:bg-muted flex items-center justify-center transition-colors disabled:opacity-40"
-                                                    disabled={isSaving || normalizedAttendedQty <= 0}
-                                                    onClick={() => {
-                                                      const next = Math.max(0, normalizedAttendedQty - 1)
-                                                      setAttendedQtyDraft(prev => ({ ...prev, [item.id]: next }))
-                                                    }}
-                                                  >
-                                                    <span className="text-base leading-none font-medium">−</span>
-                                                  </button>
-                                                  <span className="w-8 text-center text-sm font-bold tabular-nums">{normalizedAttendedQty}</span>
-                                                  <button
-                                                    type="button"
-                                                    className="h-7 w-7 rounded-md border border-border bg-background hover:bg-muted flex items-center justify-center transition-colors disabled:opacity-40"
-                                                    disabled={isSaving || normalizedAttendedQty >= stockLimit}
-                                                    onClick={() => {
-                                                      const next = clampOrderEditQty(normalizedAttendedQty + 1, stockLimit)
-                                                      setAttendedQtyDraft(prev => ({ ...prev, [item.id]: next }))
-                                                    }}
-                                                  >
-                                                    <span className="text-base leading-none font-medium">+</span>
-                                                  </button>
-                                                </div>
-                                              </div>
-                                            </div>
-
-                                            {/* Action footer */}
-                                            <div className="px-3 pb-3 flex items-center gap-2">
-                                              <button
-                                                type="button"
-                                                className={`flex-1 flex items-center justify-center gap-1.5 h-8 rounded-md text-xs font-medium transition-colors border ${
-                                                  isAttended
-                                                    ? 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/30 dark:border-emerald-800 dark:text-emerald-400'
-                                                    : 'bg-background border-border text-muted-foreground hover:bg-muted hover:text-foreground'
-                                                }`}
-                                                disabled={isSaving}
-                                                onClick={async () => {
-                                                  await handleToggleFulfilled(item.id, !isAttended)
-                                                }}
-                                              >
-                                                <Check className="h-3.5 w-3.5" />
-                                                {isAttended ? 'Atendido' : 'Marcar atendido'}
-                                              </button>
-                                              {hasChanges && (
-                                                <button
-                                                  type="button"
-                                                  className="flex items-center justify-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
-                                                  disabled={isSaving}
-                                                  onClick={async () => {
-                                                    await handleSaveAttendedQty(item)
-                                                    setOpenCellId(null)
-                                                  }}
-                                                >
-                                                  <Save className="h-3.5 w-3.5" />
-                                                  Salvar
-                                                </button>
-                                              )}
-                                            </div>
-                                          </PopoverContent>
-                                        </Popover>
+                                            +
+                                          </button>
+                                          <div className="flex flex-col items-center gap-1 select-none">
+                                            <span className={cn("text-xs font-medium tabular-nums", isZeroRequested ? "text-white/80" : "text-muted-foreground")}>{requestedQty}</span>
+                                            <span className={cn("text-3xl font-semibold tabular-nums leading-none", isZeroRequested ? "text-white" : isAttended ? "text-emerald-600" : "text-foreground")}>
+                                              {normalizedAttendedQty}
+                                            </span>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            className={cn(
+                                              "flex h-9 w-9 items-center justify-center rounded-full border text-2xl leading-none transition-colors disabled:opacity-30",
+                                              isZeroRequested
+                                                ? "border-white/50 bg-white/15 text-white hover:bg-white/25"
+                                                : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                                            )}
+                                            disabled={!canDecrease}
+                                            onClick={() => handleChangeAttendedQty(item, normalizedAttendedQty - 1)}
+                                            aria-label={`Diminuir quantidade atendida de ${group.productName}`}
+                                          >
+                                            -
+                                          </button>
+                                        </div>
                                       </td>
                                     )
                                   })}
