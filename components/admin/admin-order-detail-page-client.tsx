@@ -199,6 +199,8 @@ function getPaymentMethodLabel(value?: PaymentMethod | null): string {
   return PAYMENT_METHOD_OPTIONS.find((option) => option.value === value)?.label || 'Selecionar'
 }
 
+const MOCK_NOW = new Date('2026-05-26T14:30:00.000Z')
+
 // ─── Mock data for offline/demo mode ────────────────────────────────────────
 // Helpers to build a complete mock OrderItem (all fields the renderer reads)
 function mkItem(
@@ -269,8 +271,8 @@ function mkOrder(
     shippingStreet: c?.shippingStreet ?? '', shippingNumber: c?.shippingNumber ?? '',
     shippingComplement: '', shippingCity: c?.shippingCity ?? '',
     shippingState: c?.shippingState ?? '', shippingZipCode: c?.shippingZipCode ?? '',
-    createdAt: new Date(Date.now() - (opts.hoursAgo ?? 2) * 3600000),
-    updatedAt: new Date(),
+    createdAt: new Date(MOCK_NOW.getTime() - (opts.hoursAgo ?? 2) * 3600000),
+    updatedAt: MOCK_NOW,
   }
 }
 
@@ -590,6 +592,58 @@ export default function AdminOrderDetailPageClient({
     return Math.max(1, Math.min(normalizedMax, normalizedValue));
   }
 
+  function isLocalDemoOrderId(id: string): boolean {
+    const numericId = Number(id)
+    return !Number.isFinite(numericId) || numericId <= 0
+  }
+
+  function canFallbackToLocalOrderUpdate(error?: string | null): boolean {
+    const normalizedError = String(error || '')
+    return (
+      isLocalDemoOrderId(order?.id || '') ||
+      normalizedError.includes('NEXT_PUBLIC_RUST_URL') ||
+      normalizedError.includes('Pedido inválido')
+    )
+  }
+
+  function applyLocalOrderPatch(patch: Partial<Order>) {
+    setOrder((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        ...patch,
+        updatedAt: new Date(),
+      }
+    })
+  }
+
+  function applyLocalItemsPatch(
+    shouldPatch: (item: OrderItem) => boolean,
+    patchItem: (item: OrderItem) => OrderItem
+  ) {
+    setOrder((prev) => {
+      if (!prev) return prev
+
+      return {
+        ...prev,
+        updatedAt: new Date(),
+        items: prev.items.map((entry) => shouldPatch(entry) ? patchItem(entry) : entry),
+      }
+    })
+  }
+
+  function applyLocalItemQuantity(itemId: string, nextQty: number) {
+    applyLocalItemsPatch(
+      (entry) => entry.id === itemId,
+      (entry) => ({
+        ...entry,
+        qty: nextQty,
+        fulfilled: nextQty > 0,
+        status: nextQty > 0 ? 'attended' : 'active',
+      })
+    )
+  }
+
   async function loadData() {
     if (!orderId) return;
     setIsLoading(true);
@@ -663,20 +717,39 @@ export default function AdminOrderDetailPageClient({
 
   async function handleStatusChange(newStatus: string) {
     if (!order) return;
+    if (isLocalDemoOrderId(order.id)) {
+      applyLocalOrderPatch({ status: newStatus as Order["status"] })
+      return
+    }
+
     setIsSaving(true);
     const result = await updateOrderAction(order.id, { status: newStatus as Order["status"] });
     if (result.success) {
       await refreshOrderDataOnly();
+    } else if (canFallbackToLocalOrderUpdate(result.error)) {
+      applyLocalOrderPatch({ status: newStatus as Order["status"] })
+    } else {
+      window.alert(result.error || 'Não foi possível atualizar o status do pedido')
     }
     setIsSaving(false);
   }
 
   async function handlePaymentStatusChange(newStatus: string) {
     if (!order) return;
+    const paymentStatus = newStatus as 'PENDING' | 'PAID' | 'PARTIAL' | 'REFUNDED' | 'CANCELLED'
+    if (isLocalDemoOrderId(order.id)) {
+      applyLocalOrderPatch({ paymentStatus })
+      return
+    }
+
     setIsSaving(true);
-    const result = await updateOrderAction(order.id, { paymentStatus: newStatus as 'PENDING' | 'PAID' | 'PARTIAL' | 'REFUNDED' | 'CANCELLED' });
+    const result = await updateOrderAction(order.id, { paymentStatus });
     if (result.success) {
       await refreshOrderDataOnly();
+    } else if (canFallbackToLocalOrderUpdate(result.error)) {
+      applyLocalOrderPatch({ paymentStatus })
+    } else {
+      window.alert(result.error || 'Não foi possível atualizar o pagamento')
     }
     setIsSaving(false);
   }
@@ -852,12 +925,22 @@ export default function AdminOrderDetailPageClient({
 
   async function handlePaymentMethodChange(value: string) {
     if (!order) return;
+    const paymentMethod = value as PaymentMethod
+    if (isLocalDemoOrderId(order.id)) {
+      applyLocalOrderPatch({ paymentMethod })
+      return
+    }
+
     setIsSaving(true);
     const result = await updateOrderAction(order.id, {
-      paymentMethod: value as PaymentMethod
+      paymentMethod
     });
     if (result.success) {
       await refreshOrderDataOnly();
+    } else if (canFallbackToLocalOrderUpdate(result.error)) {
+      applyLocalOrderPatch({ paymentMethod })
+    } else {
+      window.alert(result.error || 'Não foi possível atualizar o método de pagamento')
     }
     setIsSaving(false);
   }
@@ -961,6 +1044,14 @@ export default function AdminOrderDetailPageClient({
   async function handleRemoveItem(itemId: string) {
     if (!order) return;
     if (order.status === 'CONFIRMED') return;
+    if (isLocalDemoOrderId(order.id)) {
+      applyLocalItemsPatch(
+        (entry) => entry.id === itemId,
+        (entry) => ({ ...entry, qty: 0, fulfilled: false, status: 'removed' })
+      )
+      return
+    }
+
     setIsSaving(true);
     await removeOrderItemAction(order.id, itemId);
     await refreshOrderDataOnly();
@@ -970,6 +1061,16 @@ export default function AdminOrderDetailPageClient({
   async function handleRemoveSelectedItems() {
     if (!order || selectedItems.length === 0) return;
     if (order.status === 'CONFIRMED') return;
+    if (isLocalDemoOrderId(order.id)) {
+      const selectedSet = new Set(selectedItems)
+      applyLocalItemsPatch(
+        (entry) => selectedSet.has(entry.id),
+        (entry) => ({ ...entry, qty: 0, fulfilled: false, status: 'removed' })
+      )
+      setSelectedItems([]);
+      return
+    }
+
     setIsSaving(true);
     for (const itemId of selectedItems) {
       await removeOrderItemAction(order.id, itemId);
@@ -982,6 +1083,19 @@ export default function AdminOrderDetailPageClient({
   async function handleReactivateItem(itemId: string) {
     if (!order) return;
     if (order.status === 'CONFIRMED') return;
+    if (isLocalDemoOrderId(order.id)) {
+      applyLocalItemsPatch(
+        (entry) => entry.id === itemId,
+        (entry) => ({
+          ...entry,
+          qty: Number(entry.originalQty ?? entry.qty ?? 0),
+          fulfilled: false,
+          status: 'active',
+        })
+      )
+      return
+    }
+
     setIsSaving(true);
     await updateOrderItemAction(order.id, itemId, { fulfilled: false });
     await refreshOrderDataOnly();
@@ -993,6 +1107,19 @@ export default function AdminOrderDetailPageClient({
     if (order.status === 'CONFIRMED') return;
     const item = order.items.find((entry) => entry.id === itemId);
     if (item?.status === 'removed') return;
+    if (isLocalDemoOrderId(order.id)) {
+      applyLocalItemsPatch(
+        (entry) => entry.id === itemId,
+        (entry) => ({
+          ...entry,
+          fulfilled,
+          status: fulfilled ? 'attended' : 'active',
+          qty: fulfilled ? Math.max(1, Number(entry.qty || entry.originalQty || 1)) : Number(entry.qty || 0),
+        })
+      )
+      return
+    }
+
     setIsSaving(true);
     await updateOrderItemAction(order.id, itemId, { fulfilled });
     await refreshOrderDataOnly();
@@ -1002,6 +1129,19 @@ export default function AdminOrderDetailPageClient({
   async function handleMarkAllFulfilled() {
     if (!order) return;
     if (order.status === 'CONFIRMED') return;
+    if (isLocalDemoOrderId(order.id)) {
+      applyLocalItemsPatch(
+        (entry) => entry.status !== 'removed',
+        (entry) => ({
+          ...entry,
+          fulfilled: true,
+          status: 'attended',
+          qty: Math.max(1, Number(entry.qty || entry.originalQty || 1)),
+        })
+      )
+      return
+    }
+
     setIsSaving(true);
     for (const item of order.items) {
       if (item.status !== 'removed' && !item.fulfilled) {
@@ -1015,6 +1155,20 @@ export default function AdminOrderDetailPageClient({
   async function handleMarkGroupFulfilled(items: OrderItem[], fulfilled: boolean) {
     if (!order) return;
     if (order.status === 'CONFIRMED') return;
+    if (isLocalDemoOrderId(order.id)) {
+      const groupItemIds = new Set(items.map((item) => item.id))
+      applyLocalItemsPatch(
+        (entry) => groupItemIds.has(entry.id) && entry.status !== 'removed',
+        (entry) => ({
+          ...entry,
+          fulfilled,
+          status: fulfilled ? 'attended' : 'active',
+          qty: fulfilled ? Math.max(1, Number(entry.qty || entry.originalQty || 1)) : Number(entry.qty || 0),
+        })
+      )
+      return
+    }
+
     setIsSaving(true);
     for (const item of items) {
       if (item.status !== 'removed') {
@@ -1040,6 +1194,11 @@ export default function AdminOrderDetailPageClient({
 
     const previousDraft = Number(attendedQtyDraft[item.id] ?? item.qty);
     setAttendedQtyDraft(prev => ({ ...prev, [item.id]: nextQty }));
+    if (isLocalDemoOrderId(order.id)) {
+      applyLocalItemQuantity(item.id, nextQty)
+      return
+    }
+
     setIsSaving(true);
     const result = await updateOrderItemAction(order.id, item.id, {
       quantity: nextQty,
@@ -1047,6 +1206,8 @@ export default function AdminOrderDetailPageClient({
     });
     if (result.success) {
       await refreshOrderDataOnly(true);
+    } else if (canFallbackToLocalOrderUpdate(result.error)) {
+      applyLocalItemQuantity(item.id, nextQty)
     } else {
       setAttendedQtyDraft(prev => ({ ...prev, [item.id]: previousDraft }));
       window.alert(result.error || 'Não foi possível atualizar a quantidade atendida');
@@ -1057,6 +1218,15 @@ export default function AdminOrderDetailPageClient({
   async function handleRemoveGroupItems(items: OrderItem[]) {
     if (!order || items.length === 0) return;
     if (order.status === 'CONFIRMED') return;
+    if (isLocalDemoOrderId(order.id)) {
+      const groupItemIds = new Set(items.map((item) => item.id))
+      applyLocalItemsPatch(
+        (entry) => groupItemIds.has(entry.id),
+        (entry) => ({ ...entry, qty: 0, fulfilled: false, status: 'removed' })
+      )
+      setGroupToRemove(null);
+      return
+    }
 
     setIsSaving(true);
     for (const item of items) {
@@ -1073,6 +1243,19 @@ export default function AdminOrderDetailPageClient({
 
     const removedItems = items.filter((item) => item.status === 'removed')
     if (removedItems.length === 0) return
+    if (isLocalDemoOrderId(order.id)) {
+      const removedItemIds = new Set(removedItems.map((item) => item.id))
+      applyLocalItemsPatch(
+        (entry) => removedItemIds.has(entry.id),
+        (entry) => ({
+          ...entry,
+          qty: Number(entry.originalQty ?? entry.qty ?? 0),
+          fulfilled: false,
+          status: 'active',
+        })
+      )
+      return
+    }
 
     setIsSaving(true)
     for (const item of removedItems) {
@@ -2280,10 +2463,23 @@ export default function AdminOrderDetailPageClient({
             </CardContent>
           </Card>
 
-          <OrderPaymentsCard
-            orderId={orderId}
-            paymentStatus={order?.paymentStatus}
-          />
+          {isLocalDemoOrderId(order.id) ? (
+            <Card className="rounded-xl border-border/20 shadow-none">
+              <CardHeader>
+                <CardTitle className="text-base">Gateway de Pagamento</CardTitle>
+              </CardHeader>
+              <CardContent className="border-t border-border/20 pt-6">
+                <p className="text-sm text-muted-foreground">
+                  Pedido de demonstração: pagamentos reais ficam disponíveis em pedidos integrados ao backend.
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <OrderPaymentsCard
+              orderId={orderId}
+              paymentStatus={order?.paymentStatus}
+            />
+          )}
         </div>
       </div>
 
