@@ -1178,6 +1178,210 @@ export async function updateProductAction(id: string, formData: FormData): Promi
   }
 }
 
+export type BulkProductDiscountInput = {
+  type: 'fixed' | 'percent'
+  value: number
+}
+
+export type BulkUpdateProductsInput = {
+  productIds: string[]
+  categoryIds?: string[]
+  tags?: string[]
+  measures?: string
+  status?: 'active' | 'inactive'
+  discount?: BulkProductDiscountInput | null
+}
+
+function applyBulkProductDiscount(price: number, discount?: BulkProductDiscountInput | null) {
+  const normalizedPrice = Number.isFinite(price) ? Math.max(0, price) : 0
+  if (!discount || !Number.isFinite(discount.value) || discount.value <= 0) {
+    return normalizedPrice
+  }
+
+  if (discount.type === 'percent') {
+    const percentage = Math.min(100, Math.max(0, discount.value))
+    return Math.max(0, Number((normalizedPrice * (1 - percentage / 100)).toFixed(2)))
+  }
+
+  return Math.max(0, Number((normalizedPrice - discount.value).toFixed(2)))
+}
+
+function parseSubmittedImageGroupingRule(raw: unknown): SubmittedImageGroupingRule | undefined {
+  if (!raw) return undefined
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
+    const type = String((parsed as any)?.type || '').trim()
+    if (type !== 'product' && type !== 'attributes' && type !== 'full_sku') return undefined
+
+    return {
+      type,
+      attribute_ids: Array.isArray((parsed as any)?.attribute_ids)
+        ? (parsed as any).attribute_ids
+            .map((value: unknown) => Number(value))
+            .filter((value: number) => Number.isInteger(value) && value > 0)
+        : undefined,
+    }
+  } catch {
+    return undefined
+  }
+}
+
+export async function bulkUpdateProductsAction(
+  input: BulkUpdateProductsInput
+): Promise<ApiResponse<{ updated: number }>> {
+  const session = await getSession()
+  if (!(await isProductsAuthorized(session))) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  const productIds = Array.from(new Set((input.productIds || []).map(String).filter(Boolean)))
+  if (productIds.length === 0) {
+    return { success: false, error: 'Selecione ao menos um produto' }
+  }
+
+  const nextCategoryIds = Array.isArray(input.categoryIds)
+    ? input.categoryIds.map(String).filter(Boolean)
+    : undefined
+  const nextTags = Array.isArray(input.tags)
+    ? input.tags.map((tag) => String(tag).trim()).filter(Boolean)
+    : undefined
+  const nextMeasures = typeof input.measures === 'string' && input.measures.trim().length > 0
+    ? input.measures.trim()
+    : undefined
+  const nextStatus = input.status === 'active' || input.status === 'inactive'
+    ? input.status
+    : undefined
+  const nextDiscount = input.discount && input.discount.value > 0
+    ? input.discount
+    : null
+
+  if (
+    (!nextCategoryIds || nextCategoryIds.length === 0) &&
+    (!nextTags || nextTags.length === 0) &&
+    !nextMeasures &&
+    !nextStatus &&
+    !nextDiscount
+  ) {
+    return { success: false, error: 'Informe pelo menos uma alteração' }
+  }
+
+  const base = (process.env.NEXT_PUBLIC_RUST_URL ?? '').replace(/\/$/, '')
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const cookieStore = await cookies()
+  const adminToken = cookieStore.get('adminAuthToken')?.value
+  const headers: HeadersInit = {
+    'Content-Type': 'application/json',
+    ...(adminToken ? { cookie: `adminAuthToken=${adminToken}` } : {}),
+  }
+
+  let updated = 0
+
+  for (const productId of productIds) {
+    const response = await fetch(`${base}/products/${productId}/full`, {
+      headers,
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || `Falha ao carregar produto ${productId}` }
+    }
+
+    const fullData = await response.json()
+    const productInfo = fullData?.product || {}
+    const variants = Array.isArray(fullData?.variants) ? fullData.variants : []
+    const imageGroups = Array.isArray(fullData?.image_groups) ? fullData.image_groups : []
+
+    const imagesByVariantId = new Map<number, string[]>()
+    imageGroups.forEach((group: any) => {
+      const urls = Array.isArray(group?.images)
+        ? group.images
+            .map((img: any) => img?.image_url || img)
+            .filter((url: unknown): url is string => typeof url === 'string' && url.length > 0)
+        : []
+
+      if (!Array.isArray(group?.variants) || urls.length === 0) return
+      group.variants.forEach((variantRef: any) => {
+        const variantId = Number(variantRef?.variant_id ?? variantRef?.id)
+        if (Number.isInteger(variantId) && variantId > 0) {
+          imagesByVariantId.set(variantId, urls)
+        }
+      })
+    })
+
+    const existingTags = Array.isArray(productInfo.tags)
+      ? productInfo.tags.map((tag: unknown) => String(tag).trim()).filter(Boolean)
+      : []
+    const tags = nextTags && nextTags.length > 0
+      ? Array.from(new Set([...existingTags, ...nextTags]))
+      : existingTags
+
+    const categoryIds = nextCategoryIds && nextCategoryIds.length > 0
+      ? nextCategoryIds
+      : Array.isArray(productInfo.category_ids)
+        ? productInfo.category_ids.map((id: unknown) => String(id)).filter(Boolean)
+        : []
+
+    const submittedVariants: SubmittedVariant[] = variants.map((entry: any) => {
+      const variantInfo = entry?.variant || entry || {}
+      const variantId = Number(variantInfo.id ?? entry?.id)
+      const basePrice = Number(variantInfo.price_cents || 0) / 100
+      const promoCents = Number(variantInfo.promo_cents || 0)
+
+      return {
+        variantSku: String(variantInfo.sku || ''),
+        active: variantInfo.active !== false,
+        isHighlighted: variantInfo.is_highlighted === true,
+        stock: Number(variantInfo.stock_qty || 0),
+        basePrice: applyBulkProductDiscount(basePrice, nextDiscount),
+        cost: typeof variantInfo.cost_cents === 'number' ? Number(variantInfo.cost_cents) / 100 : null,
+        priceOverride: promoCents > 0 ? promoCents / 100 : null,
+        attribute_values: Array.isArray(entry?.attribute_values)
+          ? entry.attribute_values
+              .map((attr: any) => Number(attr?.value_id ?? attr?.value?.id ?? attr?.id))
+              .filter((value: number) => Number.isInteger(value) && value > 0)
+          : [],
+        images: imagesByVariantId.get(variantId) || (Array.isArray(entry?.images) ? entry.images : []),
+      }
+    })
+
+    const firstVariant = submittedVariants[0]
+    const firstRawVariant = variants[0]?.variant || variants[0] || {}
+    const fallbackBasePrice = Number(firstRawVariant.price_cents || 0) / 100
+
+    await syncUpdateProductToRust({
+      lookupCode: String(productInfo.code || ''),
+      rustProductId: Number(productInfo.id || productId),
+      sku: String(productInfo.code || ''),
+      slug: productInfo.slug || undefined,
+      name: String(productInfo.name || ''),
+      description: productInfo.description || undefined,
+      materials: productInfo.composition || undefined,
+      measures: nextMeasures || productInfo.location || undefined,
+      isActive: nextStatus ? nextStatus === 'active' : productInfo.active !== false,
+      categoryId: categoryIds[0] || '',
+      categoryIds,
+      basePrice: firstVariant?.basePrice ?? applyBulkProductDiscount(fallbackBasePrice, nextDiscount),
+      cost: firstVariant?.cost ?? null,
+      images: Array.from(new Set(submittedVariants.flatMap((variant) => variant.images || []))),
+      colors: [],
+      variants: submittedVariants,
+      tags,
+      imageGroupingRule: parseSubmittedImageGroupingRule(productInfo.image_grouping_rule),
+    })
+
+    updated += 1
+  }
+
+  revalidatePath('/products')
+  revalidatePath('/app/products')
+
+  return { success: true, data: { updated } }
+}
+
 export async function deleteProductAction(id: string): Promise<ApiResponse<void>> {
   const session = await getSession()
   if (!(await isProductsAuthorized(session))) {

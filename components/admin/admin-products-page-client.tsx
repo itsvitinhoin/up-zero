@@ -1,9 +1,11 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -44,8 +46,15 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Plus, MoreHorizontal, Search, Pencil, Trash2, Package, Eye, CheckCircle2, XCircle, Star, Layers, X, Download, FilterX } from "lucide-react";
-import { getProductsAction, createProductAction, updateProductAction, deleteProductAction } from "@/lib/actions/products";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Plus, MoreHorizontal, Search, Pencil, Trash2, Package, Eye, CheckCircle2, XCircle, Star, Layers, X, Download, FilterX, Tags, Percent, BadgeDollarSign, CheckSquare2, Ruler } from "lucide-react";
+import { getProductsAction, createProductAction, updateProductAction, deleteProductAction, bulkUpdateProductsAction } from "@/lib/actions/products";
 import { getCategoriesAction } from "@/lib/actions/categories";
 import { getAttributesWithValuesByStore, getStoreIdFromToken } from "@/lib/actions/attributes";
 import { ProductForm } from "@/components/admin/product-form";
@@ -121,6 +130,15 @@ const AdminProductsPageClient = ({
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [productToDelete, setProductToDelete] = useState<string | null>(null);
   const [summary, setSummary] = useState(initialSummary ?? MOCK_PRODUCTS_SUMMARY);
+  const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set());
+  const [isBulkDialogOpen, setIsBulkDialogOpen] = useState(false);
+  const [isBulkSaving, setIsBulkSaving] = useState(false);
+  const [bulkCategoryIds, setBulkCategoryIds] = useState<string[]>([]);
+  const [bulkTagsInput, setBulkTagsInput] = useState("");
+  const [bulkMeasures, setBulkMeasures] = useState("none");
+  const [bulkDiscountType, setBulkDiscountType] = useState<"none" | "fixed" | "percent">("none");
+  const [bulkDiscountValue, setBulkDiscountValue] = useState("");
+  const [bulkStatus, setBulkStatus] = useState<"keep" | "active" | "inactive">("keep");
   
   const { attributes: contextAttributes, storeId } = useAttributes();
   // Estado local para permitir atualização quando criar novos atributos
@@ -130,6 +148,14 @@ const AdminProductsPageClient = ({
     const p = initialProducts as Product[];
     setProducts(p.length > 0 ? p : (MOCK_PRODUCTS_DATA as unknown as Product[]));
   }, [initialProducts]);
+
+  useEffect(() => {
+    setSelectedProductIds((current) => {
+      const visibleIds = new Set(products.map((product) => product.id));
+      const next = new Set(Array.from(current).filter((id) => visibleIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [products]);
 
   useEffect(() => {
     setSearch(initialPagination?.search ?? "");
@@ -145,7 +171,7 @@ const AdminProductsPageClient = ({
   }, [initialCategories]);
 
   useEffect(() => {
-    setSummary(initialSummary ?? null);
+    setSummary(initialSummary ?? MOCK_PRODUCTS_SUMMARY);
   }, [initialSummary]);
 
   async function loadData() {
@@ -427,6 +453,165 @@ const AdminProductsPageClient = ({
     toast.success('Imagens salvas com sucesso')
   }
 
+  const selectedProducts = useMemo(
+    () => products.filter((product) => selectedProductIds.has(product.id)),
+    [products, selectedProductIds],
+  );
+  const selectedCount = selectedProducts.length;
+  const isAllCurrentPageSelected = products.length > 0 && products.every((product) => selectedProductIds.has(product.id));
+  const bulkTags = useMemo(
+    () => bulkTagsInput
+      .split(',')
+      .map((tag) => tag.trim())
+      .filter(Boolean),
+    [bulkTagsInput],
+  );
+  const measureTableOptions = useMemo(
+    () => Array.from(new Set(
+      products
+        .map((product) => String(product.measures || '').trim())
+        .filter(Boolean),
+    )).sort((left, right) => left.localeCompare(right, 'pt-BR')),
+    [products],
+  );
+  const bulkDiscountNumber = Number.parseFloat(bulkDiscountValue.replace(',', '.'));
+  const hasBulkDiscount = bulkDiscountType !== "none" && Number.isFinite(bulkDiscountNumber) && bulkDiscountNumber > 0;
+  const hasBulkChanges =
+    bulkCategoryIds.length > 0 ||
+    bulkTags.length > 0 ||
+    bulkMeasures !== "none" ||
+    bulkStatus !== "keep" ||
+    hasBulkDiscount;
+
+  function toggleProductSelection(productId: string, checked: boolean) {
+    setSelectedProductIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(productId);
+      } else {
+        next.delete(productId);
+      }
+      return next;
+    });
+  }
+
+  function toggleAllCurrentPage(checked: boolean) {
+    setSelectedProductIds((current) => {
+      const next = new Set(current);
+      products.forEach((product) => {
+        if (checked) {
+          next.add(product.id);
+        } else {
+          next.delete(product.id);
+        }
+      });
+      return next;
+    });
+  }
+
+  function resetBulkForm() {
+    setBulkCategoryIds([]);
+    setBulkTagsInput("");
+    setBulkMeasures("none");
+    setBulkDiscountType("none");
+    setBulkDiscountValue("");
+    setBulkStatus("keep");
+  }
+
+  function toggleBulkCategory(categoryId: string, checked: boolean) {
+    setBulkCategoryIds((current) => {
+      if (checked) return Array.from(new Set([...current, categoryId]));
+      return current.filter((id) => id !== categoryId);
+    });
+  }
+
+  function applyDiscountToPrice(price: number) {
+    const normalizedPrice = Number.isFinite(price) ? Math.max(0, price) : 0;
+    if (!hasBulkDiscount) return normalizedPrice;
+
+    if (bulkDiscountType === "percent") {
+      return Math.max(0, Number((normalizedPrice * (1 - Math.min(100, bulkDiscountNumber) / 100)).toFixed(2)));
+    }
+
+    return Math.max(0, Number((normalizedPrice - bulkDiscountNumber).toFixed(2)));
+  }
+
+  function applyBulkChangesLocally(product: Product): Product {
+    const nextCategoryIds = bulkCategoryIds.length > 0 ? bulkCategoryIds : product.categoryIds;
+    const nextTags = bulkTags.length > 0
+      ? Array.from(new Set([...(product.tags || []), ...bulkTags]))
+      : product.tags;
+
+    return {
+      ...product,
+      categoryId: nextCategoryIds?.[0] || product.categoryId,
+      categoryIds: nextCategoryIds,
+      tags: nextTags,
+      measures: bulkMeasures !== "none" ? bulkMeasures : product.measures,
+      basePrice: applyDiscountToPrice(Number(product.basePrice || 0)),
+      isActive: bulkStatus === "keep" ? product.isActive : bulkStatus === "active",
+      updatedAt: new Date(),
+    };
+  }
+
+  function recalculateSummary(nextProducts: Product[]) {
+    setSummary((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        active: nextProducts.filter((product) => product.isActive).length,
+        inactive: nextProducts.filter((product) => !product.isActive).length,
+        featured: nextProducts.filter((product) => product.isFeatured).length,
+      };
+    });
+  }
+
+  async function handleBulkApply() {
+    if (selectedCount === 0 || !hasBulkChanges) return;
+
+    setIsBulkSaving(true);
+    const productIds = Array.from(selectedProductIds);
+    const mockOnly = selectedProducts.every((product) => product.id.startsWith("mock-"));
+
+    try {
+      if (!mockOnly) {
+        const result = await bulkUpdateProductsAction({
+          productIds,
+          categoryIds: bulkCategoryIds.length > 0 ? bulkCategoryIds : undefined,
+          tags: bulkTags.length > 0 ? bulkTags : undefined,
+          measures: bulkMeasures !== "none" ? bulkMeasures : undefined,
+          status: bulkStatus === "keep" ? undefined : bulkStatus,
+          discount: hasBulkDiscount
+            ? { type: bulkDiscountType as "fixed" | "percent", value: bulkDiscountNumber }
+            : null,
+        });
+
+        if (!result.success) {
+          toast.error(result.error || "Falha ao atualizar produtos em massa");
+          setIsBulkSaving(false);
+          return;
+        }
+      }
+
+      setProducts((current) => {
+        const next = current.map((product) =>
+          selectedProductIds.has(product.id) ? applyBulkChangesLocally(product) : product,
+        );
+        recalculateSummary(next);
+        return next;
+      });
+
+      toast.success(`${selectedCount} produto${selectedCount === 1 ? "" : "s"} atualizado${selectedCount === 1 ? "" : "s"}`);
+      setSelectedProductIds(new Set());
+      resetBulkForm();
+      setIsBulkDialogOpen(false);
+      router.refresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Falha ao atualizar produtos em massa");
+    } finally {
+      setIsBulkSaving(false);
+    }
+  }
 
   async function handleDelete(id: string) {
     setProductToDelete(id);
@@ -764,6 +949,186 @@ const AdminProductsPageClient = ({
           </div>
         </AdminToolbar>
 
+        {selectedCount > 0 && (
+          <AdminPanel className="border-primary/30 bg-primary/5">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground">
+                  <CheckSquare2 className="h-5 w-5" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-foreground">
+                    {selectedCount} produto{selectedCount === 1 ? "" : "s"} selecionado{selectedCount === 1 ? "" : "s"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Edite categorias, tags, descontos e status em massa.
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="min-h-11 rounded-xl"
+                  onClick={() => setSelectedProductIds(new Set())}
+                >
+                  Limpar selecao
+                </Button>
+                <Button
+                  type="button"
+                  className="min-h-11 rounded-xl"
+                  onClick={() => setIsBulkDialogOpen(true)}
+                >
+                  Editar em massa
+                </Button>
+              </div>
+            </div>
+          </AdminPanel>
+        )}
+
+        <Dialog open={isBulkDialogOpen} onOpenChange={setIsBulkDialogOpen}>
+          <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Editar produtos selecionados</DialogTitle>
+              <DialogDescription>
+                As alteracoes serao aplicadas aos {selectedCount} produto{selectedCount === 1 ? "" : "s"} selecionado{selectedCount === 1 ? "" : "s"}.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-5">
+              <div className="space-y-3">
+                <Label className="flex items-center gap-2 text-sm font-semibold">
+                  <Layers className="h-4 w-4" />
+                  Categorias
+                </Label>
+                <div className="grid max-h-48 gap-2 overflow-y-auto rounded-xl border border-border/60 p-3 sm:grid-cols-2">
+                  {categories.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Nenhuma categoria disponivel</p>
+                  ) : (
+                    categories.map((category) => (
+                      <label key={category.id} className="flex min-h-10 cursor-pointer items-center gap-2 rounded-lg px-2 text-sm hover:bg-muted/60">
+                        <Checkbox
+                          checked={bulkCategoryIds.includes(category.id)}
+                          onCheckedChange={(checked) => toggleBulkCategory(category.id, checked === true)}
+                        />
+                        <span>{category.name}</span>
+                      </label>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="bulk-tags" className="flex items-center gap-2 text-sm font-semibold">
+                  <Tags className="h-4 w-4" />
+                  Tags
+                </Label>
+                <Input
+                  id="bulk-tags"
+                  value={bulkTagsInput}
+                  onChange={(event) => setBulkTagsInput(event.target.value)}
+                  placeholder="Ex: atacado, verao, destaque"
+                  className="min-h-11 rounded-xl"
+                />
+                <p className="text-xs text-muted-foreground">Separe tags por virgula. As tags novas serao adicionadas as existentes.</p>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="flex items-center gap-2 text-sm font-semibold">
+                  <Ruler className="h-4 w-4" />
+                  Tabela de medidas
+                </Label>
+                <Select value={bulkMeasures} onValueChange={setBulkMeasures}>
+                  <SelectTrigger className="min-h-11 rounded-xl">
+                    <SelectValue placeholder="Selecionar tabela de medidas" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Manter tabela atual</SelectItem>
+                    {measureTableOptions.map((measureTable) => (
+                      <SelectItem key={measureTable} value={measureTable}>
+                        {measureTable}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {measureTableOptions.length === 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    Nenhuma tabela de medidas encontrada nos produtos carregados.
+                  </p>
+                )}
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-[180px_1fr]">
+                <div className="space-y-2">
+                  <Label className="flex items-center gap-2 text-sm font-semibold">
+                    <Percent className="h-4 w-4" />
+                    Desconto
+                  </Label>
+                  <Select value={bulkDiscountType} onValueChange={(value) => setBulkDiscountType(value as "none" | "fixed" | "percent")}>
+                    <SelectTrigger className="min-h-11 rounded-xl">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Sem desconto</SelectItem>
+                      <SelectItem value="fixed">Desconto em R$</SelectItem>
+                      <SelectItem value="percent">Desconto em %</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="bulk-discount-value" className="text-sm font-semibold">Valor</Label>
+                  <Input
+                    id="bulk-discount-value"
+                    inputMode="decimal"
+                    value={bulkDiscountValue}
+                    onChange={(event) => setBulkDiscountValue(event.target.value)}
+                    placeholder={bulkDiscountType === "percent" ? "10" : "25,00"}
+                    disabled={bulkDiscountType === "none"}
+                    className="min-h-11 rounded-xl"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="flex items-center gap-2 text-sm font-semibold">
+                  <BadgeDollarSign className="h-4 w-4" />
+                  Status
+                </Label>
+                <Select value={bulkStatus} onValueChange={(value) => setBulkStatus(value as "keep" | "active" | "inactive")}>
+                  <SelectTrigger className="min-h-11 rounded-xl">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="keep">Manter status atual</SelectItem>
+                    <SelectItem value="active">Ativar produtos</SelectItem>
+                    <SelectItem value="inactive">Inativar produtos</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="min-h-11 rounded-xl"
+                  disabled={isBulkSaving}
+                  onClick={() => setIsBulkDialogOpen(false)}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  type="button"
+                  className="min-h-11 rounded-xl"
+                  disabled={isBulkSaving || !hasBulkChanges}
+                  onClick={handleBulkApply}
+                >
+                  {isBulkSaving ? "Aplicando..." : "Aplicar alteracoes"}
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+
         <MobileCardList>
           {isLoading ? (
             <AdminPanel>
@@ -778,9 +1143,16 @@ const AdminProductsPageClient = ({
             </AdminPanel>
           ) : (
             products.map((product) => (
-              <button key={product.id} type="button" className="w-full text-left" onClick={() => openEditSheet(product)}>
+              <div key={product.id} className="w-full">
                 <AdminPanel className="transition-colors hover:bg-muted/30">
                   <div className="flex items-start gap-3">
+                    <Checkbox
+                      checked={selectedProductIds.has(product.id)}
+                      onCheckedChange={(checked) => toggleProductSelection(product.id, checked === true)}
+                      aria-label={`Selecionar ${product.name}`}
+                      className="mt-7"
+                    />
+                    <button type="button" className="flex min-w-0 flex-1 items-start gap-3 text-left" onClick={() => openEditSheet(product)}>
                     <div className="relative h-20 w-16 shrink-0 overflow-hidden rounded-2xl border border-border/60 bg-muted/40">
                       {product.images && product.images.length > 0 ? (
                         <Image src={product.images[0] || "/placeholder.svg"} alt={product.name} fill className="object-cover" sizes="64px" />
@@ -808,9 +1180,10 @@ const AdminProductsPageClient = ({
                         </div>
                       </div>
                     </div>
+                    </button>
                   </div>
                 </AdminPanel>
-              </button>
+              </div>
             ))
           )}
         </MobileCardList>
@@ -820,6 +1193,13 @@ const AdminProductsPageClient = ({
           <Table>
             <TableHeader>
               <TableRow className="border-border/20">
+                <TableHead className="w-12">
+                  <Checkbox
+                    checked={isAllCurrentPageSelected}
+                    onCheckedChange={(checked) => toggleAllCurrentPage(checked === true)}
+                    aria-label="Selecionar todos os produtos desta pagina"
+                  />
+                </TableHead>
                 <TableHead className="text-[11px] font-medium tracking-wide text-muted-foreground/90 uppercase">Produto</TableHead>
                 <TableHead className="text-[11px] font-medium tracking-wide text-muted-foreground/90 uppercase">SKU</TableHead>
                 <TableHead className="text-[11px] font-medium tracking-wide text-muted-foreground/90 uppercase">Categoria</TableHead>
@@ -832,14 +1212,14 @@ const AdminProductsPageClient = ({
             </TableHeader>
             <TableBody>
               {isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={8} className="text-center py-8">
+                  <TableRow>
+                  <TableCell colSpan={9} className="text-center py-8">
                     Carregando...
                   </TableCell>
                 </TableRow>
               ) : products.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-center py-8">
+                  <TableCell colSpan={9} className="text-center py-8">
                     <Package className="mx-auto h-8 w-8 text-muted-foreground mb-2" />
                     <p className="text-muted-foreground">Nenhum produto encontrado</p>
                   </TableCell>
@@ -847,6 +1227,13 @@ const AdminProductsPageClient = ({
               ) : (
                 products.map((product) => (
                   <TableRow key={product.id} className="border-border/20 hover:bg-muted/40">
+                    <TableCell>
+                      <Checkbox
+                        checked={selectedProductIds.has(product.id)}
+                        onCheckedChange={(checked) => toggleProductSelection(product.id, checked === true)}
+                        aria-label={`Selecionar ${product.name}`}
+                      />
+                    </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-3">
                         <div className="h-12 w-10 rounded-lg border border-border/20 bg-muted/40 flex items-center justify-center overflow-hidden relative">
