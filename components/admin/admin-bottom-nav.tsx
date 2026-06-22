@@ -19,6 +19,7 @@ import {
   GitBranch,
   ListFilter,
   Send,
+  RotateCcw,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
@@ -49,6 +50,7 @@ const PRIMARY_NAV = [
 
 const MORE_NAV = [
   { name: 'Automações', href: '/mensageria', icon: MessageSquare },
+  { name: 'Carrinhos abandonados', href: '/orders/abandoned-carts', icon: RotateCcw },
   { name: 'Smart Lists', href: '/smart-lists', icon: ListFilter },
   { name: 'Campanhas', href: '/campaigns', icon: Send },
   { name: 'Categorias', href: '/categories', icon: LayoutGrid },

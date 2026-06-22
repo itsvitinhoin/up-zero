@@ -13,6 +13,7 @@ import {
   Settings,
   UserCog,
   ShoppingCart,
+  RotateCcw,
   ExternalLink,
   Store,
   LogOut as LogOutLine,
@@ -74,7 +75,15 @@ interface NavSection {
 const navSections: NavSection[] = [
   { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard', href: '/' },
   { id: 'clientes', icon: Users, label: 'Clientes', href: '/customers' },
-  { id: 'pedidos', icon: ShoppingCart, label: 'Pedidos', href: '/orders' },
+  {
+    id: 'pedidos',
+    icon: ShoppingCart,
+    label: 'Pedidos',
+    items: [
+      { name: 'Lista de pedidos', href: '/orders', exact: true, icon: ShoppingCart },
+      { name: 'Carrinhos abandonados', href: '/orders/abandoned-carts', icon: RotateCcw },
+    ],
+  },
   {
     id: 'comunicacao',
     icon: MessageSquare,
