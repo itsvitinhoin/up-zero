@@ -1,9 +1,7 @@
 export type AbandonedCartRecoveryStatus =
   | 'NOT_SENT'
   | 'SENT'
-  | 'RESPONDED'
   | 'RECOVERED'
-  | 'FAILED'
 
 export type AbandonedCartItem = {
   id: string
@@ -88,7 +86,7 @@ export const abandonedCartsMock: AbandonedCart[] = [
     sellerName: 'Rafaela Costa',
     abandonedAt: '2026-06-21T20:11:00.000Z',
     lastActivityAt: '2026-06-21T20:16:00.000Z',
-    recoveryStatus: 'RESPONDED',
+    recoveryStatus: 'SENT',
     lastMessageAt: '2026-06-21T20:35:00.000Z',
     recoveryAttempts: 2,
     subtotal: 8920,
@@ -131,7 +129,7 @@ export const abandonedCartsMock: AbandonedCart[] = [
     sellerName: 'Maria Silva',
     abandonedAt: '2026-06-20T18:05:00.000Z',
     lastActivityAt: '2026-06-20T18:12:00.000Z',
-    recoveryStatus: 'FAILED',
+    recoveryStatus: 'SENT',
     lastMessageAt: '2026-06-20T18:40:00.000Z',
     recoveryAttempts: 3,
     subtotal: 3200,
@@ -148,4 +146,3 @@ export const abandonedCartsMock: AbandonedCart[] = [
 export function getAbandonedCartById(id: string) {
   return abandonedCartsMock.find((cart) => cart.id === id) ?? null
 }
-

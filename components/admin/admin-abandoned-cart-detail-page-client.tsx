@@ -49,31 +49,19 @@ const RECOVERY_STATUS: Record<AbandonedCartRecoveryStatus, StatusConfig> = {
     label: "Não disparado",
     badge: "amber",
     dot: "bg-amber-300",
-    description: "A vendedora ainda não iniciou a recuperação deste carrinho.",
+    description: "Ninguém da equipe e nenhuma automação enviou mensagem de recuperação ainda.",
   },
   SENT: {
-    label: "Mensagem enviada",
+    label: "Mensagem Enviada",
     badge: "blue",
     dot: "bg-blue-300",
-    description: "Mensagem de recuperação já foi enviada para o cliente.",
-  },
-  RESPONDED: {
-    label: "Cliente respondeu",
-    badge: "violet",
-    dot: "bg-violet-300",
-    description: "Cliente respondeu e precisa de acompanhamento comercial.",
+    description: "Mensagem automática ou manual já foi enviada para tentar recuperar o carrinho.",
   },
   RECOVERED: {
-    label: "Carrinho recuperado",
+    label: "Recuperado",
     badge: "emerald",
     dot: "bg-emerald-300",
-    description: "Carrinho já foi recuperado pela equipe.",
-  },
-  FAILED: {
-    label: "Sem resposta",
-    badge: "rose",
-    dot: "bg-rose-300",
-    description: "As tentativas anteriores não tiveram retorno do cliente.",
+    description: "Mensagem automática ou manual foi disparada e o cliente fez o pedido.",
   },
 }
 
@@ -331,4 +319,3 @@ export default function AdminAbandonedCartDetailPageClient({
     </AdminPage>
   )
 }
-

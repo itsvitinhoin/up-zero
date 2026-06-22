@@ -49,11 +49,9 @@ type StatusOption = {
 }
 
 const RECOVERY_STATUS: Record<AbandonedCartRecoveryStatus, StatusOption> = {
-  NOT_SENT: { label: "Não disparado", shortLabel: "Aguardando", badge: "amber", dot: "bg-amber-300" },
-  SENT: { label: "Mensagem enviada", shortLabel: "Enviado", badge: "blue", dot: "bg-blue-300" },
-  RESPONDED: { label: "Cliente respondeu", shortLabel: "Respondeu", badge: "violet", dot: "bg-violet-300" },
-  RECOVERED: { label: "Carrinho recuperado", shortLabel: "Recuperado", badge: "emerald", dot: "bg-emerald-300" },
-  FAILED: { label: "Sem resposta", shortLabel: "Sem resposta", badge: "rose", dot: "bg-rose-300" },
+  NOT_SENT: { label: "Não disparado", shortLabel: "Não disparado", badge: "amber", dot: "bg-amber-300" },
+  SENT: { label: "Mensagem Enviada", shortLabel: "Enviada", badge: "blue", dot: "bg-blue-300" },
+  RECOVERED: { label: "Recuperado", shortLabel: "Recuperado", badge: "emerald", dot: "bg-emerald-300" },
 }
 
 type AdminAbandonedCartsPageClientProps = {
@@ -402,4 +400,3 @@ export default function AdminAbandonedCartsPageClient({
     </AdminPage>
   )
 }
-
