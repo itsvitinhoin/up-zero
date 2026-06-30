@@ -7,10 +7,12 @@ import {
   computeMonthlyRevenue, computeWeeklyRevenue, computeGeoData,
   computeRFMData, computeCohortData, computeFunnelData,
   computeSeasonalityByCategory, computeSeasonalityOrdersByMonth, computeTotals,
+  computeTrafficSourcesFromMetrics, computeTopVisitedProductsFromMetrics,
   type DashboardRawData,
 } from '@/lib/dashboard-compute'
 import type {
   DOrder, DCustomer, DProduct, DMonthlyRevenue, DGeoEntry, DRFMEntry, DCohortRow, DFunnelStage,
+  DTrafficSource, DTopVisitedProduct,
 } from '@/lib/dashboard-mock-data'
 
 // ── Context type ──────────────────────────────────────────────────────────────
@@ -42,6 +44,8 @@ interface DashboardDataContextValue {
   seasonalityByCategory:     SeasonalityRow[]
   seasonalityOrdersByMonth:  { month: string; orders: number }[]
   totals:                    TotalsType
+  trafficSources:            DTrafficSource[]
+  topVisitedProducts:        DTopVisitedProduct[]
   isLoading: boolean
   error:     string | null
 }
@@ -79,6 +83,10 @@ export function DashboardDataProvider({ children, dateRange }: DashboardDataProv
     const end   = dateRange?.to   ?? new Date()
 
     const periodOrders = orders.filter(o => o.date >= start && o.date <= end)
+    const periodAnalyticsMetrics = (rawData?.analyticsMetrics ?? []).filter(metric => {
+      const metricDate = new Date(metric.period_start)
+      return metricDate >= start && metricDate <= end
+    })
 
     return {
       orders,
@@ -96,6 +104,8 @@ export function DashboardDataProvider({ children, dateRange }: DashboardDataProv
       seasonalityByCategory:    computeSeasonalityByCategory(products),
       seasonalityOrdersByMonth: computeSeasonalityOrdersByMonth(orders),
       totals:                   rawData ? computeTotals(orders, customers, start, end) : EMPTY_TOTALS,
+      trafficSources:           computeTrafficSourcesFromMetrics(periodAnalyticsMetrics),
+      topVisitedProducts:       computeTopVisitedProductsFromMetrics(periodAnalyticsMetrics, products),
       isLoading,
       error,
     }

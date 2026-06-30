@@ -101,6 +101,12 @@ export interface ApiProduct {
   code?: string
   status?: string
   categories?: { id: string; name: string }[]
+  category_names?: string[]
+  product_category_names?: string[]
+  image_url?: string | null
+  imageUrl?: string | null
+  primary_image_url?: string | null
+  images?: Array<string | { image_url?: string | null; imageUrl?: string | null }>
   variants: ApiVariant[]
 }
 
@@ -109,6 +115,35 @@ export interface ApiInventoryItem {
   qty_total: number
   qty_reserved: number
   qty_available: number
+}
+
+export interface ApiAnalyticsProductRef {
+  id: number
+  name: string
+  sku?: string | null
+}
+
+export interface ApiAnalyticsMetricItem {
+  id: number
+  period_start: string
+  period_type: 'hour' | 'day' | 'week' | 'month'
+  event_name: string
+  product?: ApiAnalyticsProductRef | null
+  product_variant?: { id: number; sku: string } | null
+  category?: { id: number; name: string } | null
+  order_id?: number | null
+  utm_source?: string | null
+  utm_medium?: string | null
+  utm_campaign?: string | null
+  source?: string | null
+  channel?: string | null
+  device_type?: string | null
+  total_events: number
+  unique_users: number
+  unique_sessions: number
+  total_quantity: number
+  total_value: number
+  updated_at: string
 }
 
 // ── Fetch helper ──────────────────────────────────────────────────────────────
@@ -216,4 +251,67 @@ export async function fetchInventory(variantIds: string[]): Promise<ApiInventory
       qty_reserved:  r.value.totals.qty_reserved,
       qty_available: r.value.totals.qty_available,
     }))
+}
+
+export async function fetchAllAnalyticsMetrics(startDate: string, endDate: string): Promise<ApiAnalyticsMetricItem[]> {
+  const all: ApiAnalyticsMetricItem[] = []
+  let cursor: string | undefined
+
+  do {
+    const params: Record<string, string> = {
+      from: `${startDate}T00:00:00Z`,
+      to: `${endDate}T23:59:59Z`,
+      period_type: 'day',
+      sort_by: 'period_start',
+      sort_dir: 'desc',
+      limit: '1000',
+    }
+    if (cursor) params.cursor = cursor
+
+    const res = await upzeroFetch<{ data?: ApiAnalyticsMetricItem[]; next_cursor?: string }>(
+      '/external/v1/analytics/metrics',
+      params,
+    )
+    all.push(...(res.data ?? []))
+    cursor = res.next_cursor || undefined
+  } while (cursor && all.length < 10000)
+
+  return all
+}
+
+type ApiProductImageResponse = {
+  image_url?: string | null
+  imageUrl?: string | null
+  is_primary?: boolean
+  display_order?: number
+}
+
+export async function fetchProductPrimaryImages(productIds: string[]): Promise<Record<string, string>> {
+  const uniqueIds = Array.from(new Set(productIds.filter(Boolean))).slice(0, 80)
+  if (uniqueIds.length === 0) return {}
+
+  const results = await Promise.allSettled(
+    uniqueIds.map(async (productId) => {
+      const images = await upzeroFetch<ApiProductImageResponse[]>(
+        `/external/v1/products/${encodeURIComponent(productId)}/images`,
+      )
+      const sorted = [...(images ?? [])].sort((a, b) => {
+        if (a.is_primary && !b.is_primary) return -1
+        if (!a.is_primary && b.is_primary) return 1
+        return (a.display_order ?? 999) - (b.display_order ?? 999)
+      })
+      const imageUrl = sorted
+        .map((image) => image.image_url || image.imageUrl || null)
+        .find((url): url is string => typeof url === 'string' && url.trim().length > 0)
+
+      return imageUrl ? [productId, imageUrl] as const : null
+    }),
+  )
+
+  return Object.fromEntries(
+    results
+      .filter((result): result is PromiseFulfilledResult<readonly [string, string] | null> => result.status === 'fulfilled')
+      .map((result) => result.value)
+      .filter((entry): entry is readonly [string, string] => Boolean(entry)),
+  )
 }

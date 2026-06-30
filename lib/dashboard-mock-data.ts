@@ -49,6 +49,7 @@ export interface DProduct {
   name: string
   sku: string
   category: string
+  imageUrl?: string | null
   basePrice: number
   revenueRequested: number
   revenueFulfilled: number
@@ -102,6 +103,23 @@ export interface DFunnelStage {
   value: number
   pct: number
   color: string
+}
+
+export interface DTrafficSource {
+  source: string
+  sessions: number
+  solicitados: number
+  aprovados: number
+}
+
+export interface DTopVisitedProduct {
+  id: string
+  name: string
+  sku: string
+  imageUrl?: string | null
+  visits: number
+  uniqueSessions: number
+  uniqueUsers: number
 }
 
 // ─── Monthly Revenue (12 months) ─────────────────────────────────────────────

@@ -3,9 +3,10 @@
 import type {
   DOrder, DOrderStatus, DCustomer, DCustomerStatus, DProduct, DRFMSegment,
   DMonthlyRevenue, DGeoEntry, DRFMEntry, DCohortRow, DFunnelStage,
+  DTrafficSource, DTopVisitedProduct,
 } from '@/lib/dashboard-mock-data'
 import type {
-  ApiOrder, ApiOrderItem, ApiCustomer, ApiProduct, ApiInventoryItem,
+  ApiOrder, ApiOrderItem, ApiCustomer, ApiProduct, ApiInventoryItem, ApiAnalyticsMetricItem,
 } from '@/lib/upzero-api'
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
@@ -177,19 +178,37 @@ function mapApiCustomerToDCustomer(c: ApiCustomer, customerOrders: DOrder[], tod
 
 // ── API → DProduct ────────────────────────────────────────────────────────────
 
-type ProductOrderEntry = { variantId: string; qty: number; total: number; date: Date }
+type ProductOrderEntry = { variantId: string; qty: number; total: number; fulfilledTotal: number; date: Date }
+
+function firstProductImage(p: ApiProduct, imageUrlFromEndpoint?: string): string | null {
+  if (imageUrlFromEndpoint) return imageUrlFromEndpoint
+
+  const direct = p.image_url ?? p.imageUrl ?? p.primary_image_url
+  if (direct && String(direct).trim()) return String(direct).trim()
+
+  if (Array.isArray(p.images)) {
+    for (const image of p.images) {
+      if (typeof image === 'string' && image.trim()) return image.trim()
+      const url = image?.image_url ?? image?.imageUrl
+      if (url && String(url).trim()) return String(url).trim()
+    }
+  }
+
+  return null
+}
 
 function mapApiProductToDProduct(
   p: ApiProduct,
   productOrders: ProductOrderEntry[],
   inventoryMap: Map<string, number>,
   today: Date,
+  imageUrl?: string,
 ): DProduct {
   const totalStock = p.variants.reduce((s, v) => s + (inventoryMap.get(v.id) ?? 0), 0)
   const revenueRequested = productOrders.reduce((s, o) => s + o.total, 0)
-  const revenueFulfilled = Math.round(revenueRequested * 0.87)
+  const revenueFulfilled = productOrders.reduce((s, o) => s + o.fulfilledTotal, 0)
   const unitsRequested = productOrders.reduce((s, o) => s + o.qty, 0)
-  const unitsFulfilled = Math.round(unitsRequested * 0.87)
+  const unitsFulfilled = productOrders.reduce((s, o) => s + (o.fulfilledTotal > 0 ? o.qty : 0), 0)
 
   const thirtyDaysAgo = new Date(today); thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
   const recentUnits = productOrders.filter(o => o.date >= thirtyDaysAgo).reduce((s, o) => s + o.qty, 0)
@@ -236,7 +255,8 @@ function mapApiProductToDProduct(
     id:   p.id,
     name: p.name,
     sku:  p.code ?? p.variants[0]?.sku ?? '',
-    category: p.categories?.[0]?.name ?? 'Geral',
+    category: p.product_category_names?.[0] ?? p.category_names?.[0] ?? p.categories?.[0]?.name ?? 'Geral',
+    imageUrl: firstProductImage(p, imageUrl),
     basePrice: parseMoney(p.variants[0]?.price),
     revenueRequested,
     revenueFulfilled,
@@ -258,6 +278,88 @@ export interface DashboardRawData {
   orders:    DOrder[]
   customers: DCustomer[]
   products:  DProduct[]
+  analyticsMetrics: ApiAnalyticsMetricItem[]
+  trafficSources: DTrafficSource[]
+  topVisitedProducts: DTopVisitedProduct[]
+}
+
+function trafficSourceLabel(metric: ApiAnalyticsMetricItem): string {
+  const raw =
+    metric.source ||
+    metric.channel ||
+    metric.utm_source ||
+    metric.utm_medium ||
+    'Direto'
+
+  const normalized = String(raw).trim()
+  if (!normalized) return 'Direto'
+
+  const lower = normalized.toLowerCase()
+  if (lower === 'direct' || lower === '(direct)' || lower === 'none') return 'Direto'
+  if (lower === 'organic') return 'Orgânico'
+  if (lower === 'paid') return 'Pago'
+  if (lower === 'social') return 'Social'
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1)
+}
+
+export function computeTrafficSourcesFromMetrics(metrics: ApiAnalyticsMetricItem[]): DTrafficSource[] {
+  const map = new Map<string, DTrafficSource>()
+
+  metrics.forEach((metric) => {
+    if (!['page_view', 'order_created', 'order_approved'].includes(metric.event_name)) return
+
+    const source = trafficSourceLabel(metric)
+    const row = map.get(source) ?? { source, sessions: 0, solicitados: 0, aprovados: 0 }
+
+    if (metric.event_name === 'page_view') {
+      row.sessions += Number(metric.unique_sessions || metric.total_events || 0)
+    } else if (metric.event_name === 'order_created') {
+      row.solicitados += Number(metric.total_events || 0)
+    } else if (metric.event_name === 'order_approved') {
+      row.aprovados += Number(metric.total_events || 0)
+    }
+
+    map.set(source, row)
+  })
+
+  return Array.from(map.values())
+    .filter((row) => row.sessions > 0 || row.solicitados > 0 || row.aprovados > 0)
+    .sort((a, b) => b.sessions - a.sessions)
+}
+
+export function computeTopVisitedProductsFromMetrics(
+  metrics: ApiAnalyticsMetricItem[],
+  products: DProduct[],
+): DTopVisitedProduct[] {
+  const productById = new Map(products.map((product) => [String(product.id), product]))
+  const map = new Map<string, DTopVisitedProduct>()
+
+  metrics
+    .filter((metric) => metric.event_name === 'product_view' && metric.product?.id)
+    .forEach((metric) => {
+      const id = String(metric.product?.id)
+      const product = productById.get(id)
+      const row = map.get(id) ?? {
+        id,
+        name: product?.name ?? metric.product?.name ?? `Produto ${id}`,
+        sku: product?.sku ?? metric.product?.sku ?? '',
+        imageUrl: product?.imageUrl ?? null,
+        visits: 0,
+        uniqueSessions: 0,
+        uniqueUsers: 0,
+      }
+
+      row.visits += Number(metric.total_events || 0)
+      row.uniqueSessions += Number(metric.unique_sessions || 0)
+      row.uniqueUsers += Number(metric.unique_users || 0)
+      if (!row.imageUrl && product?.imageUrl) row.imageUrl = product.imageUrl
+
+      map.set(id, row)
+    })
+
+  return Array.from(map.values())
+    .sort((a, b) => b.visits - a.visits)
+    .slice(0, 8)
 }
 
 export function transformRawData(
@@ -265,6 +367,8 @@ export function transformRawData(
   apiCustomers: ApiCustomer[],
   apiProducts:  ApiProduct[],
   inventory:    ApiInventoryItem[],
+  analyticsMetrics: ApiAnalyticsMetricItem[] = [],
+  productImages: Record<string, string> = {},
 ): DashboardRawData {
   const inventoryMap = new Map<string, number>(
     inventory.map(i => [i.variant_id, i.qty_available])
@@ -290,20 +394,30 @@ export function transformRawData(
   const productOrderData = new Map<string, ProductOrderEntry[]>()
   apiOrders.forEach((apiOrder, idx) => {
     const dOrder = orders[idx]
+    if (!dOrder || dOrder.status === 'CANCELLED') return
+    const fulfillmentRatio = dOrder.total > 0 ? Math.min(1, Math.max(0, dOrder.fulfilledTotal / dOrder.total)) : 0
     ;(apiOrder.items ?? []).forEach(item => {
       const pid = variantToProductId.get(item.variant_id)
       if (!pid) return
       const list = productOrderData.get(pid) ?? []
-      list.push({ variantId: item.variant_id, qty: item.qty, total: parseMoney(item.unit_price) * item.qty, date: dOrder.date })
+      const total = parseMoney(item.unit_price) * item.qty
+      list.push({ variantId: item.variant_id, qty: item.qty, total, fulfilledTotal: Math.round(total * fulfillmentRatio), date: dOrder.date })
       productOrderData.set(pid, list)
     })
   })
 
   const products = apiProducts
     .filter(p => p.status !== 'archived')
-    .map(p => mapApiProductToDProduct(p, productOrderData.get(p.id) ?? [], inventoryMap, now))
+    .map(p => mapApiProductToDProduct(p, productOrderData.get(p.id) ?? [], inventoryMap, now, productImages[p.id]))
 
-  return { orders, customers, products }
+  return {
+    orders,
+    customers,
+    products,
+    analyticsMetrics,
+    trafficSources: computeTrafficSourcesFromMetrics(analyticsMetrics),
+    topVisitedProducts: computeTopVisitedProductsFromMetrics(analyticsMetrics, products),
+  }
 }
 
 // ── Compute functions ─────────────────────────────────────────────────────────

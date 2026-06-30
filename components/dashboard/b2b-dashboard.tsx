@@ -19,7 +19,7 @@ import {
   ChevronUp, ChevronDown, AlertCircle, Info,
 } from 'lucide-react'
 import { useDashboardData } from '@/contexts/dashboard-data'
-import type { DRFMSegment, DCurve } from '@/lib/dashboard-mock-data'
+import type { DRFMSegment, DCurve, DProduct } from '@/lib/dashboard-mock-data'
 import {
   AdminPage, AdminHero, AdminStatGrid, AdminStatCard,
   AdminPanel, AdminToolbar,
@@ -71,19 +71,6 @@ const CURVE_BADGE: Record<DCurve, 'emerald' | 'blue' | 'amber'> = {
   A: 'emerald', B: 'blue', C: 'amber',
 }
 
-const TRAFFIC_SOURCES = [
-  { source: 'Instagram',  sessions: 1240, solicitados: 87,  aprovados: 74 },
-  { source: 'Google Ads', sessions: 980,  solicitados: 64,  aprovados: 52 },
-  { source: 'WhatsApp',   sessions: 760,  solicitados: 91,  aprovados: 83 },
-  { source: 'E-mail',     sessions: 540,  solicitados: 53,  aprovados: 44 },
-  { source: 'Facebook',   sessions: 430,  solicitados: 28,  aprovados: 21 },
-  { source: 'Orgânico',   sessions: 380,  solicitados: 19,  aprovados: 14 },
-  { source: 'Referral',   sessions: 210,  solicitados: 12,  aprovados: 10 },
-]
-const TRAFFIC_TOTAL_SESSIONS = TRAFFIC_SOURCES.reduce((s, t) => s + t.sessions, 0)
-const TRAFFIC_TOTAL_SOL      = TRAFFIC_SOURCES.reduce((s, t) => s + t.solicitados, 0)
-const TRAFFIC_TOTAL_APR      = TRAFFIC_SOURCES.reduce((s, t) => s + t.aprovados, 0)
-
 // ── Cohort cell classes ────────────────────────────────────────────────────────
 function cohortCellClass(v: number | null, col: number): string {
   if (col === 0) return 'bg-primary/10 text-primary font-medium'
@@ -117,6 +104,67 @@ function SortHead({ label, active, dir, onSort, className }: {
         <ChevronDown className={cn('h-3 w-3',          active && dir === 'desc' ? 'opacity-100' : 'opacity-25')} />
       </span>
     </button>
+  )
+}
+
+function ProductThumb({ src, name }: { src?: string | null; name: string }) {
+  return (
+    <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-2xl border border-border/60 bg-muted">
+      {src ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={src} alt={name} className="h-full w-full object-cover" loading="lazy" />
+      ) : (
+        <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+          <Package className="h-5 w-5" />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ProductRankingList({
+  products,
+  metricLabel,
+  emptyLabel,
+}: {
+  products: Array<{
+    id: string
+    name: string
+    sku: string
+    imageUrl?: string | null
+    primaryValue: string
+    secondaryValue: string
+  }>
+  metricLabel: string
+  emptyLabel: string
+}) {
+  if (products.length === 0) {
+    return (
+      <div className="rounded-2xl border border-dashed border-border/70 p-5 text-center">
+        <Package className="mx-auto mb-2 h-7 w-7 text-muted-foreground" />
+        <p className="text-sm font-medium text-muted-foreground">{emptyLabel}</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col divide-y divide-border/20">
+      {products.map((product, index) => (
+        <div key={product.id} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
+          <span className="w-5 shrink-0 text-xs font-mono text-muted-foreground">{index + 1}</span>
+          <ProductThumb src={product.imageUrl} name={product.name} />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-semibold leading-5">{product.name}</p>
+            <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">{product.sku || 'Sem SKU'}</p>
+          </div>
+          <div className="shrink-0 text-right">
+            <p className="text-sm font-semibold tabular-nums">{product.primaryValue}</p>
+            <p className="text-[11px] text-muted-foreground">{metricLabel}</p>
+            <p className="text-[11px] text-muted-foreground">{product.secondaryValue}</p>
+          </div>
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -190,6 +238,7 @@ export default function B2BDashboard({
   const {
     orders, customers, products, periodOrders, monthlyRevenue,
     rfmData, cohortData, funnelData, geoData, totals, isLoading,
+    trafficSources, topVisitedProducts,
     periodStart, periodEnd,
   } = useDashboardData()
 
@@ -456,11 +505,49 @@ export default function B2BDashboard({
     [byCategory]
   )
 
+  const topSoldProducts = useMemo(() =>
+    [...products]
+      .filter(product => product.unitsRequested > 0)
+      .sort((a, b) => b.unitsRequested - a.unitsRequested)
+      .slice(0, 8),
+    [products]
+  )
+
+  const topVisitedProductRows = useMemo(() =>
+    topVisitedProducts.map(product => ({
+      id: product.id,
+      name: product.name,
+      sku: product.sku,
+      imageUrl: product.imageUrl,
+      primaryValue: num(product.visits),
+      secondaryValue: `${num(product.uniqueSessions)} sessões`,
+    })),
+    [topVisitedProducts]
+  )
+
+  const topSoldProductRows = useMemo(() =>
+    topSoldProducts.map((product: DProduct) => ({
+      id: product.id,
+      name: product.name,
+      sku: product.sku,
+      imageUrl: product.imageUrl,
+      primaryValue: num(product.unitsRequested),
+      secondaryValue: brl(product.revenueRequested),
+    })),
+    [topSoldProducts]
+  )
+
+  const trafficTotals = useMemo(() => ({
+    sessions: trafficSources.reduce((s, t) => s + t.sessions, 0),
+    solicitados: trafficSources.reduce((s, t) => s + t.solicitados, 0),
+    aprovados: trafficSources.reduce((s, t) => s + t.aprovados, 0),
+  }), [trafficSources])
+
   // ── Approval rates ────────────────────────────────────────────────────────────
   const approvalRates = [
-    { label: 'Sessões → Solicitados',   val: TRAFFIC_TOTAL_SESSIONS > 0 ? TRAFFIC_TOTAL_SOL / TRAFFIC_TOTAL_SESSIONS * 100 : 0 },
-    { label: 'Solicitados → Aprovados', val: TRAFFIC_TOTAL_SOL > 0 ? TRAFFIC_TOTAL_APR / TRAFFIC_TOTAL_SOL * 100 : 0 },
-    { label: 'Sessões → Aprovados',     val: TRAFFIC_TOTAL_SESSIONS > 0 ? TRAFFIC_TOTAL_APR / TRAFFIC_TOTAL_SESSIONS * 100 : 0 },
+    { label: 'Sessões → Solicitados',   val: trafficTotals.sessions > 0 ? trafficTotals.solicitados / trafficTotals.sessions * 100 : 0 },
+    { label: 'Solicitados → Aprovados', val: trafficTotals.solicitados > 0 ? trafficTotals.aprovados / trafficTotals.solicitados * 100 : 0 },
+    { label: 'Sessões → Aprovados',     val: trafficTotals.sessions > 0 ? trafficTotals.aprovados / trafficTotals.sessions * 100 : 0 },
   ]
 
   // ── Pagination ────────────────────────────────────────────────────────────────
@@ -516,10 +603,10 @@ export default function B2BDashboard({
   function exportTraffic() {
     downloadCSV([
       ['Fonte', 'Sessões', 'Solicitados', 'Aprovados', 'Conv. Sol.%', 'Conv. Apr.%'],
-      ...TRAFFIC_SOURCES.map(t => [
+      ...trafficSources.map(t => [
         t.source, t.sessions, t.solicitados, t.aprovados,
-        `${(t.solicitados / t.sessions * 100).toFixed(1)}%`,
-        `${(t.aprovados / t.sessions * 100).toFixed(1)}%`,
+        `${(t.sessions > 0 ? t.solicitados / t.sessions * 100 : 0).toFixed(1)}%`,
+        `${(t.sessions > 0 ? t.aprovados / t.sessions * 100 : 0).toFixed(1)}%`,
       ]),
     ], `dashboard_trafego_${TODAY_STR}.csv`)
   }
@@ -884,7 +971,32 @@ export default function B2BDashboard({
         </AdminPanel>
       </div>
 
-      {/* ── PRODUTOS LINHA 3: TABELA COMPLETA ────────────────────────────── */}
+      {/* ── PRODUTOS LINHA 3: MAIS VISITADOS | MAIS VENDIDOS ────────────── */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <AdminPanel
+          title="Produtos mais visitados"
+          description="Ranking por eventos product_view da API de Analytics"
+        >
+          <ProductRankingList
+            products={topVisitedProductRows}
+            metricLabel="visitas"
+            emptyLabel="Sem eventos de visualização no período."
+          />
+        </AdminPanel>
+
+        <AdminPanel
+          title="Produtos mais vendidos"
+          description="Ranking por unidades em pedidos não cancelados"
+        >
+          <ProductRankingList
+            products={topSoldProductRows}
+            metricLabel="unidades"
+            emptyLabel="Sem produtos vendidos no período."
+          />
+        </AdminPanel>
+      </div>
+
+      {/* ── PRODUTOS LINHA 4: TABELA COMPLETA ────────────────────────────── */}
       <AdminPanel
         title="Todos os Produtos (Curva ABC)"
         action={
@@ -959,7 +1071,7 @@ export default function B2BDashboard({
 
       {/* ── RETENÇÃO: 4 KPIs numa linha ──────────────────────────────────── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <AdminStatCard icon={RefreshCcw}  label="Taxa Recompra"   value={pct(totals.repeatRate * 100)} hint="2+ pedidos"    tone="success" />
+        <AdminStatCard icon={RefreshCcw}  label="Taxa Recompra"   value={pct(totals.repeatRate)} hint="2+ pedidos / clientes que compraram" tone="success" />
         <AdminStatCard icon={Users}       label="Retenção 30d"    value={pct(retention30d)}            hint="compra recente" tone="info"   />
         <AdminStatCard icon={TrendingUp}  label="Cohort M1 Médio" value={pct(avgM1)}                  hint="retenção média"              />
         <AdminStatCard icon={Package}     label="Clientes Ativos" value={num(totals.activeCustomers)}  hint="status ativo"  tone="success" />
@@ -1239,7 +1351,7 @@ export default function B2BDashboard({
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <AdminPanel
           title="Origens de Tráfego"
-          description="Dados de exemplo — conecte GA4 ou UTM backend"
+          description="Analytics UP Zero por source/channel/UTM"
           className="md:col-span-2"
           action={
             <Button variant="outline" size="sm" onClick={exportTraffic} className="gap-1.5 h-8">
@@ -1260,17 +1372,23 @@ export default function B2BDashboard({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {TRAFFIC_SOURCES.map(t => (
+                {trafficSources.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
+                      Sem dados de analytics para origem de tráfego no período.
+                    </TableCell>
+                  </TableRow>
+                ) : trafficSources.map(t => (
                   <TableRow key={t.source}>
                     <TableCell className="font-medium">{t.source}</TableCell>
                     <TableCell className="text-right tabular-nums">{num(t.sessions)}</TableCell>
                     <TableCell className="text-right tabular-nums">{t.solicitados}</TableCell>
                     <TableCell className="text-right tabular-nums text-emerald-600">{t.aprovados}</TableCell>
                     <TableCell className="text-right tabular-nums text-amber-600">
-                      {(t.solicitados / t.sessions * 100).toFixed(1)}%
+                      {(t.sessions > 0 ? t.solicitados / t.sessions * 100 : 0).toFixed(1)}%
                     </TableCell>
                     <TableCell className="text-right tabular-nums text-emerald-600">
-                      {(t.aprovados / t.sessions * 100).toFixed(1)}%
+                      {(t.sessions > 0 ? t.aprovados / t.sessions * 100 : 0).toFixed(1)}%
                     </TableCell>
                   </TableRow>
                 ))}
@@ -1298,7 +1416,7 @@ export default function B2BDashboard({
 
             <div className="rounded-xl bg-muted/50 p-4 mt-1">
               <p className="text-[11px] text-muted-foreground mb-1">Total de Sessões</p>
-              <p className="text-2xl font-semibold tabular-nums">{num(TRAFFIC_TOTAL_SESSIONS)}</p>
+              <p className="text-2xl font-semibold tabular-nums">{num(trafficTotals.sessions)}</p>
             </div>
           </div>
         </AdminPanel>
