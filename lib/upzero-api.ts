@@ -117,33 +117,34 @@ export interface ApiInventoryItem {
   qty_available: number
 }
 
-export interface ApiAnalyticsProductRef {
+export interface ApiAnalyticsFactItem {
   id: number
-  name: string
-  sku?: string | null
-}
-
-export interface ApiAnalyticsMetricItem {
-  id: number
-  period_start: string
-  period_type: 'hour' | 'day' | 'week' | 'month'
+  occurred_at: string
+  event_id: string
   event_name: string
-  product?: ApiAnalyticsProductRef | null
-  product_variant?: { id: number; sku: string } | null
-  category?: { id: number; name: string } | null
-  order_id?: number | null
+  user_id?: number | null
+  anonymous_id?: string | null
+  session_id?: string | null
+  visitor_id?: string | null
+  landing_url?: string | null
+  landing_host?: string | null
+  landing_path?: string | null
+  referrer?: string | null
+  referrer_host?: string | null
   utm_source?: string | null
   utm_medium?: string | null
   utm_campaign?: string | null
+  utm_content?: string | null
+  utm_term?: string | null
   source?: string | null
   channel?: string | null
   device_type?: string | null
-  total_events: number
-  unique_users: number
-  unique_sessions: number
-  total_quantity: number
-  total_value: number
-  updated_at: string
+  product_id?: number | null
+  product_variant_id?: number | null
+  category_id?: number | null
+  order_id?: number | null
+  quantity?: number | null
+  value?: number | null
 }
 
 // ── Fetch helper ──────────────────────────────────────────────────────────────
@@ -253,30 +254,47 @@ export async function fetchInventory(variantIds: string[]): Promise<ApiInventory
     }))
 }
 
-export async function fetchAllAnalyticsMetrics(startDate: string, endDate: string): Promise<ApiAnalyticsMetricItem[]> {
-  const all: ApiAnalyticsMetricItem[] = []
+const DASHBOARD_ANALYTICS_EVENTS = [
+  'page_view',
+  'product_view',
+  'order_created',
+  'order_approved',
+] as const
+
+async function fetchAnalyticsFactsForEvent(
+  startDate: string,
+  endDate: string,
+  eventName: typeof DASHBOARD_ANALYTICS_EVENTS[number],
+): Promise<ApiAnalyticsFactItem[]> {
+  const all: ApiAnalyticsFactItem[] = []
   let cursor: string | undefined
 
   do {
     const params: Record<string, string> = {
       from: `${startDate}T00:00:00Z`,
       to: `${endDate}T23:59:59Z`,
-      period_type: 'day',
-      sort_by: 'period_start',
-      sort_dir: 'desc',
+      event_name: eventName,
       limit: '1000',
     }
     if (cursor) params.cursor = cursor
 
-    const res = await upzeroFetch<{ data?: ApiAnalyticsMetricItem[]; next_cursor?: string }>(
-      '/external/v1/analytics/metrics',
+    const res = await upzeroFetch<{ data?: ApiAnalyticsFactItem[]; next_cursor?: string }>(
+      '/external/v1/analytics/facts',
       params,
     )
     all.push(...(res.data ?? []))
     cursor = res.next_cursor || undefined
-  } while (cursor && all.length < 10000)
+  } while (cursor && all.length < 25000)
 
   return all
+}
+
+export async function fetchDashboardAnalyticsFacts(startDate: string, endDate: string): Promise<ApiAnalyticsFactItem[]> {
+  const results = await Promise.all(
+    DASHBOARD_ANALYTICS_EVENTS.map(eventName => fetchAnalyticsFactsForEvent(startDate, endDate, eventName)),
+  )
+
+  return results.flat()
 }
 
 type ApiProductImageResponse = {

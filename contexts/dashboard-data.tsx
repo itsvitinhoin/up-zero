@@ -7,7 +7,7 @@ import {
   computeMonthlyRevenue, computeWeeklyRevenue, computeGeoData,
   computeRFMData, computeCohortData, computeFunnelData,
   computeSeasonalityByCategory, computeSeasonalityOrdersByMonth, computeTotals,
-  computeTrafficSourcesFromMetrics, computeTopVisitedProductsFromMetrics,
+  computeTrafficSourcesFromFacts, computeTopVisitedProductsFromFacts,
   type DashboardRawData,
 } from '@/lib/dashboard-compute'
 import type {
@@ -83,9 +83,9 @@ export function DashboardDataProvider({ children, dateRange }: DashboardDataProv
     const end   = dateRange?.to   ?? new Date()
 
     const periodOrders = orders.filter(o => o.date >= start && o.date <= end)
-    const periodAnalyticsMetrics = (rawData?.analyticsMetrics ?? []).filter(metric => {
-      const metricDate = new Date(metric.period_start)
-      return metricDate >= start && metricDate <= end
+    const periodAnalyticsFacts = (rawData?.analyticsFacts ?? []).filter(fact => {
+      const eventDate = new Date(fact.occurred_at)
+      return eventDate >= start && eventDate <= end
     })
 
     return {
@@ -104,8 +104,8 @@ export function DashboardDataProvider({ children, dateRange }: DashboardDataProv
       seasonalityByCategory:    computeSeasonalityByCategory(products),
       seasonalityOrdersByMonth: computeSeasonalityOrdersByMonth(orders),
       totals:                   rawData ? computeTotals(orders, customers, start, end) : EMPTY_TOTALS,
-      trafficSources:           computeTrafficSourcesFromMetrics(periodAnalyticsMetrics),
-      topVisitedProducts:       computeTopVisitedProductsFromMetrics(periodAnalyticsMetrics, products),
+      trafficSources:           computeTrafficSourcesFromFacts(periodAnalyticsFacts),
+      topVisitedProducts:       computeTopVisitedProductsFromFacts(periodAnalyticsFacts, products),
       isLoading,
       error,
     }

@@ -6,7 +6,7 @@ import type {
   DTrafficSource, DTopVisitedProduct,
 } from '@/lib/dashboard-mock-data'
 import type {
-  ApiOrder, ApiOrderItem, ApiCustomer, ApiProduct, ApiInventoryItem, ApiAnalyticsMetricItem,
+  ApiOrder, ApiOrderItem, ApiCustomer, ApiProduct, ApiInventoryItem, ApiAnalyticsFactItem,
 } from '@/lib/upzero-api'
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
@@ -278,17 +278,18 @@ export interface DashboardRawData {
   orders:    DOrder[]
   customers: DCustomer[]
   products:  DProduct[]
-  analyticsMetrics: ApiAnalyticsMetricItem[]
+  analyticsFacts: ApiAnalyticsFactItem[]
   trafficSources: DTrafficSource[]
   topVisitedProducts: DTopVisitedProduct[]
 }
 
-function trafficSourceLabel(metric: ApiAnalyticsMetricItem): string {
+function trafficSourceLabel(fact: ApiAnalyticsFactItem): string {
   const raw =
-    metric.source ||
-    metric.channel ||
-    metric.utm_source ||
-    metric.utm_medium ||
+    fact.source ||
+    fact.channel ||
+    fact.utm_source ||
+    fact.utm_medium ||
+    fact.referrer_host ||
     'Direto'
 
   const normalized = String(raw).trim()
@@ -302,58 +303,88 @@ function trafficSourceLabel(metric: ApiAnalyticsMetricItem): string {
   return normalized.charAt(0).toUpperCase() + normalized.slice(1)
 }
 
-export function computeTrafficSourcesFromMetrics(metrics: ApiAnalyticsMetricItem[]): DTrafficSource[] {
-  const map = new Map<string, DTrafficSource>()
+function stableFactIdentity(fact: ApiAnalyticsFactItem): string {
+  return fact.session_id || fact.visitor_id || fact.anonymous_id || fact.event_id || String(fact.id)
+}
 
-  metrics.forEach((metric) => {
-    if (!['page_view', 'order_created', 'order_approved'].includes(metric.event_name)) return
+export function computeTrafficSourcesFromFacts(facts: ApiAnalyticsFactItem[]): DTrafficSource[] {
+  const map = new Map<string, DTrafficSource & { sessionKeys: Set<string>; createdKeys: Set<string>; approvedKeys: Set<string> }>()
 
-    const source = trafficSourceLabel(metric)
-    const row = map.get(source) ?? { source, sessions: 0, solicitados: 0, aprovados: 0 }
+  facts.forEach((fact) => {
+    if (!['page_view', 'order_created', 'order_approved'].includes(fact.event_name)) return
 
-    if (metric.event_name === 'page_view') {
-      row.sessions += Number(metric.unique_sessions || metric.total_events || 0)
-    } else if (metric.event_name === 'order_created') {
-      row.solicitados += Number(metric.total_events || 0)
-    } else if (metric.event_name === 'order_approved') {
-      row.aprovados += Number(metric.total_events || 0)
+    const source = trafficSourceLabel(fact)
+    const row = map.get(source) ?? {
+      source,
+      sessions: 0,
+      solicitados: 0,
+      aprovados: 0,
+      sessionKeys: new Set<string>(),
+      createdKeys: new Set<string>(),
+      approvedKeys: new Set<string>(),
+    }
+
+    if (fact.event_name === 'page_view') {
+      row.sessionKeys.add(stableFactIdentity(fact))
+      row.sessions = row.sessionKeys.size
+    } else if (fact.event_name === 'order_created') {
+      row.createdKeys.add(fact.order_id ? `order:${fact.order_id}` : fact.event_id)
+      row.solicitados = row.createdKeys.size
+    } else if (fact.event_name === 'order_approved') {
+      row.approvedKeys.add(fact.order_id ? `order:${fact.order_id}` : fact.event_id)
+      row.aprovados = row.approvedKeys.size
     }
 
     map.set(source, row)
   })
 
   return Array.from(map.values())
+    .map(({ sessionKeys, createdKeys, approvedKeys, ...row }) => row)
     .filter((row) => row.sessions > 0 || row.solicitados > 0 || row.aprovados > 0)
     .sort((a, b) => b.sessions - a.sessions)
 }
 
-export function computeTopVisitedProductsFromMetrics(
-  metrics: ApiAnalyticsMetricItem[],
+export function computeTopVisitedProductsFromFacts(
+  facts: ApiAnalyticsFactItem[],
   products: DProduct[],
 ): DTopVisitedProduct[] {
   const productById = new Map(products.map((product) => [String(product.id), product]))
   const map = new Map<string, DTopVisitedProduct>()
+  const sessionKeysByProduct = new Map<string, Set<string>>()
+  const userKeysByProduct = new Map<string, Set<string>>()
 
-  metrics
-    .filter((metric) => metric.event_name === 'product_view' && metric.product?.id)
-    .forEach((metric) => {
-      const id = String(metric.product?.id)
+  facts
+    .filter((fact) => fact.event_name === 'product_view' && fact.product_id)
+    .forEach((fact) => {
+      const id = String(fact.product_id)
       const product = productById.get(id)
       const row = map.get(id) ?? {
         id,
-        name: product?.name ?? metric.product?.name ?? `Produto ${id}`,
-        sku: product?.sku ?? metric.product?.sku ?? '',
+        name: product?.name ?? `Produto ${id}`,
+        sku: product?.sku ?? '',
         imageUrl: product?.imageUrl ?? null,
         visits: 0,
         uniqueSessions: 0,
         uniqueUsers: 0,
       }
 
-      row.visits += Number(metric.total_events || 0)
-      row.uniqueSessions += Number(metric.unique_sessions || 0)
-      row.uniqueUsers += Number(metric.unique_users || 0)
+      const sessionKeys = sessionKeysByProduct.get(id) ?? new Set<string>()
+      const userKeys = userKeysByProduct.get(id) ?? new Set<string>()
+
+      row.visits += 1
+      sessionKeys.add(stableFactIdentity(fact))
+      if (fact.user_id) {
+        userKeys.add(`user:${fact.user_id}`)
+      } else if (fact.visitor_id || fact.anonymous_id) {
+        userKeys.add(fact.visitor_id || fact.anonymous_id || '')
+      }
+
+      row.uniqueSessions = sessionKeys.size
+      row.uniqueUsers = userKeys.size
       if (!row.imageUrl && product?.imageUrl) row.imageUrl = product.imageUrl
 
+      sessionKeysByProduct.set(id, sessionKeys)
+      userKeysByProduct.set(id, userKeys)
       map.set(id, row)
     })
 
@@ -367,7 +398,7 @@ export function transformRawData(
   apiCustomers: ApiCustomer[],
   apiProducts:  ApiProduct[],
   inventory:    ApiInventoryItem[],
-  analyticsMetrics: ApiAnalyticsMetricItem[] = [],
+  analyticsFacts: ApiAnalyticsFactItem[] = [],
   productImages: Record<string, string> = {},
 ): DashboardRawData {
   const inventoryMap = new Map<string, number>(
@@ -414,9 +445,9 @@ export function transformRawData(
     orders,
     customers,
     products,
-    analyticsMetrics,
-    trafficSources: computeTrafficSourcesFromMetrics(analyticsMetrics),
-    topVisitedProducts: computeTopVisitedProductsFromMetrics(analyticsMetrics, products),
+    analyticsFacts,
+    trafficSources: computeTrafficSourcesFromFacts(analyticsFacts),
+    topVisitedProducts: computeTopVisitedProductsFromFacts(analyticsFacts, products),
   }
 }
 

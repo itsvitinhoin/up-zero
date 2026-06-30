@@ -5,7 +5,7 @@ import {
   fetchAllCustomers,
   fetchAllProducts,
   fetchInventory,
-  fetchAllAnalyticsMetrics,
+  fetchDashboardAnalyticsFacts,
   fetchProductPrimaryImages,
 } from '@/lib/upzero-api'
 import { transformRawData, type DashboardRawData } from '@/lib/dashboard-compute'
@@ -19,12 +19,12 @@ export async function getDashboardDataAction(): Promise<
     const startDate = oneYearAgo.toISOString().split('T')[0]
     const endDate   = now.toISOString().split('T')[0]
 
-    const [apiOrders, apiCustomers, apiProducts, analyticsMetrics] = await Promise.all([
+    const [apiOrders, apiCustomers, apiProducts, analyticsFacts] = await Promise.all([
       fetchAllOrders(startDate, endDate),
       fetchAllCustomers(),
       fetchAllProducts(),
-      fetchAllAnalyticsMetrics(startDate, endDate).catch((error) => {
-        console.warn('[getDashboardDataAction] analytics metrics unavailable', error)
+      fetchDashboardAnalyticsFacts(startDate, endDate).catch((error) => {
+        console.warn('[getDashboardDataAction] analytics facts unavailable', error)
         return []
       }),
     ])
@@ -37,9 +37,9 @@ export async function getDashboardDataAction(): Promise<
 
     const productIdsForImages = Array.from(new Set([
       ...apiOrders.flatMap(order => (order.items ?? []).map(item => variantToProductId.get(item.variant_id) ?? '')),
-      ...analyticsMetrics
-        .filter(metric => metric.event_name === 'product_view' && metric.product?.id)
-        .map(metric => String(metric.product?.id ?? '')),
+      ...analyticsFacts
+        .filter(fact => fact.event_name === 'product_view' && fact.product_id)
+        .map(fact => String(fact.product_id ?? '')),
       ...apiProducts.slice(0, 20).map(product => product.id),
     ].filter(Boolean))).slice(0, 80)
 
@@ -51,7 +51,7 @@ export async function getDashboardDataAction(): Promise<
       }),
     ])
 
-    const data = transformRawData(apiOrders, apiCustomers, apiProducts, inventory, analyticsMetrics, productImages)
+    const data = transformRawData(apiOrders, apiCustomers, apiProducts, inventory, analyticsFacts, productImages)
     return { success: true, data }
   } catch (err) {
     console.error('[getDashboardDataAction]', err)
