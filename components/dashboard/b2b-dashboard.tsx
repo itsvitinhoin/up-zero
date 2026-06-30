@@ -16,7 +16,7 @@ import {
   Download, BarChart3, TrendingUp, Users, Package,
   ShoppingCart, RefreshCcw, Filter, X, DollarSign,
   ArrowUpRight, Layers, MapPin, CalendarIcon, Clock,
-  ChevronUp, ChevronDown, AlertCircle, Info,
+  ChevronUp, ChevronDown, ChevronLeft, ChevronRight, AlertCircle, Info,
 } from 'lucide-react'
 import { useDashboardData } from '@/contexts/dashboard-data'
 import type { DRFMSegment, DCurve, DProduct } from '@/lib/dashboard-mock-data'
@@ -62,6 +62,7 @@ function downloadCSV(rows: (string | number)[][], filename: string) {
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 const PAGE_SIZE = 10
+const COLOR_SALES_PAGE_SIZE = 4
 
 const RFM_BADGE: Record<DRFMSegment, 'emerald' | 'blue' | 'sky' | 'amber' | 'rose'> = {
   Champions: 'emerald', Loyal: 'blue', Promising: 'sky', 'At Risk': 'amber', Lost: 'rose',
@@ -237,6 +238,7 @@ export default function B2BDashboard({
   const [customerPage, setCustomerPage] = useState(1)
   const [visitedRankingPage, setVisitedRankingPage] = useState(1)
   const [soldRankingPage, setSoldRankingPage] = useState(1)
+  const [colorSalesPage, setColorSalesPage] = useState(1)
 
   // ── Sort state ────────────────────────────────────────────────────────────────
   type ProductSortKey  = 'curve' | 'revenueRequested' | 'revenueFulfilled' | 'unitsRequested' | 'stock' | 'daysLeft'
@@ -510,6 +512,12 @@ export default function B2BDashboard({
     })),
     [salesBySize]
   )
+
+  const {
+    paginatedItems: pagedColorSalesChartData,
+    totalPages: colorSalesTotalPages,
+    safeCurrentPage: safeColorSalesPage,
+  } = usePaginatedList({ items: colorSalesChartData, currentPage: colorSalesPage, pageSize: COLOR_SALES_PAGE_SIZE })
 
   const topSoldProducts = useMemo(() =>
     [...products]
@@ -983,10 +991,40 @@ export default function B2BDashboard({
 
       {/* ── PRODUTOS LINHA 2: CORES | TAMANHOS ───────────────────────────── */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <AdminPanel title="Vendas por Cor" description="Participação por cor vendida no período">
+        <AdminPanel
+          title="Vendas por Cor"
+          description="Participação por cor vendida no período"
+          action={colorSalesChartData.length > COLOR_SALES_PAGE_SIZE ? (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 w-8 p-0"
+                onClick={() => setColorSalesPage(page => Math.max(1, page - 1))}
+                disabled={safeColorSalesPage <= 1}
+                aria-label="Página anterior de cores"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </Button>
+              <span className="min-w-10 text-center text-xs font-medium text-muted-foreground">
+                {safeColorSalesPage}/{colorSalesTotalPages}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 w-8 p-0"
+                onClick={() => setColorSalesPage(page => Math.min(colorSalesTotalPages, page + 1))}
+                disabled={safeColorSalesPage >= colorSalesTotalPages}
+                aria-label="Próxima página de cores"
+              >
+                <ChevronRight className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          ) : null}
+        >
           {colorSalesChartData.length > 0 ? (
-            <ChartContainer config={colorChartConfig} className="w-full" style={{ height: `${colorSalesChartData.length * 52 + 16}px` }}>
-              <BarChart layout="vertical" data={colorSalesChartData} margin={{ right: 62, left: 0, top: 4, bottom: 4 }}>
+            <ChartContainer config={colorChartConfig} className="w-full" style={{ height: '250px' }}>
+              <BarChart layout="vertical" data={pagedColorSalesChartData} margin={{ right: 62, left: 0, top: 4, bottom: 4 }}>
                 <CartesianGrid horizontal={false} />
                 <YAxis dataKey="color" type="category" tickLine={false} axisLine={false} hide />
                 <XAxis dataKey="pct" type="number" hide />
@@ -995,7 +1033,7 @@ export default function B2BDashboard({
                   return [`${v}% · ${num(units)} un.`, 'Participação']
                 }} />} />
                 <Bar dataKey="pct" radius={4}>
-                  {colorSalesChartData.map((entry) => (
+                  {pagedColorSalesChartData.map((entry) => (
                     <Cell key={entry.color} fill={entry.hex} fillOpacity={0.85} />
                   ))}
                   <LabelList dataKey="color" position="insideLeft" offset={10} className="fill-background" fontSize={12} fontWeight={500} />
