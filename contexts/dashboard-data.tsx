@@ -8,11 +8,12 @@ import {
   computeRFMData, computeCohortData, computeFunnelData,
   computeSeasonalityByCategory, computeSeasonalityOrdersByMonth, computeTotals,
   computeTrafficSourcesFromFacts, computeTopVisitedProductsFromFacts,
+  computeSalesByColor, computeSalesBySize,
   type DashboardRawData,
 } from '@/lib/dashboard-compute'
 import type {
   DOrder, DCustomer, DProduct, DMonthlyRevenue, DGeoEntry, DRFMEntry, DCohortRow, DFunnelStage,
-  DTrafficSource, DTopVisitedProduct,
+  DTrafficSource, DTopVisitedProduct, DSalesByColor, DSalesBySize,
 } from '@/lib/dashboard-mock-data'
 
 // ── Context type ──────────────────────────────────────────────────────────────
@@ -46,6 +47,8 @@ interface DashboardDataContextValue {
   totals:                    TotalsType
   trafficSources:            DTrafficSource[]
   topVisitedProducts:        DTopVisitedProduct[]
+  salesByColor:              DSalesByColor[]
+  salesBySize:               DSalesBySize[]
   isLoading: boolean
   error:     string | null
 }
@@ -87,6 +90,9 @@ export function DashboardDataProvider({ children, dateRange }: DashboardDataProv
       const eventDate = new Date(fact.occurred_at)
       return eventDate >= start && eventDate <= end
     })
+    const periodVariantSales = (rawData?.productVariantSales ?? []).filter(sale =>
+      sale.date >= start && sale.date <= end
+    )
 
     return {
       orders,
@@ -105,7 +111,9 @@ export function DashboardDataProvider({ children, dateRange }: DashboardDataProv
       seasonalityOrdersByMonth: computeSeasonalityOrdersByMonth(orders),
       totals:                   rawData ? computeTotals(orders, customers, start, end) : EMPTY_TOTALS,
       trafficSources:           computeTrafficSourcesFromFacts(periodAnalyticsFacts),
-      topVisitedProducts:       computeTopVisitedProductsFromFacts(periodAnalyticsFacts, products),
+      topVisitedProducts:       computeTopVisitedProductsFromFacts(periodAnalyticsFacts, products, rawData?.productImages ?? {}),
+      salesByColor:             computeSalesByColor(periodVariantSales),
+      salesBySize:              computeSalesBySize(periodVariantSales),
       isLoading,
       error,
     }

@@ -122,6 +122,34 @@ export interface DTopVisitedProduct {
   uniqueUsers: number
 }
 
+export interface DProductVariantSale {
+  productId: string
+  productName: string
+  sku: string
+  imageUrl?: string | null
+  variantId: string
+  color: string
+  colorHex: string
+  size: string
+  qty: number
+  total: number
+  fulfilledTotal: number
+  date: Date
+}
+
+export interface DSalesByColor {
+  color: string
+  hex: string
+  units: number
+  pct: number
+}
+
+export interface DSalesBySize {
+  size: string
+  units: number
+  pct: number
+}
+
 // ─── Monthly Revenue (12 months) ─────────────────────────────────────────────
 export const MONTHLY_REVENUE: DMonthlyRevenue[] = [
   { month: 'Mai/25', requested: 62400,  fulfilled: 51200,  orders: 18, newCustomers: 5, returningCustomers: 4 },

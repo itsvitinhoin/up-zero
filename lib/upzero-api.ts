@@ -19,6 +19,7 @@ export interface ApiAddress {
 export interface ApiOrderItem {
   id: string
   product_id?: string | number | null
+  product_name?: string | null
   variant_id: string
   asset_id?: string | number | null
   asset_name?: string | null
@@ -89,7 +90,7 @@ export interface ApiCustomer {
 
 export interface ApiVariantAttribute {
   attribute: { id: string; name: string; code: string }
-  term: { name: string; code: string }
+  term: { name: string; code: string; meta?: Record<string, unknown> | null; value_meta?: Record<string, unknown> | null }
 }
 
 export interface ApiVariant {

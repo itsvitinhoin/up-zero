@@ -1,5 +1,6 @@
 'use server'
 
+import { cookies } from 'next/headers'
 import {
   fetchAllOrders,
   fetchAllCustomers,
@@ -16,6 +17,12 @@ type DashboardProductImageItem = {
   productId?: string | number | null
   primaryImageUrl?: string | null
   images?: Array<{ imageUrl?: string | null; storagePath?: string | null; isPrimary?: boolean | null }>
+}
+
+type RustProductCatalogItem = Record<string, unknown>
+
+function imageLookupKey(kind: 'id' | 'sku' | 'name', value: unknown): string {
+  return `${kind}:${String(value ?? '').trim().toLowerCase()}`
 }
 
 function normalizeImageUrl(value: unknown): string | null {
@@ -52,6 +59,74 @@ function pickDashboardProductImage(item: DashboardProductImageItem): string | nu
   return null
 }
 
+function firstImageFromUnknownImages(images: unknown): string | null {
+  if (!Array.isArray(images)) return null
+  for (const image of images) {
+    if (typeof image === 'string') {
+      const url = normalizeImageUrl(image)
+      if (url) return url
+      continue
+    }
+
+    if (!image || typeof image !== 'object') continue
+    const record = image as Record<string, unknown>
+    const url = normalizeImageUrl(
+      record.image_url
+      ?? record.imageUrl
+      ?? record.url
+      ?? record.src
+      ?? record.storage_path
+      ?? record.storagePath
+    )
+    if (url) return url
+  }
+
+  return null
+}
+
+function pickRustCatalogProductImage(item: RustProductCatalogItem): string | null {
+  const product = (item.product && typeof item.product === 'object' ? item.product : item) as Record<string, unknown>
+  const direct = normalizeImageUrl(
+    product.primary_image_url
+    ?? product.primaryImageUrl
+    ?? product.cover_image_url
+    ?? product.coverImageUrl
+    ?? product.image_url
+    ?? product.imageUrl
+    ?? item.cover_image_url
+  )
+  if (direct) return direct
+
+  const variants = Array.isArray(item.variants) ? item.variants : []
+  for (const variant of variants) {
+    const variantImage = firstImageFromUnknownImages((variant as Record<string, unknown>)?.images)
+    if (variantImage) return variantImage
+  }
+
+  const imageGroups = Array.isArray(item.image_groups) ? item.image_groups : []
+  for (const group of imageGroups) {
+    const groupImage = firstImageFromUnknownImages((group as Record<string, unknown>)?.images)
+    if (groupImage) return groupImage
+  }
+
+  return firstImageFromUnknownImages(product.images)
+}
+
+function rememberImageAliases(
+  imageMap: Record<string, string>,
+  aliases: Array<{ kind: 'id' | 'sku' | 'name'; value: unknown }>,
+  imageUrl: string | null,
+) {
+  if (!imageUrl) return
+  aliases.forEach(({ kind, value }) => {
+    const raw = String(value ?? '').trim()
+    if (!raw) return
+    if (!imageMap[raw]) imageMap[raw] = imageUrl
+    const key = imageLookupKey(kind, raw)
+    if (!imageMap[key]) imageMap[key] = imageUrl
+  })
+}
+
 async function fetchRustProductPrimaryImages(
   productIds: string[],
   storeId: number | null,
@@ -62,10 +137,8 @@ async function fetchRustProductPrimaryImages(
   const rememberImages = (items: DashboardProductImageItem[]) => {
     items.forEach((item) => {
       const productId = item.productId != null ? String(item.productId) : ''
-      if (!productId || imageMap[productId]) return
-
       const imageUrl = pickDashboardProductImage(item)
-      if (imageUrl) imageMap[productId] = imageUrl
+      rememberImageAliases(imageMap, [{ kind: 'id', value: productId }], imageUrl)
     })
   }
 
@@ -93,6 +166,42 @@ async function fetchRustProductPrimaryImages(
     if (result.status !== 'fulfilled') return
     if (!result.value.success || !result.value.data?.items) return
     rememberImages(result.value.data.items as DashboardProductImageItem[])
+  })
+
+  return imageMap
+}
+
+async function fetchRustCatalogProductImages(storeId: number | null): Promise<Record<string, string>> {
+  const base = process.env.NEXT_PUBLIC_RUST_URL?.trim()
+  if (!base) return {}
+
+  const cookieStore = await cookies()
+  const adminToken = cookieStore.get('adminAuthToken')?.value
+  if (!adminToken) return {}
+
+  const url = new URL('/products-paginated', base)
+  url.searchParams.set('page', '1')
+  url.searchParams.set('limit', '200')
+  if (storeId) url.searchParams.set('store_id', String(storeId))
+
+  const response = await fetch(url, {
+    headers: { cookie: `adminAuthToken=${adminToken}` },
+    cache: 'no-store',
+  })
+  if (!response.ok) return {}
+
+  const payload = await response.json()
+  const items = Array.isArray(payload?.items) ? payload.items as RustProductCatalogItem[] : []
+  const imageMap: Record<string, string> = {}
+
+  items.forEach((item) => {
+    const product = (item.product && typeof item.product === 'object' ? item.product : item) as Record<string, unknown>
+    const imageUrl = pickRustCatalogProductImage(item)
+    rememberImageAliases(imageMap, [
+      { kind: 'id', value: product.id ?? item.id },
+      { kind: 'sku', value: product.code ?? item.code ?? product.sku ?? item.sku },
+      { kind: 'name', value: product.name ?? item.name },
+    ], imageUrl)
   })
 
   return imageMap
@@ -137,7 +246,7 @@ export async function getDashboardDataAction(): Promise<
       ...apiProducts.slice(0, 20).map(product => product.id),
     ].filter(Boolean))).slice(0, 80)
 
-    const [inventory, externalProductImages, rustProductImages] = await Promise.all([
+    const [inventory, externalProductImages, rustProductImages, rustCatalogProductImages] = await Promise.all([
       fetchInventory(variantIds),
       fetchProductPrimaryImages(productIdsForImages).catch((error) => {
         console.warn('[getDashboardDataAction] product images unavailable', error)
@@ -147,9 +256,13 @@ export async function getDashboardDataAction(): Promise<
         console.warn('[getDashboardDataAction] rust product images unavailable', error)
         return {}
       }),
+      fetchRustCatalogProductImages(storeId).catch((error) => {
+        console.warn('[getDashboardDataAction] rust catalog images unavailable', error)
+        return {}
+      }),
     ])
 
-    const productImages = { ...rustProductImages, ...externalProductImages }
+    const productImages = { ...externalProductImages, ...rustProductImages, ...rustCatalogProductImages }
     const data = transformRawData(apiOrders, apiCustomers, apiProducts, inventory, analyticsFacts, productImages)
     return { success: true, data }
   } catch (err) {

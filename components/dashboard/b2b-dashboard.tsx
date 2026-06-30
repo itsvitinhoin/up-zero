@@ -126,6 +126,7 @@ function ProductRankingList({
   products,
   metricLabel,
   emptyLabel,
+  rankOffset = 0,
 }: {
   products: Array<{
     id: string
@@ -137,6 +138,7 @@ function ProductRankingList({
   }>
   metricLabel: string
   emptyLabel: string
+  rankOffset?: number
 }) {
   if (products.length === 0) {
     return (
@@ -151,7 +153,7 @@ function ProductRankingList({
     <div className="flex flex-col divide-y divide-border/20">
       {products.map((product, index) => (
         <div key={product.id} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
-          <span className="w-5 shrink-0 text-xs font-mono text-muted-foreground">{index + 1}</span>
+          <span className="w-5 shrink-0 text-xs font-mono text-muted-foreground">{rankOffset + index + 1}</span>
           <ProductThumb src={product.imageUrl} name={product.name} />
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold leading-5">{product.name}</p>
@@ -211,23 +213,6 @@ const fulfillmentConfig = {
   rate: { label: 'Taxa de Atendimento', color: BRAND },
 } satisfies ChartConfig
 
-const SIZE_DATA = [
-  { size: 'PP', pct: 8  },
-  { size: 'P',  pct: 22 },
-  { size: 'M',  pct: 35 },
-  { size: 'G',  pct: 24 },
-  { size: 'GG', pct: 11 },
-]
-
-const COLOR_SALES_DATA = [
-  { color: 'Preto',  hex: '#1c1c1c', pct: 32 },
-  { color: 'Branco', hex: '#d4d4d4', pct: 21 },
-  { color: 'Rosa',   hex: '#f472b6', pct: 18 },
-  { color: 'Azul',   hex: '#60a5fa', pct: 14 },
-  { color: 'Verde',  hex: '#4ade80', pct: 10 },
-  { color: 'Outros', hex: '#94a3b8', pct: 5  },
-]
-
 // ── Main component ─────────────────────────────────────────────────────────────
 export default function B2BDashboard({
   dateRange, setDateRange,
@@ -238,7 +223,7 @@ export default function B2BDashboard({
   const {
     orders, customers, products, periodOrders, monthlyRevenue,
     rfmData, cohortData, funnelData, geoData, totals, isLoading,
-    trafficSources, topVisitedProducts,
+    trafficSources, topVisitedProducts, salesByColor, salesBySize,
     periodStart, periodEnd,
   } = useDashboardData()
 
@@ -250,6 +235,8 @@ export default function B2BDashboard({
   // ── Pagination ────────────────────────────────────────────────────────────────
   const [productPage,  setProductPage]  = useState(1)
   const [customerPage, setCustomerPage] = useState(1)
+  const [visitedRankingPage, setVisitedRankingPage] = useState(1)
+  const [soldRankingPage, setSoldRankingPage] = useState(1)
 
   // ── Sort state ────────────────────────────────────────────────────────────────
   type ProductSortKey  = 'curve' | 'revenueRequested' | 'revenueFulfilled' | 'unitsRequested' | 'stock' | 'daysLeft'
@@ -505,11 +492,29 @@ export default function B2BDashboard({
     [byCategory]
   )
 
+  const colorSalesChartData = useMemo(() =>
+    salesByColor.map(row => ({
+      color: row.color,
+      hex: row.hex,
+      units: row.units,
+      pct: Number(row.pct.toFixed(1)),
+    })),
+    [salesByColor]
+  )
+
+  const sizeSalesChartData = useMemo(() =>
+    salesBySize.map(row => ({
+      size: row.size,
+      units: row.units,
+      pct: Number(row.pct.toFixed(1)),
+    })),
+    [salesBySize]
+  )
+
   const topSoldProducts = useMemo(() =>
     [...products]
       .filter(product => product.unitsRequested > 0)
-      .sort((a, b) => b.unitsRequested - a.unitsRequested)
-      .slice(0, 8),
+      .sort((a, b) => b.unitsRequested - a.unitsRequested),
     [products]
   )
 
@@ -536,6 +541,22 @@ export default function B2BDashboard({
     })),
     [topSoldProducts]
   )
+
+  const {
+    paginatedItems: pagedVisitedProducts,
+    totalPages: visitedProductTotalPages,
+    pageStart: visitedProductStart,
+    pageEnd: visitedProductEnd,
+    pageStartIndex: visitedProductStartIndex,
+  } = usePaginatedList({ items: topVisitedProductRows, currentPage: visitedRankingPage, pageSize: PAGE_SIZE })
+
+  const {
+    paginatedItems: pagedSoldProducts,
+    totalPages: soldProductTotalPages,
+    pageStart: soldProductStart,
+    pageEnd: soldProductEnd,
+    pageStartIndex: soldProductStartIndex,
+  } = usePaginatedList({ items: topSoldProductRows, currentPage: soldRankingPage, pageSize: PAGE_SIZE })
 
   const trafficTotals = useMemo(() => ({
     sessions: trafficSources.reduce((s, t) => s + t.sessions, 0),
@@ -610,8 +631,36 @@ export default function B2BDashboard({
       ]),
     ], `dashboard_trafego_${TODAY_STR}.csv`)
   }
+  function exportTopVisitedProducts() {
+    downloadCSV([
+      ['Posição', 'Produto', 'SKU', 'Imagem', 'Visitas', 'Sessões Únicas', 'Usuários Únicos'],
+      ...topVisitedProducts.map((product, index) => [
+        index + 1,
+        product.name,
+        product.sku,
+        product.imageUrl ?? '',
+        product.visits,
+        product.uniqueSessions,
+        product.uniqueUsers,
+      ]),
+    ], `dashboard_produtos_mais_visitados_${TODAY_STR}.csv`)
+  }
+  function exportTopSoldProducts() {
+    downloadCSV([
+      ['Posição', 'Produto', 'SKU', 'Imagem', 'Unidades', 'Receita Solicitada', 'Receita Atendida'],
+      ...topSoldProducts.map((product, index) => [
+        index + 1,
+        product.name,
+        product.sku,
+        product.imageUrl ?? '',
+        product.unitsRequested,
+        product.revenueRequested,
+        product.revenueFulfilled,
+      ]),
+    ], `dashboard_produtos_mais_vendidos_${TODAY_STR}.csv`)
+  }
   function exportAll() {
-    exportKpis(); exportProducts(); exportCustomers(); exportRetention(); exportTraffic()
+    exportKpis(); exportProducts(); exportCustomers(); exportRetention(); exportTraffic(); exportTopVisitedProducts(); exportTopSoldProducts()
   }
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -934,40 +983,58 @@ export default function B2BDashboard({
 
       {/* ── PRODUTOS LINHA 2: CORES | TAMANHOS ───────────────────────────── */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <AdminPanel title="Vendas por Cor" description="Participação por cor (amostra)">
-          <ChartContainer config={colorChartConfig} className="w-full" style={{ height: `${COLOR_SALES_DATA.length * 52 + 16}px` }}>
-            <BarChart layout="vertical" data={COLOR_SALES_DATA} margin={{ right: 52, left: 0, top: 4, bottom: 4 }}>
-              <CartesianGrid horizontal={false} />
-              <YAxis dataKey="color" type="category" tickLine={false} axisLine={false} hide />
-              <XAxis dataKey="pct" type="number" hide />
-              <ChartTooltip cursor={false} content={<ChartTooltipContent indicator="line" formatter={(v) => `${v}%`} />} />
-              <Bar dataKey="pct" radius={4}>
-                {COLOR_SALES_DATA.map((entry) => (
-                  <Cell key={entry.color} fill={entry.hex} fillOpacity={0.85} />
-                ))}
-                <LabelList dataKey="color" position="insideLeft" offset={10} className="fill-background" fontSize={12} fontWeight={500} />
-                <LabelList dataKey="pct" position="right" offset={8} className="fill-foreground" fontSize={11}
-                  formatter={(v: unknown) => `${v}%`} />
-              </Bar>
-            </BarChart>
-          </ChartContainer>
+        <AdminPanel title="Vendas por Cor" description="Participação por cor vendida no período">
+          {colorSalesChartData.length > 0 ? (
+            <ChartContainer config={colorChartConfig} className="w-full" style={{ height: `${colorSalesChartData.length * 52 + 16}px` }}>
+              <BarChart layout="vertical" data={colorSalesChartData} margin={{ right: 62, left: 0, top: 4, bottom: 4 }}>
+                <CartesianGrid horizontal={false} />
+                <YAxis dataKey="color" type="category" tickLine={false} axisLine={false} hide />
+                <XAxis dataKey="pct" type="number" hide />
+                <ChartTooltip cursor={false} content={<ChartTooltipContent indicator="line" formatter={(v, name, item) => {
+                  const units = item?.payload?.units ?? 0
+                  return [`${v}% · ${num(units)} un.`, 'Participação']
+                }} />} />
+                <Bar dataKey="pct" radius={4}>
+                  {colorSalesChartData.map((entry) => (
+                    <Cell key={entry.color} fill={entry.hex} fillOpacity={0.85} />
+                  ))}
+                  <LabelList dataKey="color" position="insideLeft" offset={10} className="fill-background" fontSize={12} fontWeight={500} />
+                  <LabelList dataKey="pct" position="right" offset={8} className="fill-foreground" fontSize={11}
+                    formatter={(v: unknown) => `${v}%`} />
+                </Bar>
+              </BarChart>
+            </ChartContainer>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-border/70 p-5 text-center">
+              <p className="text-sm font-medium text-muted-foreground">Sem vendas com cor identificada no período.</p>
+            </div>
+          )}
         </AdminPanel>
 
-        <AdminPanel title="Vendas por Tamanho" description="Participação por grade (amostra)">
-          <ChartContainer config={sizeChartConfig} className="mx-auto aspect-square max-h-[250px]">
-            <RadarChart data={SIZE_DATA}>
-              <ChartTooltip cursor={false} content={<ChartTooltipContent formatter={(v) => `${v}%`} />} />
-              <PolarAngleAxis dataKey="size" tick={{ fontSize: 12 }} />
-              <PolarGrid />
-              <Radar
-                dataKey="pct"
-                fill="var(--color-pct)"
-                fillOpacity={0.6}
-                stroke="var(--color-pct)"
-                dot={{ r: 4, fillOpacity: 1 }}
-              />
-            </RadarChart>
-          </ChartContainer>
+        <AdminPanel title="Vendas por Tamanho" description="Participação por tamanho vendido no período">
+          {sizeSalesChartData.length > 0 ? (
+            <ChartContainer config={sizeChartConfig} className="mx-auto aspect-square max-h-[250px]">
+              <RadarChart data={sizeSalesChartData}>
+                <ChartTooltip cursor={false} content={<ChartTooltipContent formatter={(v, name, item) => {
+                  const units = item?.payload?.units ?? 0
+                  return [`${v}% · ${num(units)} un.`, 'Participação']
+                }} />} />
+                <PolarAngleAxis dataKey="size" tick={{ fontSize: 12 }} />
+                <PolarGrid />
+                <Radar
+                  dataKey="pct"
+                  fill="var(--color-pct)"
+                  fillOpacity={0.6}
+                  stroke="var(--color-pct)"
+                  dot={{ r: 4, fillOpacity: 1 }}
+                />
+              </RadarChart>
+            </ChartContainer>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-border/70 p-5 text-center">
+              <p className="text-sm font-medium text-muted-foreground">Sem vendas com tamanho identificado no período.</p>
+            </div>
+          )}
         </AdminPanel>
       </div>
 
@@ -976,23 +1043,55 @@ export default function B2BDashboard({
         <AdminPanel
           title="Produtos mais visitados"
           description="Ranking por eventos product_view da API de Analytics"
+          action={
+            <Button variant="outline" size="sm" onClick={exportTopVisitedProducts} className="gap-1.5 h-8">
+              <Download className="h-3.5 w-3.5" /> CSV
+            </Button>
+          }
         >
           <ProductRankingList
-            products={topVisitedProductRows}
+            products={pagedVisitedProducts}
             metricLabel="visitas"
             emptyLabel="Sem eventos de visualização no período."
+            rankOffset={visitedProductStartIndex}
           />
+          {topVisitedProductRows.length > PAGE_SIZE && (
+            <div className="mt-4">
+              <AdminPaginationControls
+                currentPage={visitedRankingPage}
+                totalPages={visitedProductTotalPages}
+                onPageChange={setVisitedRankingPage}
+                showing={{ start: visitedProductStart, end: visitedProductEnd, total: topVisitedProductRows.length }}
+              />
+            </div>
+          )}
         </AdminPanel>
 
         <AdminPanel
           title="Produtos mais vendidos"
           description="Ranking por unidades em pedidos não cancelados"
+          action={
+            <Button variant="outline" size="sm" onClick={exportTopSoldProducts} className="gap-1.5 h-8">
+              <Download className="h-3.5 w-3.5" /> CSV
+            </Button>
+          }
         >
           <ProductRankingList
-            products={topSoldProductRows}
+            products={pagedSoldProducts}
             metricLabel="unidades"
             emptyLabel="Sem produtos vendidos no período."
+            rankOffset={soldProductStartIndex}
           />
+          {topSoldProductRows.length > PAGE_SIZE && (
+            <div className="mt-4">
+              <AdminPaginationControls
+                currentPage={soldRankingPage}
+                totalPages={soldProductTotalPages}
+                onPageChange={setSoldRankingPage}
+                showing={{ start: soldProductStart, end: soldProductEnd, total: topSoldProductRows.length }}
+              />
+            </div>
+          )}
         </AdminPanel>
       </div>
 

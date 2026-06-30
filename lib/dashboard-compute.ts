@@ -3,7 +3,7 @@
 import type {
   DOrder, DOrderStatus, DCustomer, DCustomerStatus, DProduct, DRFMSegment,
   DMonthlyRevenue, DGeoEntry, DRFMEntry, DCohortRow, DFunnelStage,
-  DTrafficSource, DTopVisitedProduct,
+  DTrafficSource, DTopVisitedProduct, DProductVariantSale, DSalesByColor, DSalesBySize,
 } from '@/lib/dashboard-mock-data'
 import type {
   ApiOrder, ApiOrderItem, ApiCustomer, ApiProduct, ApiInventoryItem, ApiAnalyticsFactItem,
@@ -70,8 +70,50 @@ function firstImageFromCandidates(images: ImageCandidate[] | undefined | null): 
 
 const MONTH_NAMES = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
 
+const COLOR_HEX_BY_NAME: Record<string, string> = {
+  amarelo: '#facc15',
+  areia: '#d8c3ab',
+  azul: '#60a5fa',
+  bege: '#c8a97e',
+  branco: '#f8fafc',
+  caramelo: '#c68642',
+  cinza: '#94a3b8',
+  coral: '#f08080',
+  laranja: '#fb923c',
+  lilas: '#c084fc',
+  'lilás': '#c084fc',
+  marrom: '#92400e',
+  mostarda: '#f59e0b',
+  off: '#f3eee4',
+  preto: '#1c1c1c',
+  rosa: '#f472b6',
+  rose: '#e8a9a9',
+  'rosê': '#e8a9a9',
+  roxo: '#9333ea',
+  verde: '#4ade80',
+  vermelho: '#ef4444',
+  vinho: '#722f37',
+}
+
 function monthLabel(date: Date): string {
   return `${MONTH_NAMES[date.getMonth()]}/${String(date.getFullYear()).slice(2)}`
+}
+
+function normalizeText(value: unknown): string {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+}
+
+function colorHexFromName(name: string): string {
+  const normalized = normalizeText(name)
+  const direct = COLOR_HEX_BY_NAME[normalized]
+  if (direct) return direct
+
+  const partial = Object.entries(COLOR_HEX_BY_NAME).find(([key]) => normalized.includes(key))
+  return partial?.[1] ?? '#94a3b8'
 }
 
 function mapOrderStatus(s: string): DOrderStatus {
@@ -238,6 +280,12 @@ type ProductOrderEntry = {
   imageUrl?: string | null
 }
 
+type VariantAttributeValue = {
+  label: string
+  code: string
+  hex?: string | null
+}
+
 function firstProductImage(p: ApiProduct, imageUrlFromEndpoint?: string | null): string | null {
   const endpointImage = normalizeImageUrl(imageUrlFromEndpoint)
   if (endpointImage) return endpointImage
@@ -273,6 +321,63 @@ function firstProductOrderImage(productOrders: ProductOrderEntry[]): string | nu
   return null
 }
 
+function productImageLookupKey(kind: 'id' | 'sku' | 'name', value: unknown): string {
+  return `${kind}:${String(value ?? '').trim().toLowerCase()}`
+}
+
+function imageForProduct(p: ApiProduct, productImages: Record<string, string>): string | null {
+  return normalizeImageUrl(
+    productImages[p.id]
+    ?? productImages[productImageLookupKey('id', p.id)]
+    ?? productImages[productImageLookupKey('sku', p.code)]
+    ?? productImages[productImageLookupKey('name', p.name)]
+  )
+}
+
+function variantAttributeValue(
+  variant: ApiProduct['variants'][number] | undefined,
+  keys: Set<string>,
+): VariantAttributeValue | null {
+  const attr = (variant?.attributes ?? []).find((candidate) => {
+    const code = normalizeText(candidate.attribute?.code)
+    const name = normalizeText(candidate.attribute?.name)
+    return keys.has(code) || Array.from(keys).some((key) => name.includes(key))
+  })
+  if (!attr) return null
+
+  const label = String(attr.term?.name ?? attr.term?.code ?? '').trim()
+  if (!label) return null
+
+  const meta = attr.term?.meta ?? attr.term?.value_meta ?? {}
+  const hex = typeof meta?.rgb === 'string' ? meta.rgb
+    : typeof meta?.hex === 'string' ? meta.hex
+    : typeof meta?.color === 'string' ? meta.color
+    : null
+
+  return { label, code: String(attr.term?.code ?? label), hex }
+}
+
+function salesByVariantAttribute(
+  p: ApiProduct,
+  productOrders: ProductOrderEntry[],
+  keys: Set<string>,
+  fallbackLabel: string,
+): Map<string, { units: number; hex?: string | null }> {
+  const variantMap = new Map(p.variants.map((variant) => [variant.id, variant]))
+  const salesMap = new Map<string, { units: number; hex?: string | null }>()
+
+  productOrders.forEach((entry) => {
+    const value = variantAttributeValue(variantMap.get(entry.variantId), keys)
+    const label = value?.label || fallbackLabel
+    const current = salesMap.get(label) ?? { units: 0, hex: value?.hex }
+    current.units += entry.qty
+    if (!current.hex && value?.hex) current.hex = value.hex
+    salesMap.set(label, current)
+  })
+
+  return salesMap
+}
+
 function mapApiProductToDProduct(
   p: ApiProduct,
   productOrders: ProductOrderEntry[],
@@ -293,31 +398,21 @@ function mapApiProductToDProduct(
 
   const curve: 'A' | 'B' | 'C' = revenueRequested >= 50000 ? 'A' : revenueRequested >= 20000 ? 'B' : 'C'
 
-  // Sizes from variant attributes
+  // Sizes sold from order items and variant attributes
   const sizeKeys = new Set(['size', 'tamanho', 'talla'])
-  const sizeMap = new Map<string, number>()
-  p.variants.forEach(v => {
-    const sizeAttr = (v.attributes ?? []).find(a => sizeKeys.has((a.attribute?.code ?? '').toLowerCase()))
-    if (sizeAttr) {
-      const label = sizeAttr.term?.name ?? sizeAttr.term?.code ?? ''
-      if (label) sizeMap.set(label, (sizeMap.get(label) ?? 0) + (inventoryMap.get(v.id) ?? 0))
-    }
-  })
-  const sizes = Array.from(sizeMap.entries()).map(([size, units]) => ({ size, units }))
+  const sizeSalesMap = salesByVariantAttribute(p, productOrders, sizeKeys, 'Sem tamanho')
+  const sizes = Array.from(sizeSalesMap.entries())
+    .map(([size, data]) => ({ size, units: data.units }))
+    .filter((entry) => entry.units > 0)
+    .sort((a, b) => b.units - a.units)
 
-  // Colors from variant attributes
+  // Colors sold from order items and variant attributes
   const colorKeys = new Set(['color', 'cor', 'colour'])
-  const colorMap = new Map<string, number>()
-  p.variants.forEach(v => {
-    const colorAttr = (v.attributes ?? []).find(a => colorKeys.has((a.attribute?.code ?? '').toLowerCase()))
-    if (colorAttr) {
-      const label = colorAttr.term?.name ?? colorAttr.term?.code ?? ''
-      if (label) colorMap.set(label, (colorMap.get(label) ?? 0) + 1)
-    }
-  })
-  const colors = Array.from(colorMap.entries())
-    .slice(0, 6)
-    .map(([color, units]) => ({ color, hex: '#888888', units }))
+  const colorSalesMap = salesByVariantAttribute(p, productOrders, colorKeys, 'Sem cor')
+  const colors = Array.from(colorSalesMap.entries())
+    .map(([color, data]) => ({ color, hex: data.hex ?? colorHexFromName(color), units: data.units }))
+    .filter((entry) => entry.units > 0)
+    .sort((a, b) => b.units - a.units)
 
   // Monthly revenue sparkline
   const monthMap = new Map<string, number>()
@@ -355,6 +450,8 @@ export interface DashboardRawData {
   customers: DCustomer[]
   products:  DProduct[]
   analyticsFacts: ApiAnalyticsFactItem[]
+  productImages: Record<string, string>
+  productVariantSales: DProductVariantSale[]
   trafficSources: DTrafficSource[]
   topVisitedProducts: DTopVisitedProduct[]
 }
@@ -423,6 +520,7 @@ export function computeTrafficSourcesFromFacts(facts: ApiAnalyticsFactItem[]): D
 export function computeTopVisitedProductsFromFacts(
   facts: ApiAnalyticsFactItem[],
   products: DProduct[],
+  productImages: Record<string, string> = {},
 ): DTopVisitedProduct[] {
   const productById = new Map(products.map((product) => [String(product.id), product]))
   const map = new Map<string, DTopVisitedProduct>()
@@ -438,7 +536,7 @@ export function computeTopVisitedProductsFromFacts(
         id,
         name: product?.name ?? `Produto ${id}`,
         sku: product?.sku ?? '',
-        imageUrl: product?.imageUrl ?? null,
+        imageUrl: product?.imageUrl ?? productImages[id] ?? productImages[productImageLookupKey('id', id)] ?? null,
         visits: 0,
         uniqueSessions: 0,
         uniqueUsers: 0,
@@ -458,6 +556,7 @@ export function computeTopVisitedProductsFromFacts(
       row.uniqueSessions = sessionKeys.size
       row.uniqueUsers = userKeys.size
       if (!row.imageUrl && product?.imageUrl) row.imageUrl = product.imageUrl
+      if (!row.imageUrl) row.imageUrl = productImages[id] ?? productImages[productImageLookupKey('id', id)] ?? null
 
       sessionKeysByProduct.set(id, sessionKeys)
       userKeysByProduct.set(id, userKeys)
@@ -466,7 +565,41 @@ export function computeTopVisitedProductsFromFacts(
 
   return Array.from(map.values())
     .sort((a, b) => b.visits - a.visits)
-    .slice(0, 8)
+}
+
+export function computeSalesByColor(sales: DProductVariantSale[]): DSalesByColor[] {
+  const map = new Map<string, { units: number; hex: string }>()
+  sales.forEach((sale) => {
+    const color = sale.color || 'Sem cor'
+    const current = map.get(color) ?? { units: 0, hex: sale.colorHex || colorHexFromName(color) }
+    current.units += sale.qty
+    if (!current.hex && sale.colorHex) current.hex = sale.colorHex
+    map.set(color, current)
+  })
+
+  const total = Array.from(map.values()).reduce((sum, row) => sum + row.units, 0)
+  return Array.from(map.entries())
+    .map(([color, row]) => ({ color, hex: row.hex, units: row.units, pct: total > 0 ? (row.units / total) * 100 : 0 }))
+    .sort((a, b) => b.units - a.units)
+}
+
+export function computeSalesBySize(sales: DProductVariantSale[]): DSalesBySize[] {
+  const map = new Map<string, number>()
+  sales.forEach((sale) => {
+    const size = sale.size || 'Sem tamanho'
+    map.set(size, (map.get(size) ?? 0) + sale.qty)
+  })
+
+  const total = Array.from(map.values()).reduce((sum, units) => sum + units, 0)
+  const preferredOrder = ['PP', 'P', 'M', 'G', 'GG', 'XG', 'XGG', '34', '36', '38', '40', '42', '44', '46', '48']
+  return Array.from(map.entries())
+    .map(([size, units]) => ({ size, units, pct: total > 0 ? (units / total) * 100 : 0 }))
+    .sort((a, b) => {
+      const ai = preferredOrder.indexOf(a.size.toUpperCase())
+      const bi = preferredOrder.indexOf(b.size.toUpperCase())
+      if (ai !== -1 || bi !== -1) return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi)
+      return b.units - a.units
+    })
 }
 
 export function transformRawData(
@@ -496,10 +629,14 @@ export function transformRawData(
   )
 
   const variantToProductId = new Map<string, string>()
+  const variantToProduct = new Map<string, ApiProduct>()
+  const productById = new Map(apiProducts.map((product) => [product.id, product]))
   apiProducts.forEach(p => p.variants.forEach(v => variantToProductId.set(v.id, p.id)))
+  apiProducts.forEach(p => p.variants.forEach(v => variantToProduct.set(v.id, p)))
 
   const productOrderData = new Map<string, ProductOrderEntry[]>()
   const resolvedProductImages: Record<string, string> = { ...productImages }
+  const productVariantSales: DProductVariantSale[] = []
   apiOrders.forEach((apiOrder, idx) => {
     const dOrder = orders[idx]
     if (!dOrder || dOrder.status === 'CANCELLED') return
@@ -512,29 +649,51 @@ export function transformRawData(
       if (itemImageUrl && !resolvedProductImages[pid]) resolvedProductImages[pid] = itemImageUrl
       const list = productOrderData.get(pid) ?? []
       const total = parseMoney(item.unit_price) * item.qty
+      const fulfilledTotal = Math.round(total * fulfillmentRatio)
       list.push({
         variantId: item.variant_id,
         qty: item.qty,
         total,
-        fulfilledTotal: Math.round(total * fulfillmentRatio),
+        fulfilledTotal,
         date: dOrder.date,
         imageUrl: itemImageUrl,
       })
       productOrderData.set(pid, list)
+
+      const product = variantToProduct.get(item.variant_id) ?? productById.get(pid)
+      const variant = product?.variants.find((entry) => entry.id === item.variant_id)
+      const colorValue = variantAttributeValue(variant, new Set(['color', 'cor', 'colour']))
+      const sizeValue = variantAttributeValue(variant, new Set(['size', 'tamanho', 'talla']))
+      productVariantSales.push({
+        productId: pid,
+        productName: product?.name ?? item.asset_name ?? item.product_name ?? `Produto ${pid}`,
+        sku: item.sku || variant?.sku || product?.code || '',
+        imageUrl: itemImageUrl,
+        variantId: item.variant_id,
+        color: colorValue?.label ?? 'Sem cor',
+        colorHex: colorValue?.hex ?? colorHexFromName(colorValue?.label ?? 'Sem cor'),
+        size: sizeValue?.label ?? 'Sem tamanho',
+        qty: item.qty,
+        total,
+        fulfilledTotal,
+        date: dOrder.date,
+      })
     })
   })
 
   const products = apiProducts
     .filter(p => p.status !== 'archived')
-    .map(p => mapApiProductToDProduct(p, productOrderData.get(p.id) ?? [], inventoryMap, now, resolvedProductImages[p.id]))
+    .map(p => mapApiProductToDProduct(p, productOrderData.get(p.id) ?? [], inventoryMap, now, imageForProduct(p, resolvedProductImages) ?? undefined))
 
   return {
     orders,
     customers,
     products,
     analyticsFacts,
+    productImages: resolvedProductImages,
+    productVariantSales,
     trafficSources: computeTrafficSourcesFromFacts(analyticsFacts),
-    topVisitedProducts: computeTopVisitedProductsFromFacts(analyticsFacts, products),
+    topVisitedProducts: computeTopVisitedProductsFromFacts(analyticsFacts, products, resolvedProductImages),
   }
 }
 
