@@ -18,7 +18,54 @@ function parseMoney(s: string | null | undefined): number {
 }
 
 function normalizeImageUrl(value: unknown): string | null {
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (/^(https?:|data:|blob:)/i.test(trimmed)) return trimmed
+  if (trimmed.startsWith('//')) return `https:${trimmed}`
+
+  const base = process.env.NEXT_PUBLIC_RUST_URL?.trim()
+  if (!base) return trimmed
+
+  try {
+    return new URL(trimmed.startsWith('/') ? trimmed : `/${trimmed}`, base).toString()
+  } catch {
+    return trimmed
+  }
+}
+
+type ImageCandidate = string | {
+  image_url?: string | null
+  imageUrl?: string | null
+  url?: string | null
+  src?: string | null
+  storage_path?: string | null
+  storagePath?: string | null
+  is_primary?: boolean
+  isPrimary?: boolean
+} | null | undefined
+
+function imageCandidateUrl(image: ImageCandidate): string | null {
+  if (typeof image === 'string') return normalizeImageUrl(image)
+  if (!image || typeof image !== 'object') return null
+  return normalizeImageUrl(image.image_url ?? image.imageUrl ?? image.url ?? image.src ?? image.storage_path ?? image.storagePath)
+}
+
+function firstImageFromCandidates(images: ImageCandidate[] | undefined | null): string | null {
+  if (!Array.isArray(images)) return null
+
+  const primary = images.find((image) =>
+    typeof image === 'object' && image && Boolean(image.is_primary ?? image.isPrimary)
+  )
+  const primaryUrl = imageCandidateUrl(primary)
+  if (primaryUrl) return primaryUrl
+
+  for (const image of images) {
+    const url = imageCandidateUrl(image)
+    if (url) return url
+  }
+
+  return null
 }
 
 const MONTH_NAMES = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
@@ -195,18 +242,23 @@ function firstProductImage(p: ApiProduct, imageUrlFromEndpoint?: string | null):
   const endpointImage = normalizeImageUrl(imageUrlFromEndpoint)
   if (endpointImage) return endpointImage
 
-  const direct = p.image_url ?? p.imageUrl ?? p.primary_image_url
+  const direct = p.image_url ?? p.imageUrl ?? p.primary_image_url ?? p.primaryImageUrl ?? p.cover_image_url ?? p.coverImageUrl
   const directImage = normalizeImageUrl(direct)
   if (directImage) return directImage
 
-  if (Array.isArray(p.images)) {
-    for (const image of p.images) {
-      const url = typeof image === 'string'
-        ? image
-        : image?.image_url ?? image?.imageUrl ?? image?.url ?? image?.src
-      const normalized = normalizeImageUrl(url)
-      if (normalized) return normalized
+  const productImages = firstImageFromCandidates(p.images)
+  if (productImages) return productImages
+
+  if (Array.isArray(p.image_groups)) {
+    for (const group of p.image_groups) {
+      const groupImage = firstImageFromCandidates(group?.images)
+      if (groupImage) return groupImage
     }
+  }
+
+  for (const variant of p.variants ?? []) {
+    const variantImage = firstImageFromCandidates(variant.images)
+    if (variantImage) return variantImage
   }
 
   return null

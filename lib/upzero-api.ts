@@ -99,6 +99,7 @@ export interface ApiVariant {
   active?: boolean
   status?: string
   attributes?: ApiVariantAttribute[]
+  images?: Array<string | { image_url?: string | null; imageUrl?: string | null; url?: string | null; src?: string | null; storage_path?: string | null; storagePath?: string | null }>
 }
 
 export interface ApiProduct {
@@ -112,7 +113,13 @@ export interface ApiProduct {
   image_url?: string | null
   imageUrl?: string | null
   primary_image_url?: string | null
-  images?: Array<string | { image_url?: string | null; imageUrl?: string | null; url?: string | null; src?: string | null }>
+  primaryImageUrl?: string | null
+  cover_image_url?: string | null
+  coverImageUrl?: string | null
+  images?: Array<string | { image_url?: string | null; imageUrl?: string | null; url?: string | null; src?: string | null; storage_path?: string | null; storagePath?: string | null }>
+  image_groups?: Array<{
+    images?: Array<string | { image_url?: string | null; imageUrl?: string | null; url?: string | null; src?: string | null; storage_path?: string | null; storagePath?: string | null; is_primary?: boolean; isPrimary?: boolean }>
+  }>
   variants: ApiVariant[]
 }
 
