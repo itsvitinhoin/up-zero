@@ -18,7 +18,13 @@ export interface ApiAddress {
 
 export interface ApiOrderItem {
   id: string
+  product_id?: string | number | null
   variant_id: string
+  asset_id?: string | number | null
+  asset_name?: string | null
+  asset_image_url?: string | null
+  image_url?: string | null
+  imageUrl?: string | null
   sku: string
   qty: number
   unit_price: string
@@ -106,7 +112,7 @@ export interface ApiProduct {
   image_url?: string | null
   imageUrl?: string | null
   primary_image_url?: string | null
-  images?: Array<string | { image_url?: string | null; imageUrl?: string | null }>
+  images?: Array<string | { image_url?: string | null; imageUrl?: string | null; url?: string | null; src?: string | null }>
   variants: ApiVariant[]
 }
 
@@ -300,8 +306,12 @@ export async function fetchDashboardAnalyticsFacts(startDate: string, endDate: s
 type ApiProductImageResponse = {
   image_url?: string | null
   imageUrl?: string | null
+  url?: string | null
+  src?: string | null
   is_primary?: boolean
+  isPrimary?: boolean
   display_order?: number
+  displayOrder?: number
 }
 
 export async function fetchProductPrimaryImages(productIds: string[]): Promise<Record<string, string>> {
@@ -310,19 +320,22 @@ export async function fetchProductPrimaryImages(productIds: string[]): Promise<R
 
   const results = await Promise.allSettled(
     uniqueIds.map(async (productId) => {
-      const images = await upzeroFetch<ApiProductImageResponse[]>(
+      const response = await upzeroFetch<ApiProductImageResponse[] | { data?: ApiProductImageResponse[]; images?: ApiProductImageResponse[] }>(
         `/external/v1/products/${encodeURIComponent(productId)}/images`,
       )
+      const images = Array.isArray(response) ? response : (response.data ?? response.images ?? [])
       const sorted = [...(images ?? [])].sort((a, b) => {
-        if (a.is_primary && !b.is_primary) return -1
-        if (!a.is_primary && b.is_primary) return 1
-        return (a.display_order ?? 999) - (b.display_order ?? 999)
+        const aPrimary = Boolean(a.is_primary ?? a.isPrimary)
+        const bPrimary = Boolean(b.is_primary ?? b.isPrimary)
+        if (aPrimary && !bPrimary) return -1
+        if (!aPrimary && bPrimary) return 1
+        return (a.display_order ?? a.displayOrder ?? 999) - (b.display_order ?? b.displayOrder ?? 999)
       })
       const imageUrl = sorted
-        .map((image) => image.image_url || image.imageUrl || null)
+        .map((image) => image.image_url || image.imageUrl || image.url || image.src || null)
         .find((url): url is string => typeof url === 'string' && url.trim().length > 0)
 
-      return imageUrl ? [productId, imageUrl] as const : null
+      return imageUrl ? [productId, imageUrl.trim()] as const : null
     }),
   )
 

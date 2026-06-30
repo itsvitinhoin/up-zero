@@ -17,6 +17,10 @@ function parseMoney(s: string | null | undefined): number {
   return isNaN(n) ? 0 : n
 }
 
+function normalizeImageUrl(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null
+}
+
 const MONTH_NAMES = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
 
 function monthLabel(date: Date): string {
@@ -178,20 +182,40 @@ function mapApiCustomerToDCustomer(c: ApiCustomer, customerOrders: DOrder[], tod
 
 // ── API → DProduct ────────────────────────────────────────────────────────────
 
-type ProductOrderEntry = { variantId: string; qty: number; total: number; fulfilledTotal: number; date: Date }
+type ProductOrderEntry = {
+  variantId: string
+  qty: number
+  total: number
+  fulfilledTotal: number
+  date: Date
+  imageUrl?: string | null
+}
 
-function firstProductImage(p: ApiProduct, imageUrlFromEndpoint?: string): string | null {
-  if (imageUrlFromEndpoint) return imageUrlFromEndpoint
+function firstProductImage(p: ApiProduct, imageUrlFromEndpoint?: string | null): string | null {
+  const endpointImage = normalizeImageUrl(imageUrlFromEndpoint)
+  if (endpointImage) return endpointImage
 
   const direct = p.image_url ?? p.imageUrl ?? p.primary_image_url
-  if (direct && String(direct).trim()) return String(direct).trim()
+  const directImage = normalizeImageUrl(direct)
+  if (directImage) return directImage
 
   if (Array.isArray(p.images)) {
     for (const image of p.images) {
-      if (typeof image === 'string' && image.trim()) return image.trim()
-      const url = image?.image_url ?? image?.imageUrl
-      if (url && String(url).trim()) return String(url).trim()
+      const url = typeof image === 'string'
+        ? image
+        : image?.image_url ?? image?.imageUrl ?? image?.url ?? image?.src
+      const normalized = normalizeImageUrl(url)
+      if (normalized) return normalized
     }
+  }
+
+  return null
+}
+
+function firstProductOrderImage(productOrders: ProductOrderEntry[]): string | null {
+  for (const entry of productOrders) {
+    const imageUrl = normalizeImageUrl(entry.imageUrl)
+    if (imageUrl) return imageUrl
   }
 
   return null
@@ -256,7 +280,7 @@ function mapApiProductToDProduct(
     name: p.name,
     sku:  p.code ?? p.variants[0]?.sku ?? '',
     category: p.product_category_names?.[0] ?? p.category_names?.[0] ?? p.categories?.[0]?.name ?? 'Geral',
-    imageUrl: firstProductImage(p, imageUrl),
+    imageUrl: firstProductImage(p, imageUrl) ?? firstProductOrderImage(productOrders),
     basePrice: parseMoney(p.variants[0]?.price),
     revenueRequested,
     revenueFulfilled,
@@ -423,23 +447,34 @@ export function transformRawData(
   apiProducts.forEach(p => p.variants.forEach(v => variantToProductId.set(v.id, p.id)))
 
   const productOrderData = new Map<string, ProductOrderEntry[]>()
+  const resolvedProductImages: Record<string, string> = { ...productImages }
   apiOrders.forEach((apiOrder, idx) => {
     const dOrder = orders[idx]
     if (!dOrder || dOrder.status === 'CANCELLED') return
     const fulfillmentRatio = dOrder.total > 0 ? Math.min(1, Math.max(0, dOrder.fulfilledTotal / dOrder.total)) : 0
     ;(apiOrder.items ?? []).forEach(item => {
-      const pid = variantToProductId.get(item.variant_id)
+      const productIdFromItem = item.product_id != null ? String(item.product_id) : ''
+      const pid = variantToProductId.get(item.variant_id) ?? productIdFromItem
       if (!pid) return
+      const itemImageUrl = normalizeImageUrl(item.image_url ?? item.imageUrl ?? item.asset_image_url)
+      if (itemImageUrl && !resolvedProductImages[pid]) resolvedProductImages[pid] = itemImageUrl
       const list = productOrderData.get(pid) ?? []
       const total = parseMoney(item.unit_price) * item.qty
-      list.push({ variantId: item.variant_id, qty: item.qty, total, fulfilledTotal: Math.round(total * fulfillmentRatio), date: dOrder.date })
+      list.push({
+        variantId: item.variant_id,
+        qty: item.qty,
+        total,
+        fulfilledTotal: Math.round(total * fulfillmentRatio),
+        date: dOrder.date,
+        imageUrl: itemImageUrl,
+      })
       productOrderData.set(pid, list)
     })
   })
 
   const products = apiProducts
     .filter(p => p.status !== 'archived')
-    .map(p => mapApiProductToDProduct(p, productOrderData.get(p.id) ?? [], inventoryMap, now, productImages[p.id]))
+    .map(p => mapApiProductToDProduct(p, productOrderData.get(p.id) ?? [], inventoryMap, now, resolvedProductImages[p.id]))
 
   return {
     orders,
