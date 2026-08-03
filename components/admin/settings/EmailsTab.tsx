@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
+  BarChart3,
   Check,
   CheckCircle2,
   ChevronRight,
@@ -48,12 +49,17 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  EmailDeliveryHistory,
+  getEmailTemplateDeliverySummary,
+} from "@/components/admin/settings/EmailDeliveryHistory";
 import { cn } from "@/lib/utils";
 
 type EmailCategory = "ACCOUNT" | "ORDER" | "PAYMENT" | "DELIVERY" | "RECOVERY";
 type RecipientType = "CUSTOMER" | "SELLER" | "ADMIN";
 type EditorView = "list" | "editor";
 type PreviewDevice = "desktop" | "mobile";
+type EmailSection = "templates" | "history";
 
 interface TriggerDefinition {
   key: string;
@@ -425,6 +431,7 @@ export function EmailsTab() {
   const [identity, setIdentity] = useState<EmailIdentity>(DEFAULT_IDENTITY);
   const [selectedTemplateId, setSelectedTemplateId] = useState(DEFAULT_TEMPLATES[0].id);
   const [view, setView] = useState<EditorView>("list");
+  const [emailSection, setEmailSection] = useState<EmailSection>("templates");
   const [previewDevice, setPreviewDevice] = useState<PreviewDevice>("desktop");
   const [query, setQuery] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<EmailCategory | "ALL">("ALL");
@@ -819,7 +826,7 @@ export function EmailsTab() {
   }
 
   return (
-    <div className="space-y-5">
+    <div id="email-settings" className="space-y-5">
       <div className="flex flex-col gap-4 border-b border-border/60 pb-5 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <div className="flex items-center gap-3">
@@ -832,24 +839,43 @@ export function EmailsTab() {
             </div>
           </div>
         </div>
-        <Button
-          type="button"
-          onClick={saveChanges}
-          disabled={isSaving || !hasChanges}
-          className="h-11 gap-2 rounded-xl"
-        >
-          <Check className="h-4 w-4" />
-          {isSaving ? "Salvando..." : "Salvar configurações"}
-        </Button>
+        {emailSection === "templates" ? (
+          <Button
+            type="button"
+            onClick={saveChanges}
+            disabled={isSaving || !hasChanges}
+            className="h-11 gap-2 rounded-xl"
+          >
+            <Check className="h-4 w-4" />
+            {isSaving ? "Salvando..." : "Salvar configurações"}
+          </Button>
+        ) : null}
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-3">
-        <StatCard icon={Mail} label="Modelos" value={templates.length} hint="Triggers configurados" tone="primary" />
-        <StatCard icon={CheckCircle2} label="Ativos" value={activeCount} hint="Enviando automaticamente" tone="success" />
-        <StatCard icon={CircleOff} label="Inativos" value={inactiveCount} hint="Disparos pausados" tone="muted" />
-      </div>
+      <Tabs value={emailSection} onValueChange={(value) => setEmailSection(value as EmailSection)}>
+        <TabsList className="h-12 w-full rounded-xl p-1 sm:w-auto">
+          <TabsTrigger value="templates" className="min-h-10 flex-1 gap-2 rounded-lg px-4 sm:flex-none">
+            <FilePenLine className="h-4 w-4" />
+            Modelos
+          </TabsTrigger>
+          <TabsTrigger value="history" className="min-h-10 flex-1 gap-2 rounded-lg px-4 sm:flex-none">
+            <BarChart3 className="h-4 w-4" />
+            Histórico de envios
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
 
-      <Card id="email-identity" className="border-border/60 shadow-none">
+      {emailSection === "history" ? (
+        <EmailDeliveryHistory templates={templates} />
+      ) : (
+        <>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <StatCard icon={Mail} label="Modelos" value={templates.length} hint="Triggers configurados" tone="primary" />
+            <StatCard icon={CheckCircle2} label="Ativos" value={activeCount} hint="Enviando automaticamente" tone="success" />
+            <StatCard icon={CircleOff} label="Inativos" value={inactiveCount} hint="Disparos pausados" tone="muted" />
+          </div>
+
+          <Card id="email-identity" className="border-border/60 shadow-none">
         <CardHeader className="p-4 sm:p-5">
           <div className="flex items-start gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
@@ -882,9 +908,9 @@ export function EmailsTab() {
             />
           </div>
         </CardContent>
-      </Card>
+          </Card>
 
-      <Card id="email-templates" className="border-border/60 shadow-none">
+          <Card id="email-templates" className="border-border/60 shadow-none">
         <CardHeader className="p-4 sm:p-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
@@ -929,6 +955,7 @@ export function EmailsTab() {
         <CardContent className="space-y-3 p-4 pt-0 sm:p-5 sm:pt-0">
           {filteredTemplates.length > 0 ? filteredTemplates.map((template) => {
             const trigger = triggerByKey(template.triggerKey);
+            const deliverySummary = getEmailTemplateDeliverySummary(template.id);
             return (
               <div
                 key={template.id}
@@ -954,6 +981,16 @@ export function EmailsTab() {
                         <span className="flex items-center gap-1.5"><Sparkles className="h-3 w-3" /> {trigger.name}</span>
                         <span className="flex items-center gap-1.5"><Users className="h-3 w-3" /> {RECIPIENT_LABELS[template.recipient]}</span>
                         <span className="flex items-center gap-1.5"><Clock3 className="h-3 w-3" /> {template.updatedAt}</span>
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
+                        <span className="rounded-lg bg-primary/5 px-2 py-1 font-medium text-primary">
+                          {new Intl.NumberFormat("pt-BR").format(deliverySummary.sent)} enviados
+                        </span>
+                        <span className="rounded-lg bg-emerald-50 px-2 py-1 font-medium text-emerald-700">
+                          {deliverySummary.sent > 0
+                            ? `${new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 1 }).format((deliverySummary.delivered / deliverySummary.sent) * 100)}% entregues`
+                            : "Sem envios"}
+                        </span>
                       </div>
                       <p className="mt-2 truncate text-xs text-muted-foreground/80">
                         <span className="font-medium text-foreground/70">Assunto:</span> {template.subject}
@@ -996,7 +1033,9 @@ export function EmailsTab() {
             </div>
           )}
         </CardContent>
-      </Card>
+          </Card>
+        </>
+      )}
     </div>
   );
 }
