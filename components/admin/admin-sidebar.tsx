@@ -34,6 +34,7 @@ import {
   Megaphone,
   Globe,
   Receipt,
+  Mail,
 } from 'lucide-react'
 import { AdminBranchSelector } from '@/components/admin/admin-branch-selector'
 import {
@@ -158,6 +159,7 @@ const settingsSection: NavSection = {
     { name: 'Estoque', href: '/settings/stock', icon: Boxes },
     { name: 'Frete', href: '/settings/shipping', icon: Truck },
     { name: 'Marketing', href: '/settings/marketing', icon: Megaphone },
+    { name: 'E-mails', href: '/settings/emails', icon: Mail },
     { name: 'Domínio', href: '/settings/domain', icon: Globe },
     { name: 'Billing', href: '/settings/billing', icon: Receipt },
   ],

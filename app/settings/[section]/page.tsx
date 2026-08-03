@@ -12,6 +12,7 @@ const VALID_SECTIONS = [
   "payments",
   "shipping",
   "marketing",
+  "emails",
   "domain",
   "billing",
   "stock",

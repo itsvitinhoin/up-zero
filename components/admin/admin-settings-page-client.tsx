@@ -15,6 +15,7 @@ import {
   Receipt,
   Boxes,
   Save,
+  Mail,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -43,6 +44,7 @@ import { DomainTab } from "@/components/admin/settings/DomainTab";
 import { ShippingTab, getDefaultShippingSettings } from "@/components/admin/settings/ShippingTab";
 import { BillingTab } from "./settings/BillingTab";
 import { StockTab } from "./settings/StockTab";
+import { EmailsTab } from "./settings/EmailsTab";
 import { tAdmin } from "@/lib/i18n/admin";
 import { SettingsSecondaryNav, type NavSection } from "@/components/admin/settings/SettingsSecondaryNav";
 
@@ -53,6 +55,7 @@ export type SettingsPageKey =
   | "payments"
   | "shipping"
   | "marketing"
+  | "emails"
   | "domain"
   | "billing"
   | "stock";
@@ -156,6 +159,16 @@ function getSettingsNav(locale?: string) {
     ],
   },
   {
+    key: "emails",
+    label: "E-mails",
+    icon: Mail,
+    href: "/settings/emails",
+    items: [
+      { label: "Identidade do remetente", anchor: "email-identity" },
+      { label: "Modelos transacionais", anchor: "email-templates" },
+    ],
+  },
+  {
     key: "domain",
     label: tAdmin(locale, "admin.nav.domain"),
     icon: Globe,
@@ -179,7 +192,7 @@ function getSettingsNavSections(locale?: string): NavSection[] {
   return [
     { title: "Loja", groups: ["general", "appearance", "stock"].map(get) },
     { title: "Vendas", groups: ["b2b", "payments", "shipping"].map(get) },
-    { title: "Crescimento", groups: ["marketing", "domain"].map(get) },
+    { title: "Crescimento", groups: ["marketing", "emails", "domain"].map(get) },
     { title: "Plano", groups: ["billing"].map(get) },
   ];
 }
@@ -566,6 +579,8 @@ export default function AdminSettingsPageClient({
             onSave={handleSaveMarketing}
           />
         );
+      case "emails":
+        return <EmailsTab />;
       case "domain":
         return (
           <DomainTab
@@ -594,7 +609,7 @@ export default function AdminSettingsPageClient({
   }
 
   const currentSaveHandler: (() => void) | null = (() => {
-    if (currentPage === 'billing') return null;
+    if (currentPage === 'billing' || currentPage === 'emails') return null;
     const map: Record<SettingsPageKey, () => void> = {
       general: handleSaveGeneral,
       b2b: handleSaveGeneral,
@@ -602,6 +617,7 @@ export default function AdminSettingsPageClient({
       payments: handleSavePayment,
       shipping: handleSaveShipping,
       marketing: handleSaveMarketing,
+      emails: () => {},
       domain: handleSaveDomain,
       billing: () => {},
       stock: handleSaveStock,
