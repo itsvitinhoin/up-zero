@@ -3,6 +3,8 @@
 import { useMemo, useState } from "react";
 import {
   AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   MailCheck,
   MailOpen,
@@ -11,6 +13,8 @@ import {
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import AdminPaginationControls from "@/components/admin/admin-pagination-controls";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
@@ -21,6 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { usePaginatedList } from "@/hooks/use-paginated-list";
 
 type EmailDeliveryStatus = "QUEUED" | "SENT" | "DELIVERED" | "OPENED" | "CLICKED" | "FAILED";
 
@@ -201,6 +206,7 @@ const STATUS_OPTIONS = Object.entries(STATUS_CONFIG) as Array<[
 ]>;
 
 const numberFormatter = new Intl.NumberFormat("pt-BR");
+const DELIVERY_LOGS_PAGE_SIZE = 5;
 
 function percentage(value: number, total: number) {
   if (total === 0) return "0%";
@@ -257,6 +263,7 @@ export function EmailDeliveryHistory({ templates }: { templates: EmailTemplateSu
   const [query, setQuery] = useState("");
   const [templateFilter, setTemplateFilter] = useState("ALL");
   const [deliveryStatusFilter, setDeliveryStatusFilter] = useState<EmailDeliveryStatus | "ALL">("ALL");
+  const [currentPage, setCurrentPage] = useState(1);
 
   const totals = useMemo(() => TEMPLATE_METRICS.reduce(
     (result, current) => ({
@@ -285,6 +292,18 @@ export function EmailDeliveryHistory({ templates }: { templates: EmailTemplateSu
       return matchesTemplate && matchesStatus && matchesQuery;
     });
   }, [deliveryStatusFilter, query, templateFilter, templates]);
+
+  const {
+    paginatedItems: paginatedLogs,
+    totalPages,
+    safeCurrentPage,
+    pageStart,
+    pageEnd,
+  } = usePaginatedList({
+    items: filteredLogs,
+    currentPage,
+    pageSize: DELIVERY_LOGS_PAGE_SIZE,
+  });
 
   return (
     <div id="email-history" className="space-y-5">
@@ -401,13 +420,22 @@ export function EmailDeliveryHistory({ templates }: { templates: EmailTemplateSu
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={query}
-                  onChange={(event) => setQuery(event.target.value)}
+                  onChange={(event) => {
+                    setQuery(event.target.value);
+                    setCurrentPage(1);
+                  }}
                   placeholder="Buscar destinatário..."
                   className="min-h-11 rounded-xl pl-9"
                   aria-label="Buscar no histórico de envios"
                 />
               </div>
-              <Select value={templateFilter} onValueChange={setTemplateFilter}>
+              <Select
+                value={templateFilter}
+                onValueChange={(value) => {
+                  setTemplateFilter(value);
+                  setCurrentPage(1);
+                }}
+              >
                 <SelectTrigger className="min-h-11 w-full rounded-xl" aria-label="Filtrar por modelo">
                   <SelectValue />
                 </SelectTrigger>
@@ -420,7 +448,10 @@ export function EmailDeliveryHistory({ templates }: { templates: EmailTemplateSu
               </Select>
               <Select
                 value={deliveryStatusFilter}
-                onValueChange={(value) => setDeliveryStatusFilter(value as EmailDeliveryStatus | "ALL")}
+                onValueChange={(value) => {
+                  setDeliveryStatusFilter(value as EmailDeliveryStatus | "ALL");
+                  setCurrentPage(1);
+                }}
               >
                 <SelectTrigger className="min-h-11 w-full rounded-xl" aria-label="Filtrar por status do envio">
                   <SelectValue />
@@ -440,7 +471,7 @@ export function EmailDeliveryHistory({ templates }: { templates: EmailTemplateSu
             <span>{filteredLogs.length} envios encontrados</span>
             <span>Últimos 30 dias</span>
           </div>
-          {filteredLogs.length > 0 ? filteredLogs.map((log) => {
+          {paginatedLogs.length > 0 ? paginatedLogs.map((log) => {
             const template = templates.find((item) => item.id === log.templateId);
             return (
               <div key={log.id} className="rounded-2xl border border-border/60 p-4">
@@ -482,6 +513,52 @@ export function EmailDeliveryHistory({ templates }: { templates: EmailTemplateSu
               <p className="mt-1 text-sm text-muted-foreground">Ajuste os filtros para consultar outros registros.</p>
             </div>
           )}
+          {filteredLogs.length > DELIVERY_LOGS_PAGE_SIZE ? (
+            <div className="pt-2">
+              <div className="rounded-xl border border-border/20 bg-card p-3 sm:hidden">
+                <p className="text-center text-xs text-muted-foreground">
+                  Mostrando <span className="font-medium text-foreground">{pageStart}-{pageEnd}</span> de{" "}
+                  <span className="font-medium text-foreground">{filteredLogs.length}</span>
+                </p>
+                <div className="mt-3 grid grid-cols-[48px_1fr_48px] items-center gap-3">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    onClick={() => setCurrentPage(safeCurrentPage - 1)}
+                    disabled={safeCurrentPage <= 1}
+                    className="h-12 w-12 rounded-xl"
+                    aria-label="Página anterior"
+                  >
+                    <ChevronLeft className="h-5 w-5" />
+                  </Button>
+                  <p className="text-center text-sm font-medium">
+                    Página {safeCurrentPage} de {totalPages}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    onClick={() => setCurrentPage(safeCurrentPage + 1)}
+                    disabled={safeCurrentPage >= totalPages}
+                    className="h-12 w-12 rounded-xl"
+                    aria-label="Próxima página"
+                  >
+                    <ChevronRight className="h-5 w-5" />
+                  </Button>
+                </div>
+              </div>
+              <div className="hidden sm:block [&_button]:h-11 [&_button]:min-w-11">
+                <AdminPaginationControls
+                  currentPage={safeCurrentPage}
+                  totalPages={totalPages}
+                  maxVisiblePages={3}
+                  onPageChange={setCurrentPage}
+                  showing={{ start: pageStart, end: pageEnd, total: filteredLogs.length }}
+                />
+              </div>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
     </div>
