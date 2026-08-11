@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { toast } from 'sonner'
@@ -129,18 +129,9 @@ export function AdminChannelPricesClient({
     router.push(query ? `${pathname}?${query}` : pathname)
   }
 
-  useEffect(() => {
-    const currentSearch = (pagination.search ?? '').trim()
-    const nextSearch = search.trim()
-    if (nextSearch === currentSearch) return
-    const timer = setTimeout(() => {
-      const params = new URLSearchParams()
-      if (nextSearch.length > 0) params.set('q', nextSearch)
-      const query = params.toString()
-      router.replace(query ? `${pathname}?${query}` : pathname)
-    }, 400)
-    return () => clearTimeout(timer)
-  }, [search, pagination.search, pathname, router])
+  function handleSearchSubmit() {
+    navigateWithParams(1, search)
+  }
 
   function openProductModal(product: SalesChannelProduct) {
     const rows: EditableVariantPrice[] = product.variants.map((variant) => {
@@ -235,8 +226,23 @@ export function AdminChannelPricesClient({
             placeholder="Buscar produtos..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-9"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                handleSearchSubmit()
+              }
+            }}
+            className="pl-9 pr-24"
           />
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="absolute right-1 top-1/2 h-8 -translate-y-1/2 cursor-pointer"
+            onClick={handleSearchSubmit}
+          >
+            Buscar
+          </Button>
         </div>
       </div>
 

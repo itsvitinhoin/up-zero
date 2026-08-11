@@ -1,21 +1,22 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { GripVertical, Plus, Trash2 } from "lucide-react";
+import { GripVertical, Loader2, Plus, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { createStoreAttribute, updateStoreAttributeName, type Attribute } from "@/lib/actions/attributes";
-import { createAttributeValue, deleteAttributeValue, updateAttributeValueSortOrder } from "@/lib/actions/attribute-values";
+import { createStoreAttribute, type Attribute } from "@/lib/actions/attributes";
+import { createAttributeValue, deleteAttributeValue, updateAttributeValue, updateAttributeValueSortOrder } from "@/lib/actions/attribute-values";
+import { StoreAttributeNameField } from "@/components/admin/store-attribute-name-field";
 
 interface GenericAttributeValuesManagerProps {
   attribute: Attribute | null;
   storeId?: number | null;
   nextAttributeSortOrder?: number;
   mode?: "manage-values" | "create-attribute";
+  canCreateAttributes?: boolean;
   onAttributeCreated?: (attribute: Attribute) => void;
   onRefreshAttributes?: () => Promise<void>;
 }
@@ -35,18 +36,17 @@ export function GenericAttributeValuesManager({
   storeId,
   nextAttributeSortOrder = 0,
   mode = "manage-values",
+  canCreateAttributes = true,
   onAttributeCreated,
   onRefreshAttributes,
 }: GenericAttributeValuesManagerProps) {
   const [newAttributeLabel, setNewAttributeLabel] = useState("");
-  const [newAttributeValue, setNewAttributeValue] = useState("");
   const [isCreatingAttribute, setIsCreatingAttribute] = useState(false);
   const [localCreatedAttribute, setLocalCreatedAttribute] = useState<Attribute | null>(null);
   const [newValueLabel, setNewValueLabel] = useState("");
-  const [newValueValue, setNewValueValue] = useState("");
   const [isCreating, setIsCreating] = useState(false);
-  const [attributeName, setAttributeName] = useState("");
-  const [isSavingAttributeName, setIsSavingAttributeName] = useState(false);
+  const [valueNameDrafts, setValueNameDrafts] = useState<Record<number, string>>({});
+  const [savingValueId, setSavingValueId] = useState<number | null>(null);
   const [deletingValueId, setDeletingValueId] = useState<number | null>(null);
   const [orderedValueIds, setOrderedValueIds] = useState<number[]>([]);
   const [draggedValueId, setDraggedValueId] = useState<number | null>(null);
@@ -68,8 +68,12 @@ export function GenericAttributeValuesManager({
   }, [values, orderedValueIds]);
 
   useEffect(() => {
-    setAttributeName(attribute?.name || "");
-  }, [attribute?.id, attribute?.name]);
+    const nextDrafts: Record<number, string> = {};
+    values.forEach((value) => {
+      nextDrafts[value.id] = value.name || value.code || "";
+    });
+    setValueNameDrafts(nextDrafts);
+  }, [values]);
 
   useEffect(() => {
     setOrderedValueIds((prev) => {
@@ -182,13 +186,18 @@ export function GenericAttributeValuesManager({
   }
 
   async function handleCreateAttribute() {
+    if (!canCreateAttributes) {
+      toast.error("Atributos devem ser criados pelo ERP integrado");
+      return;
+    }
+
     if (!storeId) {
       toast.error("Store ID não disponível");
       return;
     }
 
     const label = newAttributeLabel.trim();
-    const value = normalizeCode(newAttributeValue || newAttributeLabel);
+    const value = normalizeCode(label);
     if (!label || !value) return;
 
     setIsCreatingAttribute(true);
@@ -208,7 +217,6 @@ export function GenericAttributeValuesManager({
     }
 
     setNewAttributeLabel("");
-    setNewAttributeValue("");
     await onRefreshAttributes?.();
     setLocalCreatedAttribute(result.data);
     onAttributeCreated?.(result.data);
@@ -218,10 +226,15 @@ export function GenericAttributeValuesManager({
   }
 
   async function handleCreateValue() {
+    if (!canCreateAttributes) {
+      toast.error("Atributos devem ser criados pelo ERP integrado");
+      return;
+    }
+
     const targetAttribute = mode === "create-attribute" ? localCreatedAttribute : attribute;
     if (!targetAttribute) return;
     const label = newValueLabel.trim();
-    const value = normalizeCode(newValueValue || newValueLabel);
+    const value = normalizeCode(label);
     if (!label || !value) return;
     const nextValueSortOrder = values.reduce((maxSortOrder, currentValue) => {
       const currentSortOrder = Number(currentValue.sort_order ?? 0);
@@ -243,7 +256,6 @@ export function GenericAttributeValuesManager({
     }
 
     setNewValueLabel("");
-    setNewValueValue("");
     if (mode === "create-attribute" && localCreatedAttribute && result.data) {
       setLocalCreatedAttribute((prev) =>
         prev ? { ...prev, values: [...(prev.values ?? []), result.data!] } : prev
@@ -253,6 +265,102 @@ export function GenericAttributeValuesManager({
     toast("Valor criado", {
       description: `"${label}" adicionado.`,
     });
+  }
+
+  async function handleSaveValueName(valueId: number, currentName: string) {
+    const nextName = (valueNameDrafts[valueId] || "").trim();
+    if (!nextName || nextName === currentName) return;
+
+    setSavingValueId(valueId);
+    const result = await updateAttributeValue(valueId, { name: nextName });
+    setSavingValueId(null);
+
+    if (!result.success) {
+      toast.error("Falha ao atualizar valor", {
+        description: result.error || "Não foi possível atualizar o nome.",
+      });
+      return;
+    }
+
+    if (mode === "create-attribute" && localCreatedAttribute) {
+      setLocalCreatedAttribute((prev) =>
+        prev
+          ? {
+              ...prev,
+              values: (prev.values ?? []).map((value) =>
+                value.id === valueId ? { ...value, name: nextName } : value
+              ),
+            }
+          : prev
+      );
+    }
+
+    await onRefreshAttributes?.();
+    toast("Valor atualizado", {
+      description: `Nome alterado para "${nextName}".`,
+    });
+  }
+
+  function renderValueRow(value: NonNullable<typeof values>[number]) {
+    const currentName = value.name || value.code || "";
+    const draftName = valueNameDrafts[value.id] ?? currentName;
+    const isDirty = draftName.trim() !== currentName.trim();
+
+    return (
+      <div
+        key={value.id}
+        draggable={!isSavingValueOrder && savingValueId !== value.id}
+        onDragStart={() => handleValueDragStart(value.id)}
+        onDragOver={(event) => handleValueDragOver(event, value.id)}
+        onDragLeave={handleValueDragLeave}
+        onDrop={(event) => handleValueDrop(event, value.id)}
+        onDragEnd={handleValueDragEnd}
+        className={`flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2 ${draggedValueId === value.id ? "opacity-60" : ""} ${dragOverValueId === value.id ? "ring-2 ring-primary ring-offset-1" : ""}`}
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <GripVertical className="h-4 w-4 shrink-0 opacity-50" />
+          <Input
+            value={draftName}
+            onChange={(event) =>
+              setValueNameDrafts((prev) => ({ ...prev, [value.id]: event.target.value }))
+            }
+            className="h-8 max-w-[220px] text-sm"
+            disabled={isSavingValueOrder || savingValueId === value.id}
+          />
+          <span className="hidden text-xs text-muted-foreground sm:inline">
+            ({value.code})
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="cursor-pointer"
+            disabled={!isDirty || isSavingValueOrder || savingValueId === value.id}
+            onClick={() => void handleSaveValueName(value.id, currentName)}
+            aria-label={`Salvar ${currentName}`}
+          >
+            {savingValueId === value.id ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Save className="h-4 w-4" />
+            )}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="cursor-pointer text-destructive"
+            onClick={() => void handleDeleteValue(value.id, currentName)}
+            disabled={deletingValueId === value.id || isSavingValueOrder || savingValueId === value.id}
+            aria-label={`Remover ${currentName}`}
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+    );
   }
 
   async function handleDeleteValue(valueId: number, valueName: string) {
@@ -278,32 +386,20 @@ export function GenericAttributeValuesManager({
     });
   }
 
-  async function handleSaveAttributeName() {
-    if (!attribute) return;
-    const nextName = attributeName.trim();
-    if (!nextName || nextName === attribute.name) return;
-
-    setIsSavingAttributeName(true);
-    const result = await updateStoreAttributeName({
-      attributeId: attribute.id,
-      name: nextName,
-    });
-    setIsSavingAttributeName(false);
-
-    if (!result.success) {
-      toast.error("Falha ao atualizar atributo", {
-        description: result.error || "Não foi possível atualizar o nome.",
-      });
-      return;
+  if (mode === "create-attribute") {
+    if (!canCreateAttributes) {
+      return (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">Novo atributo</CardTitle>
+            <CardDescription>
+              Com ERP integrado, novos atributos devem ser criados no ERP.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      );
     }
 
-    await onRefreshAttributes?.();
-    toast("Atributo atualizado", {
-      description: `Nome alterado para "${nextName}".`,
-    });
-  }
-
-  if (mode === "create-attribute") {
     return (
       <Card>
         <CardHeader>
@@ -312,35 +408,28 @@ export function GenericAttributeValuesManager({
           </CardTitle>
           <CardDescription>
             {localCreatedAttribute
-              ? `Adicione valores ao atributo "`+localCreatedAttribute.name+`".`
-              : "Cadastre um novo atributo informando nome e código."}
+              ? `Adicione valores ao atributo "${localCreatedAttribute.name}".`
+              : "Cadastre um novo atributo informando apenas o nome."}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {!localCreatedAttribute && (
             <>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  <Label>Nome do atributo</Label>
-                  <Input
-                    value={newAttributeLabel}
-                    onChange={(event) => setNewAttributeLabel(event.target.value)}
-                    placeholder="Ex: Material"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Código do atributo</Label>
-                  <Input
-                    value={newAttributeValue}
-                    onChange={(event) => setNewAttributeValue(event.target.value)}
-                    placeholder="Ex: material (opcional)"
-                  />
-                </div>
+              <div className="space-y-2">
+                <Label>Nome do atributo</Label>
+                <Input
+                  value={newAttributeLabel}
+                  onChange={(event) => setNewAttributeLabel(event.target.value)}
+                  placeholder="Ex: Material"
+                />
+                <p className="text-xs text-muted-foreground">
+                  O código interno será gerado automaticamente a partir do nome.
+                </p>
               </div>
               <Button
                 type="button"
                 className="cursor-pointer"
-                disabled={isCreatingAttribute || !newAttributeLabel.trim() || !normalizeCode(newAttributeValue || newAttributeLabel)}
+                disabled={isCreatingAttribute || !newAttributeLabel.trim() || !normalizeCode(newAttributeLabel)}
                 onClick={handleCreateAttribute}
               >
                 <Plus className="h-4 w-4" />
@@ -351,9 +440,20 @@ export function GenericAttributeValuesManager({
 
           {localCreatedAttribute && (
             <>
+              <StoreAttributeNameField
+                attributeId={localCreatedAttribute.id}
+                attributeName={localCreatedAttribute.name}
+                attributeCode={localCreatedAttribute.code}
+                onRefreshAttributes={onRefreshAttributes}
+                onNameUpdated={(name) =>
+                  setLocalCreatedAttribute((prev) => (prev ? { ...prev, name } : prev))
+                }
+                disabled={!canCreateAttributes}
+              />
+
               <div className="space-y-2">
                 <Label>Novo valor</Label>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <div className="flex gap-2">
                   <Input
                     value={newValueLabel}
                     onChange={(event) => setNewValueLabel(event.target.value)}
@@ -365,56 +465,29 @@ export function GenericAttributeValuesManager({
                       }
                     }}
                   />
-                  <Input
-                    value={newValueValue}
-                    onChange={(event) => setNewValueValue(event.target.value)}
-                    placeholder="Código (ex: algodao)"
-                  />
                   <Button
                     type="button"
-                    className="cursor-pointer"
-                    disabled={isCreating || !newValueLabel.trim() || !normalizeCode(newValueValue || newValueLabel)}
+                    className="cursor-pointer shrink-0"
+                    disabled={isCreating || !newValueLabel.trim() || !normalizeCode(newValueLabel)}
                     onClick={handleCreateValue}
                   >
                     <Plus className="h-4 w-4" />
                     Adicionar
                   </Button>
                 </div>
+                <p className="text-xs text-muted-foreground">
+                  O código do valor é gerado automaticamente e não pode ser alterado depois.
+                </p>
               </div>
 
               <div className="space-y-2">
                 <Label>Valores cadastrados</Label>
-                <p className="text-xs text-muted-foreground">Arraste para ordenar os valores deste atributo.</p>
+                <p className="text-xs text-muted-foreground">Arraste para ordenar. Edite o nome e salve; o código permanece fixo.</p>
                 {values.length === 0 ? (
                   <p className="text-sm text-muted-foreground">Nenhum valor ainda. Adicione o primeiro acima.</p>
                 ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {orderedValues.map((value) => (
-                      <Badge
-                        key={value.id}
-                        variant="secondary"
-                        draggable={!isSavingValueOrder}
-                        onDragStart={() => handleValueDragStart(value.id)}
-                        onDragOver={(event) => handleValueDragOver(event, value.id)}
-                        onDragLeave={handleValueDragLeave}
-                        onDrop={(event) => handleValueDrop(event, value.id)}
-                        onDragEnd={handleValueDragEnd}
-                        className={`gap-2 py-1 ${draggedValueId === value.id ? 'opacity-60' : ''} ${dragOverValueId === value.id ? 'ring-2 ring-primary ring-offset-1' : ''}`}
-                      >
-                        <GripVertical className="h-3.5 w-3.5 opacity-60" />
-                        <span>{value.name || value.code}</span>
-                        <span className="text-xs text-muted-foreground">({value.code})</span>
-                        <button
-                          type="button"
-                          className="cursor-pointer"
-                          onClick={() => handleDeleteValue(value.id, value.name || value.code)}
-                          disabled={deletingValueId === value.id || isSavingValueOrder}
-                          aria-label={`Remover ${value.name || value.code}`}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </Badge>
-                    ))}
+                  <div className="space-y-2">
+                    {orderedValues.map((value) => renderValueRow(value))}
                   </div>
                 )}
               </div>
@@ -445,33 +518,21 @@ export function GenericAttributeValuesManager({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="space-y-2">
-          <Label>Nome do atributo</Label>
-          <div className="flex gap-2">
-            <Input
-              value={attributeName}
-              onChange={(event) => setAttributeName(event.target.value)}
-              placeholder="Ex: Material"
-            />
-            <Button
-              type="button"
-              variant="outline"
-              className="cursor-pointer"
-              disabled={isSavingAttributeName || !attributeName.trim() || attributeName.trim() === attribute.name}
-              onClick={handleSaveAttributeName}
-            >
-              Salvar nome
-            </Button>
-          </div>
-        </div>
+        <StoreAttributeNameField
+          attributeId={attribute.id}
+          attributeName={attribute.name}
+          attributeCode={attribute.code}
+          onRefreshAttributes={onRefreshAttributes}
+          disabled={!canCreateAttributes}
+        />
 
-        <div className="space-y-2">
+        <div className={canCreateAttributes ? "space-y-2" : "hidden"}>
           <Label>Novo valor</Label>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div className="flex gap-2">
             <Input
               value={newValueLabel}
               onChange={(event) => setNewValueLabel(event.target.value)}
-              placeholder="Label (ex: Algodão)"
+              placeholder="Nome (ex: Algodão)"
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   event.preventDefault();
@@ -479,56 +540,29 @@ export function GenericAttributeValuesManager({
                 }
               }}
             />
-            <Input
-              value={newValueValue}
-              onChange={(event) => setNewValueValue(event.target.value)}
-              placeholder="Value (ex: algodao)"
-            />
             <Button
               type="button"
-              className="cursor-pointer"
-              disabled={isCreating || !newValueLabel.trim() || !normalizeCode(newValueValue || newValueLabel)}
+              className="cursor-pointer shrink-0"
+              disabled={isCreating || !newValueLabel.trim() || !normalizeCode(newValueLabel)}
               onClick={handleCreateValue}
             >
               <Plus className="h-4 w-4" />
               Adicionar
             </Button>
           </div>
+          <p className="text-xs text-muted-foreground">
+            O código do valor é gerado automaticamente e não pode ser alterado depois.
+          </p>
         </div>
 
         <div className="space-y-2">
           <Label>Valores cadastrados</Label>
-          <p className="text-xs text-muted-foreground">Arraste para ordenar os valores deste atributo.</p>
+          <p className="text-xs text-muted-foreground">Arraste para ordenar. Edite o nome e salve; o código permanece fixo.</p>
           {values.length === 0 ? (
             <p className="text-sm text-muted-foreground">Nenhum valor cadastrado.</p>
           ) : (
-            <div className="flex flex-wrap gap-2">
-              {orderedValues.map((value) => (
-                <Badge
-                  key={value.id}
-                  variant="secondary"
-                  draggable={!isSavingValueOrder}
-                  onDragStart={() => handleValueDragStart(value.id)}
-                  onDragOver={(event) => handleValueDragOver(event, value.id)}
-                  onDragLeave={handleValueDragLeave}
-                  onDrop={(event) => handleValueDrop(event, value.id)}
-                  onDragEnd={handleValueDragEnd}
-                  className={`gap-2 py-1 ${draggedValueId === value.id ? 'opacity-60' : ''} ${dragOverValueId === value.id ? 'ring-2 ring-primary ring-offset-1' : ''}`}
-                >
-                  <GripVertical className="h-3.5 w-3.5 opacity-60" />
-                  <span>{value.name || value.code}</span>
-                  <span className="text-xs text-muted-foreground">({value.code})</span>
-                  <button
-                    type="button"
-                    className="cursor-pointer"
-                    onClick={() => handleDeleteValue(value.id, value.name || value.code)}
-                    disabled={deletingValueId === value.id || isSavingValueOrder}
-                    aria-label={`Remover ${value.name || value.code}`}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </Badge>
-              ))}
+            <div className="space-y-2">
+              {orderedValues.map((value) => renderValueRow(value))}
             </div>
           )}
         </div>

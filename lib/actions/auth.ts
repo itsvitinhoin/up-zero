@@ -3,9 +3,12 @@
 import { redirect } from 'next/navigation'
 import { authenticateUser, destroySession, getSession } from '@/lib/auth'
 import { loginSchema, registerB2BSchema } from '@/lib/validations'
+import { getValidationErrorMessage } from '@/lib/utils/validation-error'
 import type { ApiResponse, SessionUser } from '@/lib/types'
 import { cookies, headers } from 'next/headers'
 import { getCurrentB2bCustomerAction } from './customers'
+
+const ADMIN_ME_TIMEOUT_MS = 5000
 
 function normalizeStoreId(value: unknown): number | null {
   const parsed = Number(value)
@@ -48,29 +51,144 @@ export async function buildAdminCookieHeader(): Promise<string | undefined> {
   return `adminAuthToken=${adminAuthToken}`
 }
 
+function extractAdminAuthTokenFromSetCookie(setCookieHeader: string): string | null {
+  if (!setCookieHeader) return null
+  const match = setCookieHeader.match(/(?:^|[,;]\s*)adminAuthToken=([^;]+)/i)
+  const token = match?.[1]?.trim()
+  return token || null
+}
+
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const parts = token.split('.')
+    if (parts.length < 2) return null
+
+    const base64 = parts[1]
+      .replace(/-/g, '+')
+      .replace(/_/g, '/')
+      .padEnd(Math.ceil(parts[1].length / 4) * 4, '=')
+
+    const json = Buffer.from(base64, 'base64').toString('utf-8')
+    const parsed = JSON.parse(json)
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
+function buildFallbackAdminSessionFromToken(token: string): {
+  id: string
+  name: string
+  email: string
+  role: string
+  storeId?: number
+} | null {
+  const payload = decodeJwtPayload(token)
+  if (!payload) return null
+
+  const id = String(payload.sub ?? 'admin-session')
+  const email = typeof payload.email === 'string' && payload.email.trim()
+    ? payload.email
+    : 'admin@local'
+  const role = typeof payload.role === 'string' && payload.role.trim()
+    ? payload.role.trim().toUpperCase()
+    : 'ADMIN'
+  const parsedStoreId = Number(payload.store_id ?? payload.storeId)
+  const storeId = Number.isInteger(parsedStoreId) && parsedStoreId > 0 ? parsedStoreId : undefined
+
+  return {
+    id,
+    name: 'Admin',
+    email,
+    role,
+    storeId,
+  }
+}
+
+async function fetchWithTimeout(input: URL | string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function resolveAdminAuthCookieOptions() {
+  const expiresInRaw = Number(process.env.JWT_EXP_SECONDS || 604800)
+  const expiresIn = Number.isFinite(expiresInRaw) && expiresInRaw > 0 ? expiresInRaw : 604800
+  const cookieDomain = process.env.COOKIE_DOMAIN?.trim() || ''
+  const localhostRequest = await isLocalhostRequest()
+  const shouldUseCrossSiteCookie = Boolean(cookieDomain) && !localhostRequest
+
+  return {
+    secure: shouldUseCrossSiteCookie || (process.env.APP_ENV || '').toLowerCase() === 'production',
+    sameSite: (shouldUseCrossSiteCookie ? 'none' : 'lax') as 'none' | 'lax',
+    domain: shouldUseCrossSiteCookie ? cookieDomain : undefined,
+    maxAge: expiresIn,
+  }
+}
+
+async function persistAdminAuthCookie(token: string): Promise<void> {
+  if (!token) return
+
+  const cookieStore = await cookies()
+  const options = await resolveAdminAuthCookieOptions()
+
+  cookieStore.set('adminAuthToken', token, {
+    httpOnly: true,
+    secure: options.secure,
+    sameSite: options.sameSite,
+    maxAge: options.maxAge,
+    path: '/',
+    domain: options.domain,
+  })
+}
+
 export async function getAdminSession(): Promise<{ id: string; name: string; email: string; role: string; storeId?: number } | null> {
   const cookieStore = await cookies()
   const adminAuthToken = cookieStore.get('adminAuthToken')?.value
   if (!adminAuthToken) return null
 
+  const fallbackSession = buildFallbackAdminSessionFromToken(adminAuthToken)
+
   const base = (process.env.NEXT_PUBLIC_RUST_URL ?? '').trim()
   if (!base) {
-    const envStoreId = Number(process.env.STORE_ID)
-    const storeId = Number.isFinite(envStoreId) && envStoreId > 0 ? envStoreId : undefined
-    return { id: 'admin-session', name: 'Admin', email: 'admin@local', role: 'ADMIN', storeId }
+    return fallbackSession
   }
 
   try {
-    const response = await fetch(new URL('/admin/me', base), {
+    const response = await fetchWithTimeout(new URL('/admin/me', base), {
       headers: {
         cookie: `adminAuthToken=${adminAuthToken}`,
       },
       cache: 'no-store',
-    })
+    }, ADMIN_ME_TIMEOUT_MS)
 
-    if (!response.ok) return null
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        return null
+      }
+
+      return fallbackSession
+    }
 
     const admin = await response.json()
+    if (admin?.authenticated === false) {
+      return null
+    }
+
+    const refreshedSetCookie = response.headers.get('set-cookie') || ''
+    const refreshedToken = extractAdminAuthTokenFromSetCookie(refreshedSetCookie)
+    if (refreshedToken && refreshedToken !== adminAuthToken) {
+      await persistAdminAuthCookie(refreshedToken)
+    }
+
     const parsedStoreId = Number(admin?.store_id ?? admin?.storeId)
     const storeId = Number.isInteger(parsedStoreId) && parsedStoreId > 0 ? parsedStoreId : undefined
     const normalizedRole = String(admin?.role || '').trim().toUpperCase()
@@ -83,7 +201,7 @@ export async function getAdminSession(): Promise<{ id: string; name: string; ema
       storeId,
     }
   } catch {
-    return null
+    return fallbackSession
   }
 }
 
@@ -149,7 +267,7 @@ export async function loginAction(
 
   const validation = loginSchema.safeParse({ email, password })
   if (!validation.success) {
-    return { success: false, error: validation.error.errors[0].message }
+    return { success: false, error: getValidationErrorMessage(validation.error) }
   }
 
   const user = await authenticateUser(email, password)
@@ -177,7 +295,7 @@ export async function adminLoginAction(
 
   const validation = loginSchema.safeParse({ email, password })
   if (!validation.success) {
-    return { success: false, error: validation.error.errors[0].message }
+    return { success: false, error: getValidationErrorMessage(validation.error) }
   }
 
   const user = await authenticateUser(email, password)
@@ -202,29 +320,12 @@ export async function adminStoreLoginAction(
 
   const validation = loginSchema.safeParse({ email, password })
   if (!validation.success) {
-    return { success: false, error: validation.error.errors[0].message }
+    return { success: false, error: getValidationErrorMessage(validation.error) }
   }
 
   const base = process.env.NEXT_PUBLIC_RUST_URL
-
-  // Fallback: credenciais locais quando backend não está configurado
   if (!base) {
-    const localEmail = process.env.LOCAL_ADMIN_EMAIL?.trim()
-    const localPassword = process.env.LOCAL_ADMIN_PASSWORD?.trim()
-    if (!localEmail || !localPassword || email !== localEmail || password !== localPassword) {
-      return { success: false, error: 'E-mail ou senha inválidos' }
-    }
-
-    const localToken = Buffer.from(JSON.stringify({ id: 'local-admin', email, role: 'ADMIN', createdAt: Date.now() })).toString('base64')
-    const cookieStore = await cookies()
-    cookieStore.set('adminAuthToken', localToken, {
-      httpOnly: true,
-      secure: false,
-      sameSite: 'lax',
-      maxAge: 604800,
-      path: '/',
-    })
-    return { success: true, data: { token: localToken } }
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
   }
 
   const response = await fetch(new URL('/admin/login', base), {
@@ -253,20 +354,7 @@ export async function adminStoreLoginAction(
     return { success: false, error: 'Token não retornado pela API de admin' }
   }
 
-  const cookieStore = await cookies()
-
-  const expiresIn = Number(process.env.JWT_EXP_SECONDS || 604800)
-  const cookieDomain = process.env.COOKIE_DOMAIN?.trim()
-  const isProd = (process.env.APP_ENV || '').toLowerCase() === 'production'
-
-  cookieStore.set('adminAuthToken', token, {
-    httpOnly: true,
-    secure: isProd || Boolean(cookieDomain),
-    sameSite: cookieDomain ? 'none' : 'lax',
-    maxAge: expiresIn,
-    path: '/',
-    domain: cookieDomain || undefined,
-  })
+  await persistAdminAuthCookie(token)
 
   // Retorna sucesso sem redirect, deixa o client fazer a navegação
   return { success: true, data: { token } }
@@ -281,7 +369,7 @@ export async function sellerLoginAction(
 
   const validation = loginSchema.safeParse({ email, password })
   if (!validation.success) {
-    return { success: false, error: validation.error.errors[0].message }
+    return { success: false, error: getValidationErrorMessage(validation.error) }
   }
 
   const user = await authenticateUser(email, password)
@@ -299,9 +387,27 @@ export async function sellerLoginAction(
 
 export async function logoutAction(): Promise<void> {
   const session = await getSession()
-  const storeId = await resolveStoreIdForLogout()
+
+  const cookieStore = await cookies()
+  const adminAuthToken = cookieStore.get('adminAuthToken')?.value
+  const base = (process.env.NEXT_PUBLIC_RUST_URL ?? '').trim()
+
+  if (adminAuthToken && base) {
+    try {
+      await fetch(new URL('/admin/logout', base), {
+        method: 'POST',
+        headers: {
+          cookie: `adminAuthToken=${adminAuthToken}`,
+        },
+        cache: 'no-store',
+      })
+    } catch {
+      // Best effort: backend logout é idempotente; limpeza local garante saída.
+    }
+  }
+
   await destroySession()
-  
+
   // Redirect based on where they were
   if (session?.role === 'ADMIN' || session?.role === 'SALES_MANAGER') {
     redirect('/login')
@@ -344,7 +450,7 @@ export async function registerB2BAction(
 
   const validation = registerB2BSchema.safeParse(data)
   if (!validation.success) {
-    return { success: false, error: validation.error.errors[0].message }
+    return { success: false, error: getValidationErrorMessage(validation.error) }
   }
 
   const result = await registerB2B({
@@ -393,7 +499,7 @@ export async function createInternalUserAction(formData: FormData): Promise<ApiR
 export async function login(email: string, password: string): Promise<ApiResponse<SessionUser>> {
   const validation = loginSchema.safeParse({ email, password })
   if (!validation.success) {
-    return { success: false, error: validation.error.errors[0].message }
+    return { success: false, error: getValidationErrorMessage(validation.error) }
   }
 
   const user = await authenticateUser(email, password)
@@ -459,8 +565,11 @@ export async function registerB2B(data: {
   extraFields?: Record<string, unknown>
 }): Promise<ApiResponse<{ customerId: string }>> {
   const envStoreId = Number(process.env.STORE_ID)
-  const resolvedStoreId = Number.isInteger(data.storeId) && data.storeId > 0
+  const explicitStoreId = typeof data.storeId === 'number' && Number.isInteger(data.storeId) && data.storeId > 0
     ? data.storeId
+    : undefined
+  const resolvedStoreId = explicitStoreId
+    ? explicitStoreId
     : Number.isInteger(envStoreId) && envStoreId > 0
       ? envStoreId
       : undefined
@@ -502,10 +611,7 @@ export async function registerB2B(data: {
 
   const validation = registerB2BSchema.safeParse(validationData)
   if (!validation.success) {
-    const firstError = validation.error?.errors?.[0]
-    const errorMessage = firstError
-      ? `${firstError.path?.join('.') || 'form'}: ${firstError.message}`
-      : validation.error?.message || 'Dados inválidos'
+    const errorMessage = getValidationErrorMessage(validation.error)
     console.log('[registerB2B] validation:error', errorMessage)
     return { success: false, error: errorMessage }
   }
@@ -552,8 +658,8 @@ export async function registerB2B(data: {
       const result = await response.json()
       return { success: true, data: { customerId: String(result?.id || '') } }
     }
-    
-    const response = await fetch(`${backendUrl}/b2b/register`, {
+
+    const response = await fetch(`${backendUrl}/customers/register`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -590,7 +696,7 @@ export async function registerB2B(data: {
 
     const result = await response.json()
     console.log('[registerB2B] backend:success', { hasToken: Boolean(result?.token), customerId: result?.data?.id })
-    
+
     // Armazenar token B2B no cookie
     const cookieStore = await cookies()
     if (result.token) {
@@ -614,7 +720,7 @@ export async function registerB2B(data: {
   } catch (error) {
     console.error('Erro ao registrar B2B:', error)
     const backendUrl = resolveB2BBackendBaseUrl() || 'NEXT_PUBLIC_RUST_URL'
-    const backendPath = isRetailRegistration ? '/clients' : '/b2b/register'
+    const backendPath = isRetailRegistration ? '/clients' : '/customers/register'
     return {
       success: false,
       error: `Erro ao conectar com o servidor (${backendUrl}${backendPath})`,
@@ -632,8 +738,8 @@ export async function loginB2B(email: string, password: string, storeId?: number
     if (!backendUrl) {
       return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
     }
-    
-    const response = await fetch(`${backendUrl}/b2b/login`, {
+
+    const response = await fetch(`${backendUrl}/customers/login`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -652,7 +758,7 @@ export async function loginB2B(email: string, password: string, storeId?: number
     }
 
     const result = (await response.json()) as { data?: { id?: number }; token?: string }
-    
+
     // Extract token from Set-Cookie header if available
     const setCookieHeader = response.headers.get('set-cookie')
     const jsonToken = result?.token
@@ -700,7 +806,7 @@ export async function loginB2B(email: string, password: string, storeId?: number
     const backendUrl = resolveB2BBackendBaseUrl() || 'NEXT_PUBLIC_RUST_URL'
     return {
       success: false,
-      error: `Erro ao conectar com o servidor (${backendUrl}/b2b/login)`,
+      error: `Erro ao conectar com o servidor (${backendUrl}/customers/login)`,
     }
   }
 }

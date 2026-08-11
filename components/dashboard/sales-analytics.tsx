@@ -8,8 +8,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle, CardToolbar } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge-2'
 import { SectionHeader, StatsRow, currencyTooltipFormatter } from '@/components/dashboard/shared'
-import { fmt, fmtPct } from '@/lib/dashboard-mock-data'
-import { useDashboardData } from '@/contexts/dashboard-data'
+import { MONTHLY_REVENUE, DASHBOARD_ORDERS, fmt, fmtPct } from '@/lib/dashboard-mock-data'
 
 type Period = '7d' | '30d' | 'mes' | '90d'
 const PERIODS: { key: Period; label: string }[] = [
@@ -26,6 +25,12 @@ const BY_PAYMENT = [
   { method: 'Cartão', total: 52800,  color: '#6366f1' },
 ]
 
+// Revenue by status from DASHBOARD_ORDERS
+const statusRevenue = DASHBOARD_ORDERS.reduce<Record<string, number>>((acc, o) => {
+  acc[o.status] = (acc[o.status] ?? 0) + o.total
+  return acc
+}, {})
+
 const STATUS_ROWS = [
   { status: 'DELIVERED',  label: 'Entregue',    variant: 'success'     as const },
   { status: 'PENDING',    label: 'Pendente',     variant: 'warning'     as const },
@@ -35,33 +40,30 @@ const STATUS_ROWS = [
   { status: 'CANCELLED',  label: 'Cancelado',    variant: 'destructive' as const },
 ]
 
-const PERIOD_MONTHS: Record<Period, number> = { '7d': 2, '30d': 3, 'mes': 2, '90d': 4 }
+// Top 5 states
+const stateRevenue = DASHBOARD_ORDERS.reduce<Record<string, number>>((acc, o) => {
+  acc[o.state] = (acc[o.state] ?? 0) + o.total
+  return acc
+}, {})
+const TOP_STATES = Object.entries(stateRevenue)
+  .sort((a, b) => b[1] - a[1])
+  .slice(0, 5)
+const maxStateRev = TOP_STATES[0]?.[1] ?? 1
+
+// Last 4 months gap table
+const last4 = MONTHLY_REVENUE.slice(-4)
+
+// Avg ticket per month
+const avgTicketData = MONTHLY_REVENUE.slice(-7).map((m) => ({
+  month: m.month,
+  avgTicket: m.orders > 0 ? Math.round(m.fulfilled / m.orders) : 0,
+}))
 
 export default function DashboardSalesAnalytics() {
   const [period, setPeriod] = useState<Period>('mes')
-  const { monthlyRevenue: MONTHLY_REVENUE, orders: DASHBOARD_ORDERS } = useDashboardData()
 
-  const sliceN = PERIOD_MONTHS[period]
-  const chartData = MONTHLY_REVENUE.slice(-sliceN)
-  const barData = MONTHLY_REVENUE.slice(-sliceN)
-
-  const statusRevenue = DASHBOARD_ORDERS.reduce<Record<string, number>>((acc, o) => {
-    acc[o.status] = (acc[o.status] ?? 0) + o.total
-    return acc
-  }, {})
-
-  const stateRevenue = DASHBOARD_ORDERS.reduce<Record<string, number>>((acc, o) => {
-    acc[o.state] = (acc[o.state] ?? 0) + o.total
-    return acc
-  }, {})
-  const TOP_STATES = Object.entries(stateRevenue).sort((a, b) => b[1] - a[1]).slice(0, 5)
-  const maxStateRev = TOP_STATES[0]?.[1] ?? 1
-
-  const last4 = MONTHLY_REVENUE.slice(-sliceN)
-  const avgTicketData = MONTHLY_REVENUE.slice(-sliceN).map(m => ({
-    month: m.month,
-    avgTicket: m.orders > 0 ? Math.round(m.fulfilled / m.orders) : 0,
-  }))
+  const chartData = MONTHLY_REVENUE.slice(-7)
+  const barData = MONTHLY_REVENUE.slice(-7)
 
   return (
     <div className="space-y-6">

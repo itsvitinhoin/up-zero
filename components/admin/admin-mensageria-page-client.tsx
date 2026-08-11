@@ -30,13 +30,13 @@ import {
   Trash2,
   UserCheck,
   Users,
+  X,
   XCircle,
   Zap,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { AdminHero, AdminPage, AdminStatCard, AdminStatGrid } from '@/components/admin/admin-mobile-ui'
 import {
   Dialog,
   DialogContent,
@@ -44,8 +44,15 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from '@/components/ui/dialog'
+import {
+  Drawer,
+  DrawerClose,
+  DrawerContent,
+  DrawerDescription,
+  DrawerHeader,
+  DrawerTitle,
+} from '@/components/ui/drawer'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -64,6 +71,8 @@ import {
   TabsTrigger,
 } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
+import RichTextEditor from '@/components/form/RichTextEditor'
+import { useAdminStore } from '@/contexts/admin-store-context'
 import {
   createMessageFlowAction,
   createMessageTemplateAction,
@@ -89,10 +98,13 @@ import type {
   WhatsAppConfig,
 } from '@/lib/types'
 
-const TRIGGER_LABELS: Record<MessageTriggerType, { label: string; description: string; category: 'customer' | 'order' | 'payment' }> = {
+const TRIGGER_LABELS: Record<MessageTriggerType, { label: string; description: string; category: 'customer' | 'order' | 'payment' | 'store' }> = {
   CUSTOMER_REGISTERED: { label: 'Cadastro Realizado', description: 'Quando um cliente se cadastra', category: 'customer' },
   CUSTOMER_APPROVED: { label: 'Cadastro Aprovado', description: 'Quando o cadastro e aprovado', category: 'customer' },
   CUSTOMER_REJECTED: { label: 'Cadastro Rejeitado', description: 'Quando o cadastro e rejeitado', category: 'customer' },
+  CUSTOMER_PASSWORD_RESET: { label: 'Recuperacao de Senha', description: 'Quando o cliente solicita recuperacao de senha', category: 'customer' },
+  ORDER_CREATED: { label: 'Novo Pedido', description: 'Quando um novo pedido e criado', category: 'order' },
+  ORDER_INVOICE_GENERATED: { label: 'NF Gerada', description: 'Quando PDF e XML da NF sao gerados no storage', category: 'order' },
   ORDER_CONFIRMED: { label: 'Pedido Confirmado', description: 'Quando o pedido e confirmado', category: 'order' },
   ORDER_PROCESSING: { label: 'Pedido em Separacao', description: 'Quando o pedido entra em separacao', category: 'order' },
   ORDER_SHIPPED: { label: 'Pedido Enviado', description: 'Quando o pedido e despachado', category: 'order' },
@@ -101,16 +113,26 @@ const TRIGGER_LABELS: Record<MessageTriggerType, { label: string; description: s
   CART_ABANDONED: { label: 'Carrinho Abandonado', description: 'Quando o cliente abandona o carrinho', category: 'order' },
   PAYMENT_CONFIRMED: { label: 'Pagamento Confirmado', description: 'Quando o pagamento e aprovado', category: 'payment' },
   PAYMENT_FAILED: { label: 'Pagamento Recusado', description: 'Quando o pagamento falha', category: 'payment' },
+  PAYMENT_LINK_CREATED: { label: 'Link de Pagamento Criado', description: 'Envio do link de pagamento ao cliente', category: 'payment' },
+  PAYMENT_LINK_REMINDER: { label: 'Lembrete de Link de Pagamento', description: 'Lembrete de link de pagamento pendente', category: 'payment' },
+  CONTACT_MESSAGE: { label: 'Mensagem de Contato', description: 'Quando um visitante envia mensagem pelo formulario de contato', category: 'store' },
 }
 
 const AVAILABLE_VARIABLES = [
   { key: '{{nome}}', description: 'Nome do cliente' },
-  { key: '{{empresa}}', description: 'Nome da empresa' },
+  { key: '{{nome_loja}}', description: 'Nome da empresa' },
+  { key: '{{nova_senha}}', description: 'Senha provisoria gerada para o cliente' },
+  { key: '{{campos}}', description: 'Campos do formulario de contato' },
   { key: '{{pedido}}', description: 'Numero do pedido' },
   { key: '{{status}}', description: 'Status atual' },
-  { key: '{{valor}}', description: 'Valor total' },
+  { key: '{{valor}}', description: 'Valor dos itens (sem frete)' },
+  { key: '{{total}}', description: 'Valor total com frete' },
+  { key: '{{desconto}}', description: 'Valor total de desconto' },
+  { key: '{{produtos}}', description: 'Lista de produtos do pedido' },
   { key: '{{rastreio}}', description: 'Codigo de rastreio' },
   { key: '{{link}}', description: 'Link do pedido' },
+  { key: '{{pdf_url}}', description: 'URL do PDF da NF (storage)' },
+  { key: '{{xml_url}}', description: 'URL do XML da NF (storage)' },
   { key: '{{vendedora}}', description: 'Nome da vendedora' },
   { key: '{{whatsapp_vendedora}}', description: 'WhatsApp da vendedora' },
 ]
@@ -135,13 +157,14 @@ const ACTION_TYPE_LABELS: Record<FlowActionType, { label: string; icon: ReactNod
   UPDATE_STATUS: { label: 'Atualizar Status', icon: <RefreshCw className="h-4 w-4 text-indigo-600" /> },
 }
 
-const DEFAULT_TEMPLATE_FORM: Pick<MessageTemplate, 'trigger' | 'name' | 'content' | 'isActive' | 'channel' | 'delayMinutes'> = {
+const DEFAULT_TEMPLATE_FORM: Pick<MessageTemplate, 'trigger' | 'name' | 'content' | 'isActive' | 'channel' | 'delayMinutes' | 'copyEmails'> = {
   trigger: 'CUSTOMER_REGISTERED',
   name: '',
   content: '',
   isActive: true,
   channel: 'WHATSAPP',
   delayMinutes: 0,
+  copyEmails: '',
 }
 
 const DEFAULT_FLOW_FORM: Pick<MessageFlow, 'name' | 'description' | 'trigger' | 'isActive' | 'steps'> = {
@@ -163,6 +186,7 @@ type AdminMensageriaPageClientProps = {
 }
 
 export default function AdminMensageriaPageClient({ initialData }: AdminMensageriaPageClientProps) {
+  const { session } = useAdminStore()
   const [activeTab, setActiveTab] = useState('automacoes')
   const [isInitialLoading, startInitialLoading] = useTransition()
   const [isPersisting, startPersisting] = useTransition()
@@ -186,6 +210,15 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
   const [isFlowDialogOpen, setIsFlowDialogOpen] = useState(false)
   const [editingFlow, setEditingFlow] = useState<MessageFlow | null>(null)
   const [newFlow, setNewFlow] = useState(DEFAULT_FLOW_FORM)
+  const permissionCodes = Array.isArray(session?.permissionCodes)
+    ? session.permissionCodes.map((code) => String(code || '').trim().toLowerCase()).filter(Boolean)
+    : null
+  const hasMessagingPermission = (permissionCode: string) => {
+    return permissionCodes === null || permissionCodes.includes(permissionCode)
+  }
+  const canManageMessagingSettings = hasMessagingPermission('messaging.manage_settings')
+  const canManageMessagingTemplates = hasMessagingPermission('messaging.manage_templates')
+  const canSendMessaging = hasMessagingPermission('messaging.send')
 
   const loadMensageriaData = () => {
     startInitialLoading(async () => {
@@ -201,6 +234,8 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
   }
 
   const handleConnect = async () => {
+    if (!canManageMessagingSettings) return
+
     setIsConnecting(true)
     const nextConfig: WhatsAppConfig = {
       ...whatsappConfig,
@@ -216,6 +251,8 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
   }
 
   const handleDisconnect = async () => {
+    if (!canManageMessagingSettings) return
+
     const nextConfig: WhatsAppConfig = {
       ...whatsappConfig,
       isConnected: false,
@@ -228,6 +265,8 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
   }
 
   const handleToggleTemplate = (id: string) => {
+    if (!canManageMessagingTemplates) return
+
     startPersisting(async () => {
       const target = templates.find((template) => template.id === id)
       if (!target) return
@@ -243,6 +282,8 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
   }
 
   const handleSaveTemplate = () => {
+    if (!canManageMessagingTemplates) return
+
     startPersisting(async () => {
       if (editingTemplate) {
         const result = await updateMessageTemplateAction(editingTemplate.id, {
@@ -253,6 +294,7 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
           content: editingTemplate.content,
           variables: editingTemplate.variables || [],
           delayMinutes: editingTemplate.delayMinutes,
+          copyEmails: editingTemplate.copyEmails || undefined,
         })
         if (!result.success) return
       } else {
@@ -264,6 +306,7 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
           content: newTemplate.content,
           variables: [],
           delayMinutes: newTemplate.delayMinutes,
+          copyEmails: newTemplate.copyEmails || undefined,
         })
         if (!result.success) return
       }
@@ -276,6 +319,8 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
   }
 
   const handleDeleteTemplate = (id: string) => {
+    if (!canManageMessagingTemplates) return
+
     startPersisting(async () => {
       const result = await deleteMessageTemplateAction(id)
       if (!result.success) return
@@ -284,11 +329,15 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
   }
 
   const openEditDialog = (template: MessageTemplate) => {
+    if (!canManageMessagingTemplates) return
+
     setEditingTemplate(template)
     setIsDialogOpen(true)
   }
 
   const handleToggleFlow = (id: string) => {
+    if (!canManageMessagingTemplates) return
+
     startPersisting(async () => {
       const target = flows.find((flow) => flow.id === id)
       if (!target) return
@@ -304,6 +353,8 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
   }
 
   const handleDeleteFlow = (id: string) => {
+    if (!canManageMessagingTemplates) return
+
     startPersisting(async () => {
       const result = await deleteMessageFlowAction(id)
       if (!result.success) return
@@ -312,6 +363,8 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
   }
 
   const handleSaveFlow = () => {
+    if (!canManageMessagingTemplates) return
+
     startPersisting(async () => {
       if (editingFlow) {
         const result = await updateMessageFlowAction(editingFlow.id, {
@@ -341,11 +394,15 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
   }
 
   const openEditFlowDialog = (flow: MessageFlow) => {
+    if (!canManageMessagingTemplates) return
+
     setEditingFlow(flow)
     setIsFlowDialogOpen(true)
   }
 
   const openCreateFlowDialog = () => {
+    if (!canManageMessagingTemplates) return
+
     setEditingFlow(null)
     setNewFlow(DEFAULT_FLOW_FORM)
     setIsFlowDialogOpen(true)
@@ -419,6 +476,8 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
   }
 
   const openCreateDialog = () => {
+    if (!canManageMessagingTemplates) return
+
     setEditingTemplate(null)
     setNewTemplate(DEFAULT_TEMPLATE_FORM)
     setIsDialogOpen(true)
@@ -545,47 +604,81 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
     setNewFlow({ ...newFlow, steps: updateSteps(newFlow.steps) })
   }
 
+  const setCurrentTemplateContent = (content: string) => {
+    if (editingTemplate) {
+      setEditingTemplate({ ...editingTemplate, content })
+      return
+    }
+
+    setNewTemplate({ ...newTemplate, content })
+  }
+
+  const appendVariableToTemplate = (variableKey: string) => {
+    const content = currentTemplate.content || ''
+    const hasHtml = /<[^>]+>/.test(content)
+    const nextContent = hasHtml
+      ? `${content}<p>${variableKey}</p>`
+      : `${content} ${variableKey}`.trim()
+
+    setCurrentTemplateContent(nextContent)
+  }
+
+  const buildTemplatePreviewHtml = (content: string) => {
+    const source = (content || 'Sua mensagem aparecera aqui...')
+      .replace('{{nome}}', 'Maria Silva')
+      .replace('{{nome_loja}}', 'Loja da Maria')
+      .replace('{{nova_senha}}', 'Upz#2026!')
+      .replace('{{campos}}', 'Nome: Maria Silva<br>E-mail: maria@email.com')
+      .replace('{{pedido}}', '12345')
+      .replace('{{status}}', 'Confirmado')
+      .replace('{{valor}}', 'R$ 1.500,00')
+      .replace('{{rastreio}}', 'BR123456789')
+      .replace('{{link}}', 'loja.com/pedido/12345')
+      .replace('{{vendedora}}', 'Ana Paula')
+      .replace('{{whatsapp_vendedora}}', '(11) 99999-9999')
+
+    return /<[^>]+>/.test(source) ? source : source.replace(/\n/g, '<br>')
+  }
+
   const currentTemplate = editingTemplate ?? newTemplate
   const currentFlow = editingFlow ?? newFlow
   const isBusy = isInitialLoading || isPersisting || isConnecting
 
   return (
-    <AdminPage>
-      <AdminHero
-        icon={MessageSquare}
-        eyebrow="Mensageria"
-        title="Automacoes e WhatsApp"
-        description="Configure mensagens automaticas via WhatsApp e e-mail com foco em leitura rapida no mobile."
-        actions={
-          <div className="flex items-center gap-2">
-            {isBusy ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
-            {whatsappConfig.isConnected ? (
-              <Badge variant="default" className="min-h-10 gap-1 rounded-2xl bg-green-500 px-3">
-                <CheckCircle2 className="h-3 w-3" />
-                Conectado
-              </Badge>
-            ) : (
-              <Badge variant="default" className="min-h-10 gap-1 rounded-2xl bg-red-500 px-3">
-                <XCircle className="h-3 w-3" />
-                Desconectado
-              </Badge>
-            )}
-          </div>
-        }
-      />
+    <div className="p-4 lg:p-6 space-y-4 lg:space-y-6 pb-24 lg:pb-6">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <h1 className="text-xl lg:text-2xl font-bold">Automações</h1>
+          <p className="text-sm text-muted-foreground">Configure mensagens automaticas via WhatsApp e E-mail</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {isBusy ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
+          {whatsappConfig.isConnected ? (
+            <Badge variant="default" className="gap-1 bg-green-500">
+              <CheckCircle2 className="h-3 w-3" />
+              Conectado
+            </Badge>
+          ) : (
+            <Badge variant="default" className="gap-1 bg-red-500">
+              <XCircle className="h-3 w-3" />
+              Desconectado
+            </Badge>
+          )}
+        </div>
+      </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4 lg:space-y-6">
         <div className="lg:hidden overflow-x-auto -mx-4 px-4 scrollbar-hide">
           <TabsList className="inline-flex w-auto min-w-max h-12 gap-1 bg-primary/10">
-            <TabsTrigger value="automacoes" className="h-10 px-4 text-sm gap-2">
+            <TabsTrigger value="automacoes" className="h-10 px-4 text-sm gap-2 cursor-pointer">
               <Zap className="h-4 w-4" />
               Automacoes
             </TabsTrigger>
-            <TabsTrigger value="fluxos" className="h-10 px-4 text-sm gap-2">
+            <TabsTrigger value="fluxos" className="h-10 px-4 text-sm gap-2 cursor-pointer">
               <GitBranch className="h-4 w-4" />
               Fluxos
             </TabsTrigger>
-            <TabsTrigger value="configuracao" className="h-10 px-4 text-sm gap-2">
+            <TabsTrigger value="configuracao" className="h-10 px-4 text-sm gap-2 cursor-pointer">
               <Settings className="h-4 w-4" />
               Configuracao API
             </TabsTrigger>
@@ -593,27 +686,27 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
         </div>
 
         <TabsList className="hidden lg:grid w-full grid-cols-3 max-w-lg bg-primary/10">
-          <TabsTrigger value="automacoes" className="gap-2">
+          <TabsTrigger value="automacoes" className="gap-2 cursor-pointer">
             <Zap className="h-4 w-4" />
             Automacoes
           </TabsTrigger>
-          <TabsTrigger value="fluxos" className="gap-2">
+          <TabsTrigger value="fluxos" className="gap-2 cursor-pointer">
             <GitBranch className="h-4 w-4" />
             Fluxos
           </TabsTrigger>
-          <TabsTrigger value="configuracao" className="gap-2">
+          <TabsTrigger value="configuracao" className="gap-2 cursor-pointer">
             <Settings className="h-4 w-4" />
             Configuracao API
           </TabsTrigger>
         </TabsList>
 
         <TabsContent value="automacoes" className="space-y-4 lg:space-y-6">
-          <AdminStatGrid>
-            <AdminStatCard icon={CheckCircle2} label="Ativas" value={templates.filter((template) => template.isActive).length} hint="Mensagens habilitadas" tone="success" />
-            <AdminStatCard icon={Send} label="Enviadas" value="1.234" hint="Ultimos 30 dias" tone="info" />
-            <AdminStatCard icon={Eye} label="Leitura" value="89%" hint="Taxa media" />
-            <AdminStatCard icon={XCircle} label="Falhas" value="12" hint="Exigem revisao" tone="danger" />
-          </AdminStatGrid>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
+            <Card><CardContent className="p-4"><div className="flex items-center gap-3"><div className="p-2 rounded-full bg-green-100"><CheckCircle2 className="h-4 w-4 text-green-600" /></div><div><p className="text-2xl font-bold">{templates.filter((template) => template.isActive).length}</p><p className="text-xs text-muted-foreground">Ativas</p></div></div></CardContent></Card>
+            <Card><CardContent className="p-4"><div className="flex items-center gap-3"><div className="p-2 rounded-full bg-blue-100"><Send className="h-4 w-4 text-blue-600" /></div><div><p className="text-2xl font-bold">1,234</p><p className="text-xs text-muted-foreground">Enviadas (30d)</p></div></div></CardContent></Card>
+            <Card><CardContent className="p-4"><div className="flex items-center gap-3"><div className="p-2 rounded-full bg-purple-100"><Eye className="h-4 w-4 text-purple-600" /></div><div><p className="text-2xl font-bold">89%</p><p className="text-xs text-muted-foreground">Taxa Leitura</p></div></div></CardContent></Card>
+            <Card><CardContent className="p-4"><div className="flex items-center gap-3"><div className="p-2 rounded-full bg-red-100"><XCircle className="h-4 w-4 text-red-600" /></div><div><p className="text-2xl font-bold">12</p><p className="text-xs text-muted-foreground">Falhas (30d)</p></div></div></CardContent></Card>
+          </div>
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
@@ -621,121 +714,143 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
                 <CardTitle className="text-lg">Mensagens Automaticas</CardTitle>
                 <CardDescription>Configure mensagens para cada evento</CardDescription>
               </div>
-              <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-                <DialogTrigger asChild>
-                  <Button onClick={openCreateDialog} className="h-10 lg:h-9">
-                    <Plus className="mr-2 h-4 w-4" />
-                    <span className="hidden lg:inline">Nova Mensagem</span>
-                    <span className="lg:hidden">Nova</span>
-                  </Button>
-                </DialogTrigger>
-                <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-                  <DialogHeader>
-                    <DialogTitle>{editingTemplate ? 'Editar Mensagem' : 'Nova Mensagem Automatica'}</DialogTitle>
-                    <DialogDescription>Configure quando e o que sera enviado automaticamente</DialogDescription>
-                  </DialogHeader>
+              {canManageMessagingTemplates ? (
+                <Button onClick={openCreateDialog} className="h-10 lg:h-9">
+                  <Plus className="mr-2 h-4 w-4" />
+                  <span className="hidden lg:inline">Nova Mensagem</span>
+                  <span className="lg:hidden">Nova</span>
+                </Button>
+              ) : null}
+            </CardHeader>
+            <Drawer open={isDialogOpen} onOpenChange={setIsDialogOpen} direction="right">
+              <DrawerContent className="w-full sm:w-[88vw] lg:w-[56vw] sm:max-w-none flex flex-col">
+                <div className="flex items-start justify-between gap-4 p-4 border-b">
+                  <DrawerHeader className="p-0">
+                    <DrawerTitle>{editingTemplate ? 'Editar Mensagem' : 'Nova Mensagem Automatica'}</DrawerTitle>
+                    <DrawerDescription>Configure quando e o que sera enviado automaticamente</DrawerDescription>
+                  </DrawerHeader>
+                  <DrawerClose asChild>
+                    <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0 cursor-pointer">
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </DrawerClose>
+                </div>
 
-                  <div className="space-y-4 py-4">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <Label>Nome da Automacao</Label>
-                        <Input value={currentTemplate.name} onChange={(event) => editingTemplate ? setEditingTemplate({ ...editingTemplate, name: event.target.value }) : setNewTemplate({ ...newTemplate, name: event.target.value })} placeholder="Ex: Boas-vindas" />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Gatilho</Label>
-                        <Select value={currentTemplate.trigger} onValueChange={(value: MessageTriggerType) => editingTemplate ? setEditingTemplate({ ...editingTemplate, trigger: value }) : setNewTemplate({ ...newTemplate, trigger: value })}>
-                          <SelectTrigger><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="header-customer" disabled className="font-semibold text-xs text-muted-foreground">CLIENTE</SelectItem>
-                            {Object.entries(TRIGGER_LABELS).filter(([, item]) => item.category === 'customer').map(([key, item]) => <SelectItem key={key} value={key}>{item.label}</SelectItem>)}
-                            <SelectItem value="header-order" disabled className="font-semibold text-xs text-muted-foreground">PEDIDO</SelectItem>
-                            {Object.entries(TRIGGER_LABELS).filter(([, item]) => item.category === 'order').map(([key, item]) => <SelectItem key={key} value={key}>{item.label}</SelectItem>)}
-                            <SelectItem value="header-payment" disabled className="font-semibold text-xs text-muted-foreground">PAGAMENTO</SelectItem>
-                            {Object.entries(TRIGGER_LABELS).filter(([, item]) => item.category === 'payment').map(([key, item]) => <SelectItem key={key} value={key}>{item.label}</SelectItem>)}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-
+                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <Label>Mensagem</Label>
-                      <Textarea value={currentTemplate.content} onChange={(event) => editingTemplate ? setEditingTemplate({ ...editingTemplate, content: event.target.value }) : setNewTemplate({ ...newTemplate, content: event.target.value })} placeholder="Digite a mensagem..." rows={4} />
-                      <div className="flex flex-wrap gap-1 mt-2">
-                        {AVAILABLE_VARIABLES.map((variable) => (
-                          <Button key={variable.key} variant="outline" size="sm" className="h-7 text-xs" onClick={() => {
-                            const newContent = `${currentTemplate.content || ''} ${variable.key}`.trim()
-                            editingTemplate
-                              ? setEditingTemplate({ ...editingTemplate, content: newContent })
-                              : setNewTemplate({ ...newTemplate, content: newContent })
-                          }}>
-                            {variable.key}
-                          </Button>
-                        ))}
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-1">Clique nas variaveis acima para adicionar ao texto</p>
+                      <Label>Nome da Automacao</Label>
+                      <Input value={currentTemplate.name} onChange={(event) => editingTemplate ? setEditingTemplate({ ...editingTemplate, name: event.target.value }) : setNewTemplate({ ...newTemplate, name: event.target.value })} placeholder="Ex: Boas-vindas" />
                     </div>
-
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <Label>Atraso (minutos)</Label>
-                        <Input type="number" min="0" value={currentTemplate.delayMinutes} onChange={(event) => {
-                          const value = Number.parseInt(event.target.value, 10) || 0
-                          editingTemplate
-                            ? setEditingTemplate({ ...editingTemplate, delayMinutes: value })
-                            : setNewTemplate({ ...newTemplate, delayMinutes: value })
-                        }} />
-                        <p className="text-xs text-muted-foreground">0 = envio imediato</p>
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Canal</Label>
-                        <Select value={currentTemplate.channel} onValueChange={(value: 'WHATSAPP' | 'EMAIL' | 'SMS') => editingTemplate ? setEditingTemplate({ ...editingTemplate, channel: value }) : setNewTemplate({ ...newTemplate, channel: value })}>
-                          <SelectTrigger><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="WHATSAPP">WhatsApp</SelectItem>
-                            <SelectItem value="EMAIL">E-mail</SelectItem>
-                            <SelectItem value="SMS" disabled>SMS (em breve)</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-
                     <div className="space-y-2">
-                      <Label>Pre-visualizacao</Label>
-                      <div className="bg-[#e5ddd5] rounded-lg p-4">
-                        <div className="bg-white rounded-lg p-3 max-w-[80%] shadow-sm">
-                          <p className="text-sm whitespace-pre-wrap">
-                            {(currentTemplate.content || 'Sua mensagem aparecera aqui...')
-                              .replace('{{nome}}', 'Maria Silva')
-                              .replace('{{empresa}}', 'Loja da Maria')
-                              .replace('{{pedido}}', '12345')
-                              .replace('{{status}}', 'Confirmado')
-                              .replace('{{valor}}', 'R$ 1.500,00')
-                              .replace('{{rastreio}}', 'BR123456789')
-                              .replace('{{link}}', 'loja.com/pedido/12345')
-                              .replace('{{vendedora}}', 'Ana Paula')
-                              .replace('{{whatsapp_vendedora}}', '(11) 99999-9999')}
-                          </p>
-                          <p className="text-[10px] text-gray-500 text-right mt-1">12:00</p>
-                        </div>
-                      </div>
+                      <Label>Gatilho</Label>
+                      <Select value={currentTemplate.trigger} onValueChange={(value: MessageTriggerType) => editingTemplate ? setEditingTemplate({ ...editingTemplate, trigger: value }) : setNewTemplate({ ...newTemplate, trigger: value })}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="header-customer" disabled className="font-semibold text-xs text-muted-foreground">CLIENTE</SelectItem>
+                          {Object.entries(TRIGGER_LABELS).filter(([, item]) => item.category === 'customer').map(([key, item]) => <SelectItem key={key} value={key}>{item.label}</SelectItem>)}
+                          <SelectItem value="header-order" disabled className="font-semibold text-xs text-muted-foreground">PEDIDO</SelectItem>
+                          {Object.entries(TRIGGER_LABELS).filter(([, item]) => item.category === 'order').map(([key, item]) => <SelectItem key={key} value={key}>{item.label}</SelectItem>)}
+                          <SelectItem value="header-payment" disabled className="font-semibold text-xs text-muted-foreground">PAGAMENTO</SelectItem>
+                          {Object.entries(TRIGGER_LABELS).filter(([, item]) => item.category === 'payment').map(([key, item]) => <SelectItem key={key} value={key}>{item.label}</SelectItem>)}
+                          <SelectItem value="header-store" disabled className="font-semibold text-xs text-muted-foreground">LOJA</SelectItem>
+                          {Object.entries(TRIGGER_LABELS).filter(([, item]) => item.category === 'store').map(([key, item]) => <SelectItem key={key} value={key}>{item.label}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
                     </div>
                   </div>
 
-                  <DialogFooter>
-                    <Button variant="outline" onClick={() => setIsDialogOpen(false)}>Cancelar</Button>
-                    <Button onClick={handleSaveTemplate}>{editingTemplate ? 'Salvar Alteracoes' : 'Criar Mensagem'}</Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
-            </CardHeader>
+                  <div className="space-y-2">
+                    <Label>Mensagem</Label>
+                    <RichTextEditor
+                      value={currentTemplate.content || ''}
+                      onChange={(value) => setCurrentTemplateContent(value.html)}
+                      placeholder="Digite a mensagem..."
+                      minHeight={180}
+                      maxHeight={320}
+                    />
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {AVAILABLE_VARIABLES.map((variable) => (
+                        <Button key={variable.key} variant="outline" size="sm" className="h-7 text-xs" onClick={() => {
+                          appendVariableToTemplate(variable.key)
+                        }}>
+                          {variable.key}
+                        </Button>
+                      ))}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">Clique nas variaveis acima para adicionar ao texto</p>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Atraso (minutos)</Label>
+                      <Input type="number" min="0" value={currentTemplate.delayMinutes} onChange={(event) => {
+                        const value = Number.parseInt(event.target.value, 10) || 0
+                        editingTemplate
+                          ? setEditingTemplate({ ...editingTemplate, delayMinutes: value })
+                          : setNewTemplate({ ...newTemplate, delayMinutes: value })
+                      }} />
+                      <p className="text-xs text-muted-foreground">0 = envio imediato</p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Canal</Label>
+                      <Select value={currentTemplate.channel} onValueChange={(value: 'WHATSAPP' | 'EMAIL' | 'SMS') => editingTemplate ? setEditingTemplate({ ...editingTemplate, channel: value }) : setNewTemplate({ ...newTemplate, channel: value })}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="WHATSAPP">WhatsApp</SelectItem>
+                          <SelectItem value="EMAIL">E-mail</SelectItem>
+                          <SelectItem value="SMS" disabled>SMS (em breve)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  {currentTemplate.channel === 'EMAIL' && (
+                    <div className="space-y-2">
+                      <Label>Enviar cópia para (e-mails)</Label>
+                      <Input
+                        type="text"
+                        placeholder="email1@exemplo.com, email2@exemplo.com"
+                        value={editingTemplate ? (editingTemplate.copyEmails || '') : (newTemplate.copyEmails || '')}
+                        onChange={(event) => {
+                          const value = event.target.value
+                          editingTemplate
+                            ? setEditingTemplate({ ...editingTemplate, copyEmails: value })
+                            : setNewTemplate({ ...newTemplate, copyEmails: value })
+                        }}
+                      />
+                      <p className="text-xs text-muted-foreground">Separe múltiplos e-mails com vírgula</p>
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <Label>Pre-visualizacao</Label>
+                    <div className="bg-[#e5ddd5] rounded-lg p-4">
+                      <div className="bg-white rounded-lg p-3 max-w-[80%] shadow-sm">
+                        <div
+                          className="text-sm"
+                          dangerouslySetInnerHTML={{ __html: buildTemplatePreviewHtml(currentTemplate.content || '') }}
+                        />
+                        <p className="text-[10px] text-gray-500 text-right mt-1">12:00</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="border-t p-4 flex justify-end gap-2">
+                  <Button variant="outline" onClick={() => setIsDialogOpen(false)}>Cancelar</Button>
+                  <Button onClick={handleSaveTemplate} disabled={!canManageMessagingTemplates}>{editingTemplate ? 'Salvar Alteracoes' : 'Criar Mensagem'}</Button>
+                </div>
+              </DrawerContent>
+            </Drawer>
             <CardContent className="space-y-3">
-              {(['customer', 'order', 'payment'] as const).map((category) => {
+              {(['customer', 'order', 'payment', 'store'] as const).map((category) => {
                 const categoryTemplates = templates.filter((template) => TRIGGER_LABELS[template.trigger]?.category === category)
                 if (categoryTemplates.length === 0) return null
 
                 return (
                   <div key={category} className="space-y-2">
-                    <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-1">{category === 'customer' ? 'Cliente' : category === 'order' ? 'Pedido' : 'Pagamento'}</h3>
+                    <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-1">{category === 'customer' ? 'Cliente' : category === 'order' ? 'Pedido' : category === 'payment' ? 'Pagamento' : 'Loja'}</h3>
                     {categoryTemplates.map((template) => (
                       <div key={template.id} className="flex items-center justify-between p-4 border rounded-lg bg-card">
                         <div className="flex items-start gap-3 flex-1 min-w-0">
@@ -752,9 +867,13 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
                           </div>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
-                          <Switch checked={template.isActive} onCheckedChange={() => handleToggleTemplate(template.id)} />
-                          <Button variant="ghost" size="icon" onClick={() => openEditDialog(template)}><Pencil className="h-4 w-4" /></Button>
-                          <Button variant="ghost" size="icon" onClick={() => handleDeleteTemplate(template.id)} className="text-destructive hover:text-destructive"><Trash2 className="h-4 w-4" /></Button>
+                          {canManageMessagingTemplates ? (
+                            <>
+                              <Switch checked={template.isActive} onCheckedChange={() => handleToggleTemplate(template.id)} />
+                              <Button variant="ghost" size="icon" onClick={() => openEditDialog(template)}><Pencil className="h-4 w-4" /></Button>
+                              <Button variant="ghost" size="icon" onClick={() => handleDeleteTemplate(template.id)} className="text-destructive hover:text-destructive"><Trash2 className="h-4 w-4" /></Button>
+                            </>
+                          ) : null}
                         </div>
                       </div>
                     ))}
@@ -766,7 +885,9 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
                 <div className="text-center py-8">
                   <MessageSquare className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
                   <p className="text-muted-foreground">Nenhuma automacao configurada</p>
-                  <Button onClick={openCreateDialog} className="mt-4"><Plus className="mr-2 h-4 w-4" />Criar primeira automacao</Button>
+                  {canManageMessagingTemplates ? (
+                    <Button onClick={openCreateDialog} className="mt-4"><Plus className="mr-2 h-4 w-4" />Criar primeira automacao</Button>
+                  ) : null}
                 </div>
               ) : null}
             </CardContent>
@@ -779,7 +900,9 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
               <h2 className="text-lg font-semibold">Fluxos de Automacao</h2>
               <p className="text-sm text-muted-foreground">Crie fluxos com condicoes e acoes baseados em eventos do sistema</p>
             </div>
-            <Button onClick={openCreateFlowDialog}><Plus className="mr-2 h-4 w-4" />Novo Fluxo</Button>
+            {canManageMessagingTemplates ? (
+              <Button onClick={openCreateFlowDialog}><Plus className="mr-2 h-4 w-4" />Novo Fluxo</Button>
+            ) : null}
           </div>
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -822,11 +945,13 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
                         {flow.steps.length === 0 ? <span className="text-xs text-muted-foreground">Nenhum passo configurado</span> : null}
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <Switch checked={flow.isActive} onCheckedChange={() => handleToggleFlow(flow.id)} />
-                      <Button variant="ghost" size="icon" onClick={() => openEditFlowDialog(flow)}><Pencil className="h-4 w-4" /></Button>
-                      <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive" onClick={() => handleDeleteFlow(flow.id)}><Trash2 className="h-4 w-4" /></Button>
-                    </div>
+                    {canManageMessagingTemplates ? (
+                      <div className="flex items-center gap-2 shrink-0">
+                        <Switch checked={flow.isActive} onCheckedChange={() => handleToggleFlow(flow.id)} />
+                        <Button variant="ghost" size="icon" onClick={() => openEditFlowDialog(flow)}><Pencil className="h-4 w-4" /></Button>
+                        <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive" onClick={() => handleDeleteFlow(flow.id)}><Trash2 className="h-4 w-4" /></Button>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               ))}
@@ -965,7 +1090,7 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
 
               <DialogFooter>
                 <Button variant="outline" onClick={() => setIsFlowDialogOpen(false)}>Cancelar</Button>
-                <Button onClick={handleSaveFlow}>{editingFlow ? 'Salvar Alteracoes' : 'Criar Fluxo'}</Button>
+                <Button onClick={handleSaveFlow} disabled={!canManageMessagingTemplates}>{editingFlow ? 'Salvar Alteracoes' : 'Criar Fluxo'}</Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>
@@ -985,7 +1110,7 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
                     <p className={`font-medium ${whatsappConfig.isConnected ? 'text-green-800' : 'text-gray-800'}`}>{whatsappConfig.isConnected ? 'WhatsApp Conectado' : 'WhatsApp nao conectado'}</p>
                     <p className={`text-sm ${whatsappConfig.isConnected ? 'text-green-600' : 'text-gray-600'}`}>{whatsappConfig.isConnected ? `Conectado em ${whatsappConfig.connectedAt?.toLocaleDateString('pt-BR')} - Numero: ${whatsappConfig.phoneNumberId || '123456789012345'}` : 'Clique no botao abaixo para conectar sua conta do WhatsApp Business'}</p>
                   </div>
-                  {whatsappConfig.isConnected ? <Button variant="outline" size="sm" onClick={handleDisconnect} className="text-destructive hover:text-destructive">Desconectar</Button> : null}
+                  {whatsappConfig.isConnected && canManageMessagingSettings ? <Button variant="outline" size="sm" onClick={handleDisconnect} className="text-destructive hover:text-destructive">Desconectar</Button> : null}
                 </div>
               </div>
 
@@ -999,9 +1124,11 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
                       <h3 className="text-xl font-semibold">Conectar WhatsApp Business</h3>
                       <p className="text-muted-foreground max-w-md mx-auto">Use o cadastro incorporado da Meta para conectar sua conta do WhatsApp Business de forma rapida e segura.</p>
                     </div>
-                    <Button size="lg" onClick={handleConnect} disabled={isConnecting} className="h-14 px-8 text-base bg-[#1877F2] hover:bg-[#166FE5] text-white">
+                    {canManageMessagingSettings ? (
+                      <Button size="lg" onClick={handleConnect} disabled={isConnecting} className="h-14 px-8 text-base bg-[#1877F2] hover:bg-[#166FE5] text-white">
                       {isConnecting ? <><Loader2 className="mr-2 h-5 w-5 animate-spin" />Conectando...</> : <><svg viewBox="0 0 24 24" className="mr-2 h-5 w-5" fill="currentColor"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" /></svg>Continuar com Facebook</>}
-                    </Button>
+                      </Button>
+                    ) : null}
                     <p className="text-xs text-muted-foreground">Voce sera redirecionado para o Facebook para autorizar a conexao</p>
                   </div>
 
@@ -1036,7 +1163,9 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
                         <div className="space-y-2"><Label htmlFor="phoneNumberId">Phone Number ID</Label><Input id="phoneNumberId" value={whatsappConfig.phoneNumberId} onChange={(event) => setWhatsappConfig((prev) => ({ ...prev, phoneNumberId: event.target.value }))} placeholder="Ex: 123456789012345" className="h-12 lg:h-10" /></div>
                         <div className="space-y-2"><Label htmlFor="businessAccountId">Business Account ID</Label><Input id="businessAccountId" value={whatsappConfig.businessAccountId} onChange={(event) => setWhatsappConfig((prev) => ({ ...prev, businessAccountId: event.target.value }))} placeholder="Ex: 123456789012345" className="h-12 lg:h-10" /></div>
                         <div className="space-y-2"><Label htmlFor="accessToken">Access Token Permanente</Label><Input id="accessToken" type="password" value={whatsappConfig.accessToken} onChange={(event) => setWhatsappConfig((prev) => ({ ...prev, accessToken: event.target.value }))} placeholder="Cole seu token de acesso aqui" className="h-12 lg:h-10" /></div>
-                        <Button variant="outline" onClick={handleConnect} disabled={isConnecting || !whatsappConfig.phoneNumberId || !whatsappConfig.accessToken} className="h-12 lg:h-10">{isConnecting ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Conectando...</> : 'Conectar Manualmente'}</Button>
+                        {canManageMessagingSettings ? (
+                          <Button variant="outline" onClick={handleConnect} disabled={isConnecting || !whatsappConfig.phoneNumberId || !whatsappConfig.accessToken} className="h-12 lg:h-10">{isConnecting ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Conectando...</> : 'Conectar Manualmente'}</Button>
+                        ) : null}
                       </div>
                     </div>
                   </details>
@@ -1058,7 +1187,9 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
                       <div><h3 className="font-medium">Templates de Mensagem</h3><p className="text-sm text-muted-foreground">Templates aprovados pela Meta</p></div>
-                      <Button variant="outline" size="sm" asChild><a href="https://business.facebook.com/wa/manage/message-templates" target="_blank" rel="noopener noreferrer"><ExternalLink className="mr-2 h-3 w-3" />Gerenciar no Meta</a></Button>
+                      {canManageMessagingTemplates ? (
+                        <Button variant="outline" size="sm" asChild><a href="https://business.facebook.com/wa/manage/message-templates" target="_blank" rel="noopener noreferrer"><ExternalLink className="mr-2 h-3 w-3" />Gerenciar no Meta</a></Button>
+                      ) : null}
                     </div>
                     <div className="space-y-2">
                       {[
@@ -1075,7 +1206,7 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
 
                   <div className="space-y-4">
                     <h3 className="font-medium">Enviar Mensagem de Teste</h3>
-                    <div className="flex gap-3"><Input placeholder="5511999999999" className="h-12 lg:h-10 flex-1" /><Button className="h-12 lg:h-10"><Send className="mr-2 h-4 w-4" />Enviar</Button></div>
+                    <div className="flex gap-3"><Input placeholder="5511999999999" className="h-12 lg:h-10 flex-1" disabled={!canSendMessaging} /><Button className="h-12 lg:h-10" disabled={!canSendMessaging}><Send className="mr-2 h-4 w-4" />Enviar</Button></div>
                     <p className="text-xs text-muted-foreground">Inclua o codigo do pais (55 para Brasil) sem espacos ou caracteres especiais</p>
                   </div>
 
@@ -1093,6 +1224,6 @@ export default function AdminMensageriaPageClient({ initialData }: AdminMensager
           </Card>
         </TabsContent>
       </Tabs>
-    </AdminPage>
+    </div>
   )
 }

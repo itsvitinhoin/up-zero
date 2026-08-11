@@ -14,11 +14,19 @@ import {
 import {
   approveCustomerAction,
   rejectCustomerAction,
+  approveClientAction,
+  rejectClientAction,
   updateCustomerAction,
+  dispatchCustomerMessageAction,
+  dispatchCustomerWebhookAction,
+  type CustomerMessageTrigger,
+  type CustomerWebhookEvent,
 } from "@/lib/actions/customers";
-import { updateCustomerWithReceitaWSAction } from "@/lib/actions/receitaws";
+import type { OnlineCustomerOfflineLink } from "@/lib/actions/offline";
+import { toast } from "sonner";
 import { formatCurrency } from "@/lib/pricing";
 import { cn } from "@/lib/utils";
+import { useAdminStore } from "@/contexts/admin-store-context";
 import {
   Card,
   CardContent,
@@ -48,6 +56,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   DropdownMenu,
@@ -74,10 +83,13 @@ import {
   History,
   ShoppingCart,
   Loader2,
+  Send,
   ChevronDown,
   Check,
   Minus,
   RefreshCw,
+  Webhook,
+  Store,
 } from "lucide-react";
 
 interface CustomerDetailProps {
@@ -90,30 +102,43 @@ interface CustomerDetailProps {
   auditLogs: AuditLog[];
   orders: Order[];
   canManage: boolean;
+  offlineLink?: OnlineCustomerOfflineLink | null;
 }
 
 const statusMap: Record<
   string,
   {
     label: string;
-    variant: "default" | "secondary" | "destructive" | "outline";
+    variant: "default" | "secondary" | "destructive" | "outline" | "amber" | "emerald" | "rose" | "slate";
   }
 > = {
-  PENDING: { label: "Pendente", variant: "secondary" },
-  APPROVED: { label: "Aprovado", variant: "default" },
-  REJECTED: { label: "Rejeitado", variant: "destructive" },
+  PENDING: { label: "Pendente", variant: "amber" },
+  APPROVED: { label: "Aprovado", variant: "emerald" },
+  REJECTED: { label: "Rejeitado", variant: "rose" },
 };
 
 const paymentMethodLabels: Record<string, string> = {
   PIX: "PIX",
   BOLETO: "Boleto",
   FATURADO: "Faturado",
-  CARTAO_EXTERNO: "Cartão Externo",
+  CARTAO_EXTERNO: "Cartão",
 };
 
 const customerTypeLabels: Record<string, string> = {
   RETAIL: "Varejo",
   WHOLESALE: "Atacado",
+};
+
+const customerTypeBadgeVariant: Record<string, "outline" | "sky" | "violet"> = {
+  RETAIL: "sky",
+  WHOLESALE: "violet",
+};
+
+const CUSTOMER_TRIGGER_LABELS: Record<CustomerMessageTrigger, string> = {
+  CUSTOMER_REGISTERED: "Cadastro Realizado",
+  CUSTOMER_APPROVED: "Cadastro Aprovado",
+  CUSTOMER_REJECTED: "Cadastro Rejeitado",
+  CUSTOMER_PASSWORD_RESET: "Recuperacao de Senha",
 };
 
 export function CustomerDetail({
@@ -126,11 +151,25 @@ export function CustomerDetail({
   auditLogs,
   orders,
   canManage,
+  offlineLink,
 }: CustomerDetailProps) {
+  const { session } = useAdminStore();
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [activeTab, setActiveTab] = useState("info");
+  const [communicationPanel, setCommunicationPanel] = useState<"message" | "webhook" | null>(null);
+  const [messageTrigger, setMessageTrigger] = useState<CustomerMessageTrigger>("CUSTOMER_REGISTERED");
+  const [messageChannel, setMessageChannel] = useState<"WHATSAPP" | "EMAIL">("WHATSAPP");
+  const [isDispatchingMessage, setIsDispatchingMessage] = useState(false);
+  const [dispatchFeedback, setDispatchFeedback] = useState<string>("");
+  const [dispatchPreview, setDispatchPreview] = useState<string>("");
+  const [messageDispatchResultOpen, setMessageDispatchResultOpen] = useState(false);
+  const [customerWebhookEvent, setCustomerWebhookEvent] = useState<CustomerWebhookEvent>("customer.updated");
+  const [isWebhookDispatching, setIsWebhookDispatching] = useState(false);
+  const [webhookDispatchMessage, setWebhookDispatchMessage] = useState<string | null>(null);
+  const [webhookDispatchPayload, setWebhookDispatchPayload] = useState<unknown | null>(null);
+  const [showWebhookResultDialog, setShowWebhookResultDialog] = useState(false);
   const [assignedSellerId, setAssignedSellerId] = useState(
     customer.assignedSellerId || "",
   );
@@ -149,10 +188,49 @@ export function CustomerDetail({
 
   const [receitawsLoading, setReceitawsLoading] = useState(false);
   const [receitawsError, setReceitawsError] = useState<string | null>(null);
+  const normalizedPermissionCodes = Array.isArray(session?.permissionCodes)
+    ? session.permissionCodes
+        .map((code) => String(code || "").trim().toLowerCase())
+        .filter(Boolean)
+    : null;
+  const hasPermissionContext = Array.isArray(session?.permissionCodes);
+  const isSystemRole = session?.isSystemRole === true;
+  const canAssignSellerPermission = Array.isArray(normalizedPermissionCodes)
+    ? normalizedPermissionCodes.includes("customers.assign_seller")
+    : false;
+  const canManageCustomer = canManage && (
+    isSystemRole
+      || !hasPermissionContext
+      || normalizedPermissionCodes.includes("customers.edit")
+  );
+  const canAssignSellerInViewer = canManage && (
+    isSystemRole
+      || (hasPermissionContext && canAssignSellerPermission)
+  );
+  const canSendMessages = normalizedPermissionCodes === null
+    ? true
+    : normalizedPermissionCodes.includes("messaging.send");
 
   const status = statusMap[customer.status];
   const isRetail = customer.customerType === "RETAIL";
   const customFields = customer.customFields ?? [];
+
+  const normalizeHeaderText = (value: string | null | undefined) =>
+    String(value || "").trim().toLocaleLowerCase("pt-BR");
+
+  const headerTitle =
+    customer.tradeName?.trim() ||
+    customer.companyName?.trim() ||
+    customer.contactName?.trim() ||
+    customer.email?.trim() ||
+    "Cliente";
+
+  const headerSubtitle = [customer.companyName, customer.contactName, customer.email]
+    .map((value) => String(value || "").trim())
+    .find(
+      (value) =>
+        value.length > 0 && normalizeHeaderText(value) !== normalizeHeaderText(headerTitle),
+    );
 
   const renderCustomFieldValue = (value: unknown): ReactNode => {
     if (value === null || value === undefined) return "-";
@@ -194,14 +272,16 @@ export function CustomerDetail({
 
   const handleApprove = () => {
     startTransition(async () => {
-      await approveCustomerAction(customer.id);
+      const action = isRetail ? approveClientAction : approveCustomerAction;
+      await action(customer.id);
       router.refresh();
     });
   };
 
   const handleReject = () => {
     startTransition(async () => {
-      await rejectCustomerAction(customer.id);
+      const action = isRetail ? rejectClientAction : rejectCustomerAction;
+      await action(customer.id);
       router.refresh();
     });
   };
@@ -212,7 +292,9 @@ export function CustomerDetail({
       fd.set("priceTableId", formData.priceTableId);
       fd.set("minPiecesOverride", formData.minPiecesOverride);
       fd.set("extraDiscountPct", formData.extraDiscountPct);
-      fd.set("assignedSellerId", formData.assignedSellerId);
+      if (canAssignSellerInViewer) {
+        fd.set("assignedSellerId", formData.assignedSellerId);
+      }
       fd.set("paymentTerms", JSON.stringify(formData.paymentTerms));
 
       await updateCustomerAction(customer.id, fd);
@@ -221,19 +303,89 @@ export function CustomerDetail({
     });
   };
 
+  const handleDispatchCustomerWebhook = async () => {
+    setIsWebhookDispatching(true);
+    setWebhookDispatchMessage(null);
+
+    const result = await dispatchCustomerWebhookAction(String(customer.id), customerWebhookEvent);
+
+    if (result.success && result.data) {
+      const response = result.data;
+      setWebhookDispatchMessage(response.message || `Evento ${response.event} enviado com sucesso`);
+      setWebhookDispatchPayload(response.payload ?? null);
+    } else {
+      setWebhookDispatchMessage(result.error || "Erro ao disparar webhook");
+      setWebhookDispatchPayload(null);
+    }
+
+    setShowWebhookResultDialog(true);
+    setIsWebhookDispatching(false);
+  };
+
+  const handleDispatchCustomerMessage = async () => {
+    if (!canSendMessages) {
+      setDispatchFeedback("Você não tem permissão para enviar mensagens");
+      return;
+    }
+
+    setIsDispatchingMessage(true);
+    setDispatchFeedback("");
+
+    const result = await dispatchCustomerMessageAction(String(customer.id), {
+      trigger: messageTrigger,
+      channel: messageChannel,
+    });
+
+    if (!result.success || !result.data) {
+      setDispatchFeedback(result.error || "Nao foi possivel disparar a mensagem do cliente");
+      setIsDispatchingMessage(false);
+      return;
+    }
+
+    setDispatchPreview(result.data.renderedMessage || "");
+    setDispatchFeedback(`${result.data.message} (${result.data.recipient})`);
+    setShowWebhookResultDialog(false);
+    setMessageDispatchResultOpen(true);
+
+    if (result.data.whatsappUrl) {
+      window.open(result.data.whatsappUrl, "_blank", "noopener,noreferrer");
+    }
+
+    setIsDispatchingMessage(false);
+  };
+
   const handleAssignSeller = (sellerId: string) => {
+    if (!canAssignSellerInViewer) {
+      return;
+    }
+
     startTransition(async () => {
       const fd = new FormData();
       fd.set("assignedSellerId", sellerId);
-      await updateCustomerAction(customer.id, fd);
+      const result = await updateCustomerAction(customer.id, fd);
+
+      if (!result.success) {
+        toast.error(result.error || "Erro ao salvar vendedora responsável");
+        return;
+      }
 
       const selectedSeller = sellers.find((item) => item.id === sellerId);
-      setAssignedSellerId(sellerId);
-      setAssignedSellerName(selectedSeller?.name || "");
+      const nextSellerId = result.data?.assignedSellerId || sellerId || "";
+      const nextSellerName =
+        result.data?.assignedSellerName
+        || selectedSeller?.name
+        || "";
+      setAssignedSellerId(nextSellerId);
+      setAssignedSellerName(nextSellerName);
       setFormData((prev) => ({
         ...prev,
-        assignedSellerId: sellerId || "default",
+        assignedSellerId: nextSellerId || "default",
       }));
+      toast.success(
+        nextSellerId
+          ? "Vendedora responsável atualizada"
+          : "Vendedora responsável removida",
+      );
       router.refresh();
     });
   };
@@ -274,188 +426,347 @@ export function CustomerDetail({
   };
 
   return (
-    <div className="space-y-4">
-      {/* Header — row 1: back + title */}
-      <div className="flex items-center gap-3 min-w-0">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="shrink-0 h-9 w-9 text-muted-foreground"
-          asChild
-        >
-          <Link href="/customers">
-            <ArrowLeft className="h-5 w-5" />
-          </Link>
-        </Button>
-        <div className="min-w-0 flex-1">
-          <h1 className="text-base font-semibold text-foreground leading-tight truncate">
-            {customer.tradeName || customer.companyName}
-          </h1>
-          {customer.tradeName && (
-            <p className="text-sm text-muted-foreground truncate">
-              {customer.companyName}
-            </p>
-          )}
+    <div className="space-y-6">
+      <Dialog open={messageDispatchResultOpen} onOpenChange={setMessageDispatchResultOpen}>
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Disparo de Mensagem ao Cliente</DialogTitle>
+            <DialogDescription>{dispatchFeedback || "Mensagem processada."}</DialogDescription>
+          </DialogHeader>
+
+          {dispatchPreview ? (
+            <div className="rounded-md border bg-muted/30 p-3">
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Conteudo enviado
+              </p>
+              <pre className="overflow-x-auto whitespace-pre-wrap text-xs leading-5 wrap-break-word">
+                {dispatchPreview}
+              </pre>
+            </div>
+          ) : null}
+
+          <DialogFooter>
+            <Button type="button" onClick={() => setMessageDispatchResultOpen(false)}>
+              Fechar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showWebhookResultDialog} onOpenChange={setShowWebhookResultDialog}>
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Disparo Manual de Webhook</DialogTitle>
+            <DialogDescription>{webhookDispatchMessage || "Webhook processado."}</DialogDescription>
+          </DialogHeader>
+
+          {webhookDispatchPayload ? (
+            <div className="rounded-md border bg-muted/30 p-3">
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Payload enviado
+              </p>
+              <pre className="overflow-x-auto whitespace-pre-wrap text-xs leading-5 wrap-break-word">
+                {JSON.stringify(webhookDispatchPayload, null, 2)}
+              </pre>
+            </div>
+          ) : null}
+
+          <DialogFooter>
+            <Button type="button" onClick={() => setShowWebhookResultDialog(false)}>
+              Fechar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Drawer
+        direction="right"
+        open={communicationPanel !== null}
+        onOpenChange={(open) => !open && setCommunicationPanel(null)}
+      >
+        <DrawerContent className="w-full sm:max-w-xl">
+          <DrawerHeader className="border-b border-border/20 px-5 py-4 text-left">
+            <DrawerTitle>
+              <span className="inline-flex items-center gap-2">
+                {communicationPanel === "message" ? (
+                  <Send className="h-4 w-4 text-primary" />
+                ) : (
+                  <Webhook className="h-4 w-4 text-primary" />
+                )}
+                {communicationPanel === "message" ? "Disparo de Mensagem ao Cliente" : "Disparo Manual de Webhook"}
+              </span>
+            </DrawerTitle>
+            <DrawerDescription className="mt-1">
+              {communicationPanel === "message"
+                ? "Selecione trigger e canal para enviar usando o template ativo da mensageria."
+                : "Dispare manualmente o evento de webhook do cliente usando o fluxo padrão do backend."}
+            </DrawerDescription>
+          </DrawerHeader>
+
+          <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">
+            {communicationPanel === "message" ? (
+              <Card className="rounded-xl border-border/30 shadow-none">
+                <CardContent className="space-y-4 pt-5">
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>Trigger</Label>
+                      <Select value={messageTrigger} onValueChange={(value) => setMessageTrigger(value as CustomerMessageTrigger)}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {Object.entries(CUSTOMER_TRIGGER_LABELS).map(([trigger, label]) => (
+                            <SelectItem key={trigger} value={trigger}>
+                              {label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Canal</Label>
+                      <Select value={messageChannel} onValueChange={(value) => setMessageChannel(value as "WHATSAPP" | "EMAIL")}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="WHATSAPP">WhatsApp</SelectItem>
+                          <SelectItem value="EMAIL">E-mail</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button type="button" onClick={handleDispatchCustomerMessage} disabled={!canSendMessages || isDispatchingMessage}>
+                      {isDispatchingMessage ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Send className="mr-2 h-4 w-4" />
+                      )}
+                      {isDispatchingMessage ? "Disparando..." : "Disparar Mensagem"}
+                    </Button>
+                    {dispatchFeedback ? (
+                      <p className="text-sm text-muted-foreground">{dispatchFeedback}</p>
+                    ) : null}
+                  </div>
+                </CardContent>
+              </Card>
+            ) : (
+              <Card className="rounded-xl border-border/30 shadow-none">
+                <CardContent className="space-y-4 pt-5">
+                  <div className="space-y-2">
+                    <Label>Evento</Label>
+                    <Select
+                      value={customerWebhookEvent}
+                      onValueChange={(value) => setCustomerWebhookEvent(value as CustomerWebhookEvent)}
+                    >
+                      <SelectTrigger className="w-full sm:w-64">
+                        <SelectValue placeholder="Selecione o evento" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="customer.created">customer.created</SelectItem>
+                        <SelectItem value="customer.updated">customer.updated</SelectItem>
+                        <SelectItem value="customer.approved">customer.approved</SelectItem>
+                        <SelectItem value="customer.rejected">customer.rejected</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      onClick={handleDispatchCustomerWebhook}
+                      disabled={isWebhookDispatching}
+                    >
+                      {isWebhookDispatching ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Webhook className="mr-2 h-4 w-4" />
+                      )}
+                      {isWebhookDispatching ? "Disparando..." : "Disparar Webhook"}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        </DrawerContent>
+      </Drawer>
+
+      {/* Header */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-3 sm:gap-4">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="-ml-2 h-8 w-8 text-muted-foreground"
+            asChild
+          >
+            <Link href="/customers">
+              <ArrowLeft className="h-5 w-5" />
+            </Link>
+          </Button>
+          <div>
+            <h1 className="text-lg font-medium text-foreground leading-none">
+              {headerTitle}
+            </h1>
+            {headerSubtitle && (
+              <p className="mt-1.5 text-sm text-muted-foreground">{headerSubtitle}</p>
+            )}
+          </div>
         </div>
-        {/* Type + Status badges — always visible, desktop-style */}
-        <div className="hidden sm:flex items-center gap-2 shrink-0">
-          <Badge variant="outline" className="h-8 px-3 text-xs font-medium">
+        <div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto sm:justify-end sm:gap-3">
+          <Badge
+            variant={customerTypeBadgeVariant[customer.customerType || "WHOLESALE"] || "outline"}
+            className="h-9 rounded-full px-4 text-sm font-medium"
+          >
             {customerTypeLabels[customer.customerType || "WHOLESALE"]}
           </Badge>
-          <span
-            className={cn(
-              "text-xs font-medium px-3 border rounded-full h-8 flex items-center justify-center shrink-0",
-              customer.status === "APPROVED"
-                ? "bg-emerald-500/15 text-emerald-700 border-emerald-500/20 dark:text-emerald-400"
-                : customer.status === "PENDING"
-                ? "bg-muted text-foreground border-border/40"
-                : "bg-rose-500/10 text-rose-600 border-rose-500/20 dark:text-rose-400"
-            )}
+          <Badge
+            variant={status?.variant || "slate"}
+            className="h-9 rounded-full px-4 text-sm font-medium"
           >
             {status.label}
-          </span>
-        </div>
-      </div>
+          </Badge>
+          {offlineLink ? (
+            <Badge
+              variant="outline"
+              className="h-9 gap-1.5 rounded-full border-emerald-500/40 bg-emerald-500/5 px-4 text-sm font-medium text-emerald-700 dark:text-emerald-300"
+              title={
+                offlineLink.offlineSellerName
+                  ? `Vendedora offline: ${offlineLink.offlineSellerName}`
+                  : undefined
+              }
+            >
+              <Store className="h-3.5 w-3.5" />
+              Cliente vinculado offline
+            </Badge>
+          ) : null}
 
-      {/* Header — row 2: badges + actions (mobile wraps, desktop inline) */}
-      <div className="flex flex-wrap items-center gap-2">
-        {/* Badges — mobile only */}
-        <Badge variant="outline" className="sm:hidden h-8 px-3 text-xs font-medium">
-          {customerTypeLabels[customer.customerType || "WHOLESALE"]}
-        </Badge>
-        <span
-          className={cn(
-            "sm:hidden text-xs font-medium px-3 border rounded-full h-8 flex items-center justify-center",
-            customer.status === "APPROVED"
-              ? "bg-emerald-500/15 text-emerald-700 border-emerald-500/20 dark:text-emerald-400"
-              : customer.status === "PENDING"
-              ? "bg-muted text-foreground border-border/40"
-              : "bg-rose-500/10 text-rose-600 border-rose-500/20 dark:text-rose-400"
+          {canAssignSellerInViewer && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-9 w-full min-w-0 justify-between font-normal text-muted-foreground sm:w-auto sm:min-w-50"
+                >
+                  <span className="flex items-center gap-2">
+                    <UserIcon className="h-4 w-4" />
+                    <span className="text-foreground font-medium">
+                      {assignedSellerName || "Nenhuma"}
+                    </span>
+                  </span>
+                  <ChevronDown className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+
+              <DropdownMenuContent align="end" className="w-[320px] rounded-lg">
+                <DropdownMenuLabel className="px-4 py-3 text-sm font-normal text-muted-foreground">
+                  Vendedora responsável
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+
+                <DropdownMenuItem
+                  className="gap-3 px-4 py-3 cursor-pointer"
+                  onSelect={() => handleAssignSeller("")}
+                >
+                  <div className="h-8 w-8 text-xs rounded-full bg-muted flex items-center justify-center shrink-0">
+                    <Minus className="h-3 w-3 text-muted-foreground" />
+                  </div>
+                  <span className="flex-1 text-sm font-medium">Nenhuma</span>
+                  {!assignedSellerId && <Check className="h-4 w-4" />}
+                </DropdownMenuItem>
+
+                {sellers.map((item) => (
+                  <DropdownMenuItem
+                    key={item.id}
+                    className="gap-3 px-4 py-3 cursor-pointer"
+                    onSelect={() => handleAssignSeller(item.id)}
+                  >
+                    <div className="h-8 w-8 text-xs rounded-full bg-muted flex items-center justify-center shrink-0 font-medium text-foreground">
+                      {getInitials(item.name)}
+                    </div>
+                    <div className="flex min-w-0 flex-1 flex-col">
+                      <span className="text-sm font-medium leading-tight">
+                        {item.name}
+                      </span>
+                      <span className="truncate text-xs text-muted-foreground">
+                        {item.email}
+                      </span>
+                    </div>
+                    {assignedSellerId === item.id && (
+                      <Check className="h-4 w-4 shrink-0" />
+                    )}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
-        >
-          {status.label}
-        </span>
 
-        {/* Seller dropdown */}
-        {canManage && !isRetail && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
+          {canManageCustomer && customer.status === "PENDING" && (
+            <>
               <Button
                 variant="outline"
                 size="sm"
-                className="h-9 gap-2 font-normal text-muted-foreground min-w-0 max-w-[200px] sm:max-w-none"
+                onClick={handleReject}
+                disabled={isPending}
+                className="h-9 flex-1 gap-2 px-4 text-sm font-medium sm:flex-none"
               >
-                <UserIcon className="h-4 w-4 shrink-0" />
-                <span className="text-foreground font-medium truncate">
-                  {assignedSellerName || "Vendedora"}
-                </span>
-                <ChevronDown className="h-4 w-4 shrink-0" />
+                <XCircle className="h-4 w-4 text-foreground" />
+                Rejeitar
               </Button>
-            </DropdownMenuTrigger>
-
-            <DropdownMenuContent align="start" className="w-[280px] rounded-lg">
-              <DropdownMenuLabel className="px-4 py-3 text-sm font-normal text-muted-foreground">
-                Vendedora responsável
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-
-              <DropdownMenuItem
-                className="gap-3 px-4 py-3 cursor-pointer"
-                onSelect={() => handleAssignSeller("")}
+              <Button
+                size="sm"
+                onClick={handleApprove}
+                disabled={isPending}
+                className="h-9 flex-1 gap-2 px-4 text-sm font-medium sm:flex-none"
               >
-                <div className="h-8 w-8 text-xs rounded-full bg-muted flex items-center justify-center shrink-0">
-                  <Minus className="h-3 w-3 text-muted-foreground" />
-                </div>
-                <span className="flex-1 text-sm font-medium">Nenhuma</span>
-                {!assignedSellerId && <Check className="h-4 w-4" />}
-              </DropdownMenuItem>
-
-              {sellers.map((item) => (
-                <DropdownMenuItem
-                  key={item.id}
-                  className="gap-3 px-4 py-3 cursor-pointer"
-                  onSelect={() => handleAssignSeller(item.id)}
-                >
-                  <div className="h-8 w-8 text-xs rounded-full bg-muted flex items-center justify-center shrink-0 font-medium text-foreground">
-                    {getInitials(item.name)}
-                  </div>
-                  <div className="flex min-w-0 flex-1 flex-col">
-                    <span className="text-sm font-medium leading-tight">
-                      {item.name}
-                    </span>
-                    <span className="truncate text-xs text-muted-foreground">
-                      {item.email}
-                    </span>
-                  </div>
-                  {assignedSellerId === item.id && (
-                    <Check className="h-4 w-4 shrink-0" />
-                  )}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
-
-        {/* Approve / Reject */}
-        {canManage && customer.status === "PENDING" && (
-          <>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleReject}
-              disabled={isPending}
-              className="h-9 px-4 gap-2 text-sm font-medium border-rose-200 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
-            >
-              <XCircle className="h-4 w-4" />
-              Rejeitar
-            </Button>
-            <Button
-              size="sm"
-              onClick={handleApprove}
-              disabled={isPending}
-              className="h-9 px-4 gap-2 text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white"
-            >
-              {isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <CheckCircle className="h-4 w-4" />
-              )}
-              Aprovar
-            </Button>
-          </>
-        )}
+                {isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <CheckCircle className="h-4 w-4" />
+                )}
+                Aprovar
+              </Button>
+            </>
+          )}
+        </div>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-        {/* Scrollable tab bar — fits any screen width */}
-        <div className="overflow-x-auto scrollbar-none -mx-6 px-6 lg:mx-0 lg:px-0">
-          <TabsList className="relative h-11 w-max min-w-full rounded-[15px] bg-primary/10 p-1">
-            <TabsTrigger
-              value="info"
-              className="relative z-10 h-full cursor-pointer px-4 text-sm font-medium text-muted-foreground transition-colors data-[state=active]:border-transparent data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm"
-            >
-              Informações
-            </TabsTrigger>
-            <TabsTrigger
-              value="commercial"
-              className="relative z-10 h-full cursor-pointer px-4 text-sm font-medium text-muted-foreground transition-colors data-[state=active]:border-transparent data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm"
-            >
-              Comercial
-            </TabsTrigger>
-            <TabsTrigger
-              value="orders"
-              className="relative z-10 h-full cursor-pointer px-4 text-sm font-medium text-muted-foreground transition-colors data-[state=active]:border-transparent data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm"
-            >
-              Pedidos ({orders.length})
-            </TabsTrigger>
-            <TabsTrigger
-              value="history"
-              className="relative z-10 h-full cursor-pointer px-4 text-sm font-medium text-muted-foreground transition-colors data-[state=active]:border-transparent data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm"
-            >
-              Histórico
-            </TabsTrigger>
-          </TabsList>
-        </div>
+        <TabsList className="relative h-auto w-full flex-col items-stretch rounded-[15px] bg-primary/10 p-1 sm:h-12 sm:flex-row sm:justify-start sm:flex-nowrap sm:overflow-x-auto">
+          <TabsTrigger
+            value="info"
+            className="relative z-10 h-10 w-full cursor-pointer justify-start px-4 text-sm font-medium text-muted-foreground transition-colors data-[state=active]:border-transparent data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm sm:h-full sm:w-auto sm:flex-none sm:shrink-0 sm:justify-center sm:whitespace-nowrap sm:px-5"
+          >
+            <UserIcon className="h-4 w-4" />
+            <span>Informações</span>
+          </TabsTrigger>
+          <TabsTrigger
+            value="commercial"
+            className="relative z-10 h-10 w-full cursor-pointer justify-start px-4 text-sm font-medium text-muted-foreground transition-colors data-[state=active]:border-transparent data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm sm:h-full sm:w-auto sm:flex-none sm:shrink-0 sm:justify-center sm:whitespace-nowrap sm:px-5"
+          >
+            <CreditCard className="h-4 w-4" />
+            <span>Condições Comerciais</span>
+          </TabsTrigger>
+          <TabsTrigger
+            value="orders"
+            className="relative z-10 h-10 w-full cursor-pointer justify-start px-4 text-sm font-medium text-muted-foreground transition-colors data-[state=active]:border-transparent data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm sm:h-full sm:w-auto sm:flex-none sm:shrink-0 sm:justify-center sm:whitespace-nowrap sm:px-5"
+          >
+            <ShoppingCart className="h-4 w-4" />
+            <span>Pedidos ({orders.length})</span>
+          </TabsTrigger>
+          <TabsTrigger
+            value="history"
+            className="relative z-10 h-10 w-full cursor-pointer justify-start px-4 text-sm font-medium text-muted-foreground transition-colors data-[state=active]:border-transparent data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm sm:h-full sm:w-auto sm:flex-none sm:shrink-0 sm:justify-center sm:whitespace-nowrap sm:px-5"
+          >
+            <History className="h-4 w-4" />
+            <span>Histórico</span>
+          </TabsTrigger>
+        </TabsList>
 
         {/* Info Tab */}
         <TabsContent value="info" className="space-y-6">
@@ -492,6 +803,25 @@ export function CustomerDetail({
                     </div>
                   )}
                   <CardContent className="space-y-6 text-sm">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <div>
+                        <h3 className="text-xs text-muted-foreground mb-1">
+                          Razao Social
+                        </h3>
+                        <p className="font-medium">
+                          {customer.companyName || "nao informada"}
+                        </p>
+                      </div>
+                      <div>
+                        <h3 className="text-xs text-muted-foreground mb-1">
+                          Nome Fantasia
+                        </h3>
+                        <p className="font-medium">
+                          {customer.tradeName || "nao informada"}
+                        </p>
+                      </div>
+                    </div>
+
                     <div className="grid grid-cols-2 gap-4">
                       <div>
                         <h3 className="text-xs text-muted-foreground mb-1">
@@ -706,6 +1036,28 @@ export function CustomerDetail({
                     <Mail className="h-4 w-4 text-muted-foreground/70" />
                     <p className="font-medium">{customer.email}</p>
                   </div>
+                  <div className="pt-2 border-t border-border/20 flex flex-wrap items-center gap-4">
+                    {canSendMessages ? (
+                      <Button
+                        type="button"
+                        variant="link"
+                        className="h-auto p-0 text-xs font-medium text-primary inline-flex items-center gap-1.5"
+                        onClick={() => setCommunicationPanel("message")}
+                      >
+                        <Send className="h-3.5 w-3.5" />
+                        Disparo de Mensagem ao Cliente
+                      </Button>
+                    ) : null}
+                    <Button
+                      type="button"
+                      variant="link"
+                      className="h-auto p-0 text-xs font-medium text-primary inline-flex items-center gap-1.5"
+                      onClick={() => setCommunicationPanel("webhook")}
+                    >
+                      <Webhook className="h-3.5 w-3.5" />
+                      Disparo Manual de Webhook
+                    </Button>
+                  </div>
                 </CardContent>
               </Card>
 
@@ -761,6 +1113,21 @@ export function CustomerDetail({
                         <p className="font-medium">{assignedSellerName || "-"}</p>
                       </div>
                     )}
+                    {offlineLink ? (
+                      <div>
+                        <h3 className="text-xs text-muted-foreground mb-1">
+                          Vínculo offline
+                        </h3>
+                        <p className="font-medium">
+                          {offlineLink.offlineName || "Cliente ERP"}
+                        </p>
+                        {offlineLink.offlineSellerName ? (
+                          <p className="text-xs text-muted-foreground mt-0.5">
+                            Vendedora loja: {offlineLink.offlineSellerName}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="pt-4 mt-auto">
@@ -804,7 +1171,7 @@ export function CustomerDetail({
         <TabsContent value="commercial" className="space-y-6">
           <div className="flex justify-between items-center">
             <h2 className="text-xl font-semibold">Condições Comerciais</h2>
-            {canManage && (
+            {canManageCustomer && (
               <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
                 <DialogTrigger asChild>
                   <Button>Editar Condições</Button>
@@ -887,7 +1254,7 @@ export function CustomerDetail({
                       />
                     </div>
 
-                    {!isRetail && (
+                    {canAssignSellerInViewer ? (
                       <div className="space-y-2">
                         <Label>Vendedora Responsável</Label>
                         <Select
@@ -912,7 +1279,7 @@ export function CustomerDetail({
                           </SelectContent>
                         </Select>
                       </div>
-                    )}
+                    ) : null}
 
                     <div className="space-y-2">
                       <Label>Formas de Pagamento</Label>
@@ -1064,7 +1431,7 @@ export function CustomerDetail({
                     >
                       <div>
                         <p className="font-medium">
-                          Pedido #{order.id.slice(-6)}
+                          Pedido #{order.code?.trim() || order.id.slice(-6)}
                         </p>
                         <p className="text-sm text-muted-foreground">
                           {new Date(order.createdAt).toLocaleDateString(

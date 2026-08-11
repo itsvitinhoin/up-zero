@@ -12,7 +12,6 @@ import AddressInput from "@/components/form/AddressInput";
 import CellphoneInput from "@/components/form/CellphoneInput";
 import PhoneInput from "@/components/form/PhoneInput";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { PermissionsCard } from "@/components/admin/settings/PermissionsCard";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -39,33 +38,8 @@ import {
 import type { SiteSettings, User } from "@/lib/types";
 import type { StoreProfileConfig } from "@/lib/actions/settings";
 import { tAdmin } from "@/lib/i18n/admin";
-
-function getDefaultSignWholesale() {
-  return {
-    fields: [
-      { id: "name", label: "Nome Completo", type: "TEXT" as const, enabled: true, required: true, order: 1, isDefault: true },
-      { id: "email", label: "E-mail", type: "EMAIL" as const, enabled: true, required: true, order: 2, isDefault: true },
-      { id: "phone", label: "Telefone / WhatsApp", type: "PHONE" as const, enabled: true, required: true, order: 3, isDefault: true },
-      { id: "cnpj", label: "CNPJ", type: "CNPJ" as const, enabled: true, required: true, order: 4, isDefault: true },
-      { id: "companyName", label: "Razão Social", type: "TEXT" as const, enabled: true, required: true, order: 5, isDefault: true },
-      { id: "tradeName", label: "Nome Fantasia", type: "TEXT" as const, enabled: true, required: false, order: 6, isDefault: true },
-      { id: "stateRegistration", label: "Inscrição Estadual", type: "TEXT" as const, enabled: true, required: false, order: 7, isDefault: true },
-      { id: "address", label: "Endereço Completo", type: "LONG_TEXT" as const, enabled: true, required: true, order: 8, isDefault: true },
-    ],
-    autoApproval: {
-      enabled: true,
-      mode: "CNAE" as const,
-      validateCnpjOnReceita: true,
-      allowedCnaes: ["4781-4/00", "4782-2/01", "4789-0/99", "4755-5/01", "4755-5/02", "4781-4/01"],
-    },
-    sellerAssignment: {
-      enabled: true,
-      mode: "ROUND_ROBIN" as const,
-      sellerIds: [],
-      fallbackSellerId: null,
-    },
-  };
-}
+import { OfflineSellerPoolAlert } from "@/components/admin/offline-seller-pool-alert";
+import { getDefaultSignWholesale } from "@/components/admin/settings/settings-defaults";
 
 function getDefaultStoreSocialLinks() {
   return {
@@ -74,6 +48,16 @@ function getDefaultStoreSocialLinks() {
     youtube: { enabled: false, url: '' },
     linkedin: { enabled: false, url: '' },
     tiktok: { enabled: false, url: '' },
+  }
+}
+
+function getDefaultStoreMeta(): StoreProfileConfig['meta'] {
+  return {
+    title: '',
+    description: '',
+    headCode: '',
+    maintenanceMode: false,
+    socialLinks: getDefaultStoreSocialLinks(),
   }
 }
 
@@ -105,8 +89,8 @@ interface GeneralTabProps {
   onSave: () => void;
   newWholesaleFieldLabel: string;
   setNewWholesaleFieldLabel: (v: string) => void;
-  newWholesaleFieldType: "TEXT" | "EMAIL" | "PHONE" | "CNPJ" | "LONG_TEXT" | "URL" | "SELECT" | "UPLOAD";
-  setNewWholesaleFieldType: (v: "TEXT" | "EMAIL" | "PHONE" | "CNPJ" | "LONG_TEXT" | "URL" | "SELECT" | "UPLOAD") => void;
+  newWholesaleFieldType: "TEXT" | "EMAIL" | "PHONE" | "CNPJ" | "LONG_TEXT" | "ADDRESS" | "URL" | "SELECT" | "UPLOAD";
+  setNewWholesaleFieldType: (v: "TEXT" | "EMAIL" | "PHONE" | "CNPJ" | "LONG_TEXT" | "ADDRESS" | "URL" | "SELECT" | "UPLOAD") => void;
   newCnae: string;
   setNewCnae: (v: string) => void;
   mode?: "all" | "general" | "b2b";
@@ -132,7 +116,7 @@ export function GeneralTab({
   const showStoreSection = mode === "all" || mode === "general";
   const showB2BSections = mode === "all" || mode === "b2b";
 
-  function isLockedRequiredField(field: { isDefault?: boolean; id: string }) {
+  function isLockedVisibleField(field: { isDefault?: boolean; id: string }) {
     return Boolean(field.isDefault && (field.id === "name" || field.id === "email" || field.id === "cnpj"));
   }
 
@@ -147,26 +131,13 @@ export function GeneralTab({
       whatsapp: storeProfile?.whatsapp || '',
       b2bMasterPassword: storeProfile?.b2bMasterPassword || '',
       address: storeProfile?.address || { zip_code: '', street_name: '', house_number: '', address_complement: '', neighborhood: '', city: '', state: '' },
-      meta: storeProfile?.meta || { title: '', description: '', socialLinks: getDefaultStoreSocialLinks() },
+      meta: storeProfile?.meta || getDefaultStoreMeta(),
       ...patch,
     })
   }
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-end">
-        <Button onClick={onSave} disabled={isSaving}>
-          <Save className="mr-2 h-4 w-4" />
-          {isSaving
-            ? tAdmin(locale, "admin.common.saving", "Saving...")
-            : mode === "general"
-              ? tAdmin(locale, "admin.general.saveStore", "Save Store Data")
-              : mode === "b2b"
-                ? tAdmin(locale, "admin.general.saveB2B", "Save B2B Settings")
-                : tAdmin(locale, "admin.general.saveAll", "Save General Settings")}
-        </Button>
-      </div>
-
       <div className="grid gap-6">
         {/* Store Profile */}
         {showStoreSection && (
@@ -212,6 +183,29 @@ export function GeneralTab({
               />
             </div>
 
+            <div className="flex items-start justify-between gap-4 rounded-lg border p-4">
+              <div className="space-y-1">
+                <Label htmlFor="storeMaintenanceMode" className="text-sm font-medium">
+                  {tAdmin(locale, "admin.general.storeData.maintenanceMode", "Site em manutenção")}
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  {tAdmin(locale, "admin.general.storeData.maintenanceMode.help", "Ativa o modo de manutenção para a vitrine da loja.")}
+                </p>
+              </div>
+              <Switch
+                id="storeMaintenanceMode"
+                checked={Boolean(storeProfile?.meta?.maintenanceMode)}
+                onCheckedChange={(checked) =>
+                  updateProfile({
+                    meta: {
+                      ...(storeProfile?.meta || getDefaultStoreMeta()),
+                      maintenanceMode: checked,
+                    },
+                  })
+                }
+              />
+            </div>
+
             <Separator />
 
             <p className="text-sm font-medium flex items-center gap-2"><Phone className="h-4 w-4" /> {tAdmin(locale, "admin.general.contact.title", "Contact")}</p>
@@ -244,6 +238,7 @@ export function GeneralTab({
             <p className="text-sm font-medium flex items-center gap-2"><MapPin className="h-4 w-4" /> {tAdmin(locale, "admin.general.address.title", "Address")}</p>
 
             <AddressInput
+              locale={locale}
               values={{
                 zip_code: storeProfile?.address?.zip_code || '',
                 street_name: storeProfile?.address?.street_name || '',
@@ -264,16 +259,16 @@ export function GeneralTab({
             <Separator />
 
             <div className="space-y-2">
-              <Label htmlFor="storeB2bMasterPassword">{tAdmin(locale, "admin.general.storeData.masterPassword", "Senha Master B2B")}</Label>
+              <Label htmlFor="storeB2bMasterPassword">{tAdmin(locale, "admin.general.storeData.masterPassword", "B2B Master Password")}</Label>
               <Input
                 id="storeB2bMasterPassword"
                 type="password"
                 value={storeProfile?.b2bMasterPassword || ''}
                 onChange={(e) => updateProfile({ b2bMasterPassword: e.target.value })}
-                placeholder={tAdmin(locale, "admin.general.storeData.masterPassword.placeholder", "Defina a senha master para login de clientes")}
+                placeholder={tAdmin(locale, "admin.general.storeData.masterPassword.placeholder", "Set the master password for customer login")}
               />
               <p className="text-xs text-muted-foreground">
-                {tAdmin(locale, "admin.general.storeData.masterPassword.help", "Permite login de qualquer cliente da loja com o e-mail e esta senha.")}
+                {tAdmin(locale, "admin.general.storeData.masterPassword.help", "Allows any store customer to log in with their email and this password.")}
               </p>
             </div>
 
@@ -300,7 +295,7 @@ export function GeneralTab({
               <Input
                 id="metaTitle"
                 value={storeProfile?.meta?.title || ''}
-                onChange={(e) => updateProfile({ meta: { ...(storeProfile?.meta || {}), title: e.target.value } as StoreProfileConfig['meta'] })}
+                onChange={(e) => updateProfile({ meta: { ...(storeProfile?.meta || getDefaultStoreMeta()), title: e.target.value } as StoreProfileConfig['meta'] })}
                 placeholder={tAdmin(locale, "admin.general.meta.titlePlaceholder", "B2B Store | Wholesale and Resale")}
               />
               <p className="text-xs text-muted-foreground">
@@ -313,11 +308,27 @@ export function GeneralTab({
                 id="metaDescription"
                 rows={3}
                 value={storeProfile?.meta?.description || ''}
-                onChange={(e) => updateProfile({ meta: { ...(storeProfile?.meta || {}), description: e.target.value } as StoreProfileConfig['meta'] })}
+                onChange={(e) => updateProfile({ meta: { ...(storeProfile?.meta || getDefaultStoreMeta()), description: e.target.value } as StoreProfileConfig['meta'] })}
                 placeholder={tAdmin(locale, "admin.general.meta.descriptionPlaceholder", "Short store description for search engines (up to 160 characters)")}
               />
               <p className="text-xs text-muted-foreground">
                 {tAdmin(locale, "admin.general.meta.descriptionHelp", "Maximum 160 characters. Appears in search results.")}
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="metaHeadCode">Código no head (HTML/script)</Label>
+              <Textarea
+                id="metaHeadCode"
+                rows={8}
+                value={storeProfile?.meta?.headCode || ''}
+                onChange={(e) => updateProfile({ meta: { ...(storeProfile?.meta || getDefaultStoreMeta()), headCode: e.target.value } as StoreProfileConfig['meta'] })}
+                placeholder={'<script async src="https://example.com/widget.js"></script>'}
+              />
+              <p className="text-xs text-muted-foreground">
+                Esse código será injetado no head da vitrine desta loja.
+              </p>
+              <p className="text-xs text-amber-600">
+                Use apenas scripts de fontes confiáveis. Esse código será executado em todas as páginas da vitrine.
               </p>
             </div>
           </CardContent>
@@ -354,7 +365,7 @@ export function GeneralTab({
                       onCheckedChange={(checked) =>
                         updateProfile({
                           meta: {
-                            ...(storeProfile?.meta || { title: '', description: '', socialLinks: getDefaultStoreSocialLinks() }),
+                            ...(storeProfile?.meta || getDefaultStoreMeta()),
                             socialLinks: {
                               ...socialLinks,
                               [key]: {
@@ -374,7 +385,7 @@ export function GeneralTab({
                     onChange={(e) =>
                       updateProfile({
                         meta: {
-                          ...(storeProfile?.meta || { title: '', description: '', socialLinks: getDefaultStoreSocialLinks() }),
+                          ...(storeProfile?.meta || getDefaultStoreMeta()),
                           socialLinks: {
                             ...socialLinks,
                             [key]: {
@@ -394,8 +405,6 @@ export function GeneralTab({
           </CardContent>
         </Card>
         )}
-
-        {showStoreSection && <PermissionsCard locale={locale} />}
 
         {showB2BSections && (
         <Card id="b2b-rules">
@@ -481,9 +490,7 @@ export function GeneralTab({
                   .slice()
                   .sort((a, b) => a.order - b.order)
                   .map((field, index) => {
-                    const displayFieldLabel = field.isDefault
-                      ? tAdmin(locale, `admin.general.registration.defaultField.${field.id}`, field.label)
-                      : field.label;
+                    const displayFieldLabel = tAdmin(locale, `admin.general.registration.defaultField.${field.id}`, field.label);
 
                     return (
                     <div key={field.id} className="rounded-lg border p-3">
@@ -493,25 +500,33 @@ export function GeneralTab({
                             <span className="text-xs text-muted-foreground">{index + 1}</span>
                             <p className="font-medium text-sm">{displayFieldLabel}</p>
                             <Badge variant="outline" className="text-[10px]">{field.type}</Badge>
-                            {field.required && !isLockedRequiredField(field) && <Badge variant="outline" className="text-[10px] text-red-600 border-red-200">{tAdmin(locale, "admin.common.required", "Required")}</Badge>}
+                            {field.enabled !== false && !isLockedVisibleField(field) ? (
+                              <Badge variant="outline" className="text-[10px] text-emerald-700 border-emerald-200">
+                                {tAdmin(locale, "admin.general.registration.visible", "Visible")}
+                              </Badge>
+                            ) : null}
                           </div>
                           {field.helpText && <p className="text-xs text-muted-foreground mt-1">{field.helpText}</p>}
                         </div>
                         <div className="flex items-center gap-3 shrink-0">
-                          {isLockedRequiredField(field) ? (
-                            <span className="text-xs font-medium text-muted-foreground">{tAdmin(locale, "admin.common.required", "Required")}</span>
+                          {isLockedVisibleField(field) ? (
+                            <span className="text-xs font-medium text-muted-foreground">
+                              {tAdmin(locale, "admin.general.registration.alwaysVisible", "Always visible")}
+                            </span>
                           ) : (
                             <div className="flex items-center gap-1">
-                              <span className="text-xs text-muted-foreground">{tAdmin(locale, "admin.common.requiredShort", "Req.")}</span>
+                              <span className="text-xs text-muted-foreground">
+                                {tAdmin(locale, "admin.general.registration.showField", "Show")}
+                              </span>
                               <Switch
-                                checked={field.required}
+                                checked={field.enabled !== false}
                                 onCheckedChange={(checked) =>
                                   setSettings({
                                     ...settings,
                                     sign_wholesale: {
                                       ...(settings.sign_wholesale || getDefaultSignWholesale()),
                                       fields: (settings.sign_wholesale?.fields || getDefaultSignWholesale().fields).map((f) =>
-                                        f.id === field.id ? { ...f, required: checked } : f
+                                        f.id === field.id ? { ...f, enabled: checked } : f
                                       ),
                                     },
                                   })
@@ -551,13 +566,14 @@ export function GeneralTab({
                     value={newWholesaleFieldLabel}
                     onChange={(e) => setNewWholesaleFieldLabel(e.target.value)}
                   />
-                  <Select value={newWholesaleFieldType} onValueChange={(value: "TEXT" | "EMAIL" | "PHONE" | "CNPJ" | "LONG_TEXT" | "URL" | "SELECT" | "UPLOAD") => setNewWholesaleFieldType(value)}>
+                  <Select value={newWholesaleFieldType} onValueChange={(value: "TEXT" | "EMAIL" | "PHONE" | "CNPJ" | "LONG_TEXT" | "ADDRESS" | "URL" | "SELECT" | "UPLOAD") => setNewWholesaleFieldType(value)}>
                     <SelectTrigger className={B2B_SELECT_TRIGGER_CLASSNAME}>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="TEXT">{tAdmin(locale, "admin.general.fieldType.text", "Text")}</SelectItem>
                       <SelectItem value="LONG_TEXT">{tAdmin(locale, "admin.general.fieldType.longText", "Long text")}</SelectItem>
+                      <SelectItem value="ADDRESS">{tAdmin(locale, "admin.general.fieldType.address", "Address")}</SelectItem>
                       <SelectItem value="EMAIL">{tAdmin(locale, "admin.general.fieldType.email", "Email")}</SelectItem>
                       <SelectItem value="PHONE">{tAdmin(locale, "admin.general.fieldType.phone", "Phone")}</SelectItem>
                       <SelectItem value="URL">URL</SelectItem>
@@ -633,6 +649,28 @@ export function GeneralTab({
                           autoApproval: {
                             ...(settings.sign_wholesale?.autoApproval || getDefaultSignWholesale().autoApproval),
                             enabled: checked,
+                          },
+                        },
+                      })
+                    }
+                  />
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label>{tAdmin(locale, "admin.general.autoApproval.approveCpfAutomatically", "Aprovar CPF automaticamente")}</Label>
+                    <p className="text-sm text-muted-foreground">{tAdmin(locale, "admin.general.autoApproval.approveCpfAutomaticallyHelp", "Cadastros de pessoa física (CPF) entram como APROVADO. Quando desligado, ficam como PENDENTE e precisam de aprovação manual.")}</p>
+                  </div>
+                  <Switch
+                    checked={settings.sign_wholesale?.autoApproval?.approveCpfAutomatically ?? true}
+                    onCheckedChange={(checked) =>
+                      setSettings({
+                        ...settings,
+                        sign_wholesale: {
+                          ...(settings.sign_wholesale || getDefaultSignWholesale()),
+                          autoApproval: {
+                            ...(settings.sign_wholesale?.autoApproval || getDefaultSignWholesale().autoApproval),
+                            approveCpfAutomatically: checked,
                           },
                         },
                       })
@@ -755,9 +793,13 @@ export function GeneralTab({
             </CardTitle>
             <CardDescription>
               {tAdmin(locale, "admin.general.sellerAssignment.description", "Configure how sellers are assigned to new registrations")}
+              {" "}
+              Clientes que já existem no ERP (loja física) são atribuídas automaticamente à vendedora
+              mapeada — a roleta só entra quando não há match offline nem link de indicação.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            <OfflineSellerPoolAlert />
             <div className={B2B_PANEL_CLASSNAME}>
               <div className="flex items-center justify-between">
                 <div>
@@ -774,6 +816,10 @@ export function GeneralTab({
                         sellerAssignment: {
                           ...(settings.sign_wholesale?.sellerAssignment || getDefaultSignWholesale().sellerAssignment),
                           enabled: checked,
+                          mode: checked ? "ROUND_ROBIN" : "MANUAL",
+                          fallbackSellerId: checked
+                            ? (settings.sign_wholesale?.sellerAssignment?.fallbackSellerId || null)
+                            : null,
                         },
                       },
                     })
@@ -783,113 +829,52 @@ export function GeneralTab({
 
               <Separator />
 
-              <div className="space-y-2">
-                <Label>{tAdmin(locale, "admin.general.sellerAssignment.mode", "Assignment Mode")}</Label>
-                <Select
-                  value={settings.sign_wholesale?.sellerAssignment?.mode || "ROUND_ROBIN"}
-                  onValueChange={(value: "ROUND_ROBIN" | "MANUAL") =>
-                    setSettings({
-                      ...settings,
-                      sign_wholesale: {
-                        ...(settings.sign_wholesale || getDefaultSignWholesale()),
-                        sellerAssignment: {
-                          ...(settings.sign_wholesale?.sellerAssignment || getDefaultSignWholesale().sellerAssignment),
-                          mode: value,
-                        },
-                      },
-                    })
-                  }
-                >
-                  <SelectTrigger size="sm" className={`${B2B_SELECT_TRIGGER_CLASSNAME} max-w-72`}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="ROUND_ROBIN">{tAdmin(locale, "admin.general.sellerAssignment.mode.roundRobin", "Automatic Round-Robin")}</SelectItem>
-                    <SelectItem value="MANUAL">{tAdmin(locale, "admin.general.sellerAssignment.mode.manual", "Manual Assignment")}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label>{tAdmin(locale, "admin.general.sellerAssignment.pool", "Sellers in Rotation")}</Label>
-                {sellerUsers.length > 0 ? (
-                  <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-                    {sellerUsers.map((seller) => {
-                      const selectedSellerIds = settings.sign_wholesale?.sellerAssignment?.sellerIds || [];
-                      const isSelected = selectedSellerIds.includes(seller.id);
-                      return (
-                        <button
-                          key={seller.id}
-                          type="button"
-                          onClick={() => {
-                            const nextSellerIds = isSelected
-                              ? selectedSellerIds.filter((sellerId) => sellerId !== seller.id)
-                              : [...selectedSellerIds, seller.id];
-                            setSettings({
-                              ...settings,
-                              sign_wholesale: {
-                                ...(settings.sign_wholesale || getDefaultSignWholesale()),
-                                sellerAssignment: {
-                                  ...(settings.sign_wholesale?.sellerAssignment || getDefaultSignWholesale().sellerAssignment),
-                                  sellerIds: nextSellerIds,
-                                  fallbackSellerId:
-                                    settings.sign_wholesale?.sellerAssignment?.fallbackSellerId &&
-                                    !nextSellerIds.includes(settings.sign_wholesale.sellerAssignment.fallbackSellerId)
-                                      ? null
-                                      : (settings.sign_wholesale?.sellerAssignment?.fallbackSellerId || null),
-                                },
-                              },
-                            });
-                          }}
-                          className={`flex items-center gap-2.5 rounded-md border p-2 text-left transition-colors ${
-                            isSelected ? "border-primary bg-primary/5" : "hover:bg-muted/40"
-                          }`}
-                        >
-                          <div className={`flex h-5 w-5 items-center justify-center rounded-sm border ${isSelected ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/40"}`}>
-                            {isSelected && <Check className="h-3.5 w-3.5" />}
-                          </div>
-                          <span className="text-sm font-medium">{seller.name}</span>
-                        </button>
-                      );
-                    })}
+              {(settings.sign_wholesale?.sellerAssignment?.enabled ?? true) && (
+                <>
+                  <div className="space-y-2">
+                    <Label>{tAdmin(locale, "admin.general.sellerAssignment.pool", "Sellers in Rotation")}</Label>
+                    {sellerUsers.length > 0 ? (
+                      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                        {sellerUsers.map((seller) => {
+                          const selectedSellerIds = settings.sign_wholesale?.sellerAssignment?.sellerIds || [];
+                          const isSelected = selectedSellerIds.includes(seller.id);
+                          return (
+                            <button
+                              key={seller.id}
+                              type="button"
+                              onClick={() => {
+                                const nextSellerIds = isSelected
+                                  ? selectedSellerIds.filter((sellerId) => sellerId !== seller.id)
+                                  : [...selectedSellerIds, seller.id];
+                                setSettings({
+                                  ...settings,
+                                  sign_wholesale: {
+                                    ...(settings.sign_wholesale || getDefaultSignWholesale()),
+                                    sellerAssignment: {
+                                      ...(settings.sign_wholesale?.sellerAssignment || getDefaultSignWholesale().sellerAssignment),
+                                      sellerIds: nextSellerIds,
+                                    },
+                                  },
+                                });
+                              }}
+                              className={`flex items-center gap-2.5 rounded-md border p-2 text-left transition-colors ${
+                                isSelected ? "border-primary bg-primary/5" : "hover:bg-muted/40"
+                              }`}
+                            >
+                              <div className={`flex h-5 w-5 items-center justify-center rounded-sm border ${isSelected ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/40"}`}>
+                                {isSelected && <Check className="h-3.5 w-3.5" />}
+                              </div>
+                              <span className="text-sm font-medium">{seller.name}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">{tAdmin(locale, "admin.general.sellerAssignment.noSellers", "No active sellers found.")}</p>
+                    )}
                   </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground">{tAdmin(locale, "admin.general.sellerAssignment.noSellers", "No active sellers found.")}</p>
-                )}
-              </div>
-
-              <Separator />
-
-              <div className="space-y-2">
-                <Label>{tAdmin(locale, "admin.general.sellerAssignment.fallback", "Default Seller (Fallback)")}</Label>
-                <Select
-                  value={settings.sign_wholesale?.sellerAssignment?.fallbackSellerId || "__NONE__"}
-                  onValueChange={(value) =>
-                    setSettings({
-                      ...settings,
-                      sign_wholesale: {
-                        ...(settings.sign_wholesale || getDefaultSignWholesale()),
-                        sellerAssignment: {
-                          ...(settings.sign_wholesale?.sellerAssignment || getDefaultSignWholesale().sellerAssignment),
-                          fallbackSellerId: value === "__NONE__" ? null : value,
-                        },
-                      },
-                    })
-                  }
-                >
-                  <SelectTrigger size="sm" className={`${B2B_SELECT_TRIGGER_CLASSNAME} max-w-72`}>
-                    <SelectValue placeholder={tAdmin(locale, "admin.general.sellerAssignment.fallbackPlaceholder", "Select a seller")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__NONE__">{tAdmin(locale, "admin.common.none", "None")}</SelectItem>
-                    {sellerUsers.map((seller) => (
-                      <SelectItem key={seller.id} value={seller.id}>
-                        {seller.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+                </>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -931,6 +916,28 @@ export function GeneralTab({
             </div>
 
             <div className="space-y-2">
+              <Label htmlFor="userLinksPriceVisibilityMode">{tAdmin(locale, "admin.general.priceVisibility.userLinksMode", "Visibilidade para Links de Usuário")}</Label>
+              <Select
+                value={settings.userLinksPriceVisibilityMode || settings.priceVisibilityMode}
+                onValueChange={(value: "LOGIN_REQUIRED" | "PUBLIC") =>
+                  setSettings({ ...settings, userLinksPriceVisibilityMode: value })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="LOGIN_REQUIRED">
+                    {tAdmin(locale, "admin.general.priceVisibility.loginRequired", "Prices visible only after login")}
+                  </SelectItem>
+                  <SelectItem value="PUBLIC">
+                    {tAdmin(locale, "admin.general.priceVisibility.public", "Prices visible to everyone")}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
               <Label htmlFor="pendingMessage">{tAdmin(locale, "admin.general.priceVisibility.pendingMessage", "Message for Pending Customers")}</Label>
               <Textarea
                 id="pendingMessage"
@@ -946,6 +953,17 @@ export function GeneralTab({
         </Card>
         )}
       </div>
+
+      <Button
+        onClick={onSave}
+        disabled={isSaving}
+        className="fixed sm:bottom-6 bottom-20 right-6 z-50 h-12 rounded-full px-4 shadow-lg"
+        aria-label="Salvar"
+        title="Salvar"
+      >
+        <Save className="mr-2 h-5 w-5" />
+        Salvar
+      </Button>
     </div>
   );
 }

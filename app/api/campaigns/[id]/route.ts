@@ -7,7 +7,6 @@ import {
   upsertCampaign,
 } from '@/lib/campaigns/store'
 
-export const dynamic = 'force-dynamic'
 
 function decodeJwtStoreId(token: string): number | null {
   try {

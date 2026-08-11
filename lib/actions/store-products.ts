@@ -266,7 +266,7 @@ export async function getStoreProductsAction(
         url.searchParams.set('tags', query.tags.join(','))
       }
     }
-    
+
     const res = await fetch(url, {
       headers: authHeaders,
       cache: 'no-store',
@@ -305,6 +305,7 @@ export async function getStoreProductsAction(
         // Extrair cores e tamanhos ÚNICOS de todas as variantes
         const allColorValues = new Map<string, any>()
         const allSizeValues = new Map<string, any>()
+        const sizeOrderMap = new Map<string, number>()
         // Mapear imagens específicas por cor (code → urls)
         const colorImages = new Map<string, string[]>()
 
@@ -333,7 +334,25 @@ export async function getStoreProductsAction(
             } else if (code === 'tamanho' || code === 'size' || name === 'tamanho' || name === 'size') {
               const vals = Array.isArray(attr?.values) ? attr.values : []
               vals.forEach((val: any) => {
-                allSizeValues.set(String(val?.code || val?.name), val)
+                const sizeName = String(val?.name || val?.code || '').trim()
+                if (!sizeName) return
+
+                allSizeValues.set(sizeName, val)
+
+                const rawSizeOrder = Number(
+                  val?.order_sort
+                  ?? val?.sort_order
+                  ?? val?.value_sort_order
+                  ?? val?.orderSort
+                  ?? val?.sortOrder,
+                )
+                const normalizedSizeOrder = Number.isFinite(rawSizeOrder)
+                  ? rawSizeOrder
+                  : Number.MAX_SAFE_INTEGER
+                const currentOrder = sizeOrderMap.get(sizeName)
+                if (currentOrder === undefined || normalizedSizeOrder < currentOrder) {
+                  sizeOrderMap.set(sizeName, normalizedSizeOrder)
+                }
               })
             }
           })
@@ -376,6 +395,12 @@ export async function getStoreProductsAction(
         const sizes = Array.from(allSizeValues.values())
           .map((value: any) => String(value?.name || value?.code || '').trim())
           .filter(Boolean)
+          .sort((a: string, b: string) => {
+            const orderA = sizeOrderMap.get(a) ?? Number.MAX_SAFE_INTEGER
+            const orderB = sizeOrderMap.get(b) ?? Number.MAX_SAFE_INTEGER
+            if (orderA !== orderB) return orderA - orderB
+            return a.localeCompare(b)
+          })
 
         return {
           id: String(row?.id || ''),

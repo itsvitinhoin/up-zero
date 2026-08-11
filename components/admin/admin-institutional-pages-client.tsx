@@ -28,6 +28,7 @@ import {
   updateInstitutionalPageAction,
 } from "@/lib/actions/pages";
 import { tAdmin } from "@/lib/i18n/admin";
+import { useAdminStore } from "@/contexts/admin-store-context";
 import type { InstitutionalPage } from "@/lib/types";
 
 interface Props {
@@ -39,6 +40,7 @@ interface Props {
 type DialogMode = "create" | "edit" | "delete" | null;
 
 export default function AdminInstitutionalPagesClient({ storeId, initialPages, locale }: Props) {
+  const { session } = useAdminStore();
   const router = useRouter();
   const [isBusy, setIsBusy] = useState(false);
   const [pages, setPages] = useState<InstitutionalPage[]>(initialPages);
@@ -50,6 +52,12 @@ export default function AdminInstitutionalPagesClient({ storeId, initialPages, l
   const [formSlug, setFormSlug] = useState("");
   const [formIsActive, setFormIsActive] = useState(true);
   const tr = (key: string, fallback: string) => tAdmin(locale, key, fallback);
+  const permissionCodes = Array.isArray(session?.permissionCodes)
+    ? session.permissionCodes.map((code) => String(code || "").trim().toLowerCase()).filter(Boolean)
+    : null;
+  const canCreatePages = permissionCodes === null || permissionCodes.includes("pages.create");
+  const canEditPages = permissionCodes === null || permissionCodes.includes("pages.edit");
+  const canDeletePages = permissionCodes === null || permissionCodes.includes("pages.delete");
 
   function generateSlug(title: string) {
     return title
@@ -61,6 +69,11 @@ export default function AdminInstitutionalPagesClient({ storeId, initialPages, l
   }
 
   function openCreate() {
+    if (!canCreatePages) {
+      toast.error("Você não tem permissão para criar páginas");
+      return;
+    }
+
     setFormTitle("");
     setFormSlug("");
     setFormIsActive(true);
@@ -69,6 +82,11 @@ export default function AdminInstitutionalPagesClient({ storeId, initialPages, l
   }
 
   function openEdit(page: InstitutionalPage) {
+    if (!canEditPages) {
+      toast.error("Você não tem permissão para editar páginas");
+      return;
+    }
+
     setFormTitle(page.title);
     setFormSlug(page.slug);
     setFormIsActive(page.is_active);
@@ -77,11 +95,21 @@ export default function AdminInstitutionalPagesClient({ storeId, initialPages, l
   }
 
   function openDelete(page: InstitutionalPage) {
+    if (!canDeletePages) {
+      toast.error("Você não tem permissão para excluir páginas");
+      return;
+    }
+
     setSelectedPage(page);
     setDialogMode("delete");
   }
 
   async function handleCreate() {
+    if (!canCreatePages) {
+      toast.error("Você não tem permissão para criar páginas");
+      return;
+    }
+
     if (!formTitle.trim() || !formSlug.trim()) {
       toast.error(tr("admin.institutionalPages.validation.titleAndSlug", "Fill title and slug"));
       return;
@@ -101,6 +129,11 @@ export default function AdminInstitutionalPagesClient({ storeId, initialPages, l
   }
 
   async function handleEdit() {
+    if (!canEditPages) {
+      toast.error("Você não tem permissão para editar páginas");
+      return;
+    }
+
     if (!selectedPage || !formTitle.trim() || !formSlug.trim()) {
       toast.error(tr("admin.institutionalPages.validation.titleAndSlug", "Fill title and slug"));
       return;
@@ -122,6 +155,11 @@ export default function AdminInstitutionalPagesClient({ storeId, initialPages, l
   }
 
   async function handleDelete() {
+    if (!canDeletePages) {
+      toast.error("Você não tem permissão para excluir páginas");
+      return;
+    }
+
     if (!selectedPage) return;
     setIsBusy(true);
     const result = await deleteInstitutionalPageAction(selectedPage.id);
@@ -148,10 +186,12 @@ export default function AdminInstitutionalPagesClient({ storeId, initialPages, l
               : tr("admin.institutionalPages.count.plural", "pages registered")}
           </p>
         </div>
-        <Button size="sm" onClick={openCreate}>
-          <Plus className="mr-2 h-4 w-4" />
-          {tr("admin.institutionalPages.new", "New Page")}
-        </Button>
+        {canCreatePages ? (
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="mr-2 h-4 w-4" />
+            {tr("admin.institutionalPages.new", "New Page")}
+          </Button>
+        ) : null}
       </div>
 
       {/* Table */}
@@ -201,30 +241,36 @@ export default function AdminInstitutionalPagesClient({ storeId, initialPages, l
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem asChild>
-                            <Link href={`/pages/institutional/${page.id}`}>
-                              <LayoutTemplate className="mr-2 h-4 w-4" />
-                              {tr("admin.institutionalPages.visualBuilder", "Visual Builder")}
-                            </Link>
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => openEdit(page)}>
-                            <Settings2 className="mr-2 h-4 w-4" />
-                            {tr("admin.institutionalPages.editInfo", "Edit Information")}
-                          </DropdownMenuItem>
+                          {canEditPages ? (
+                            <DropdownMenuItem asChild>
+                              <Link href={`/pages/institutional/${page.id}`}>
+                                <LayoutTemplate className="mr-2 h-4 w-4" />
+                                {tr("admin.institutionalPages.visualBuilder", "Visual Builder")}
+                              </Link>
+                            </DropdownMenuItem>
+                          ) : null}
+                          {canEditPages ? (
+                            <DropdownMenuItem onClick={() => openEdit(page)}>
+                              <Settings2 className="mr-2 h-4 w-4" />
+                              {tr("admin.institutionalPages.editInfo", "Edit Information")}
+                            </DropdownMenuItem>
+                          ) : null}
                           <DropdownMenuItem asChild>
                             <Link href={`/p/${page.slug}`} target="_blank">
                               <ExternalLink className="mr-2 h-4 w-4" />
                               {tr("admin.institutionalPages.viewInStore", "View in Store")}
                             </Link>
                           </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            className="text-destructive focus:text-destructive"
-                            onClick={() => openDelete(page)}
-                          >
-                            <Trash2 className="mr-2 h-4 w-4" />
-                            {tr("admin.institutionalPages.delete", "Delete")}
-                          </DropdownMenuItem>
+                          {canDeletePages ? <DropdownMenuSeparator /> : null}
+                          {canDeletePages ? (
+                            <DropdownMenuItem
+                              className="text-destructive focus:text-destructive"
+                              onClick={() => openDelete(page)}
+                            >
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              {tr("admin.institutionalPages.delete", "Delete")}
+                            </DropdownMenuItem>
+                          ) : null}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </div>

@@ -6,9 +6,9 @@ import { cookies } from 'next/headers'
 import { getSession, canManageOrders, canPurchase, getAdminStoreIdFromToken } from '@/lib/auth'
 import { clearCartAction, getCartAction, updateCartNotesAction } from '@/lib/actions/cart'
 import { getCurrentB2bCustomerAction, getCustomerDetailAction, getCustomersAction } from '@/lib/actions/customers'
+import { checkUserPermission } from '@/lib/actions/permissions'
 import { getSellerPermissionsAction, getSiteSettingsAction } from '@/lib/actions/settings'
 import { resolveStorefrontApiKeyFromRequest, withStorefrontScopeHeaders } from '@/lib/actions/storefront-scope'
-import { normalizeQuantityByStockMode, type StockModeConfig } from '@/lib/stock-mode'
 import {
   getOrders,
   getOrderById,
@@ -29,7 +29,9 @@ import {
 } from '@/lib/backend-data'
 import { calculateCartPrice } from '@/lib/pricing'
 import { checkoutSchema, assistedOrderSchema } from '@/lib/validations'
-import type { ApiResponse, Customer, Order, OrderInvoice, OrderLabel, OrderItem, OrderWithItems, OrderStatus, StockMode, PaymentMethod } from '@/lib/types'
+import { getValidationErrorMessage } from '@/lib/utils/validation-error'
+import { resolveAvailableQtyByStockMode, type StockModeConfig } from '@/lib/stock-mode'
+import type { ApiResponse, Customer, Order, OrderInvoice, OrderLabel, OrderItem, OrderWithItems, OrderStatus, PaginatedResponse, StockMode } from '@/lib/types'
 
 type StorefrontOrderItem = {
   id: string
@@ -44,6 +46,80 @@ type StorefrontOrderItem = {
       name?: string
     }
   }
+}
+
+async function hasOrderPermission(permissionCode: string): Promise<boolean> {
+  try {
+    const result = await checkUserPermission(permissionCode)
+    return result.has_permission === true
+  } catch {
+    return false
+  }
+}
+
+async function canEditOrders(): Promise<boolean> {
+  return hasOrderPermission('orders.edit')
+}
+
+async function canViewOrders(): Promise<boolean> {
+  return hasOrderPermission('orders.view')
+}
+
+async function canViewAssignedOrdersOnly(): Promise<boolean> {
+  try {
+    const result = await checkUserPermission('orders.view_assigned_only')
+    if (result?.source === 'system_role') return false
+    return result?.has_permission === true
+  } catch {
+    return false
+  }
+}
+
+async function canCreateOrders(): Promise<boolean> {
+  return hasOrderPermission('orders.create')
+}
+
+async function canUpdateOrderPaymentStatus(
+  paymentStatus: 'PENDING' | 'PAID' | 'PARTIAL' | 'REFUNDED' | 'CANCELLED',
+): Promise<boolean> {
+  if (paymentStatus === 'PAID' || paymentStatus === 'PARTIAL') {
+    return hasOrderPermission('orders.mark_paid')
+  }
+
+  if (paymentStatus === 'REFUNDED' || paymentStatus === 'CANCELLED') {
+    return hasOrderPermission('orders.manage_returns')
+  }
+
+  return true
+}
+
+async function getStockModeConfigForOrders(): Promise<StockModeConfig> {
+  try {
+    const result = await getSiteSettingsAction()
+    if (result.success && result.data) {
+      return {
+        stockMode: (result.data.stockMode as StockMode) || 'FANTASY',
+        variantMaxQty: Math.max(1, Number(result.data.variantMaxQty || 999)),
+      }
+    }
+  } catch {
+    // fall back to defaults
+  }
+
+  return { stockMode: 'FANTASY', variantMaxQty: 999 }
+}
+
+function resolveOrderItemVariantAvailableQty(
+  stockConfig: StockModeConfig,
+  variantStockQty: number,
+  variantReservedQty: number,
+): number {
+  return resolveAvailableQtyByStockMode({
+    stockMode: stockConfig.stockMode,
+    variantMaxQty: stockConfig.variantMaxQty,
+    stockQty: variantStockQty,
+    reservedQty: variantReservedQty,
+  })
 }
 
 type StorefrontOrder = {
@@ -70,7 +146,11 @@ type StorefrontOrder = {
 
 type BackendOrder = {
   id: number
+  code?: string | null
   customer_id: number
+  assigned_seller_id?: number | null
+  assigned_seller_name?: string | null
+  origin?: 'customer' | 'manager' | 'api' | 'import' | string | null
   status: string
   payment_status?: string | null
   shipping_method_source?: string | null
@@ -82,12 +162,19 @@ type BackendOrder = {
   coupon_discount_cents?: number
   tier_discount_cents?: number
   manual_discount_cents?: number
+  manual_discount_bps?: number | null
   shipping_price_cents?: number
   shipping_delivery_days?: number | null
   order_subtotal_cents?: number | null
+  order_fulfilled_subtotal_cents?: number | null
   order_total_items?: number | null
   order_fulfilled_items?: number | null
   order_payment_method_discount_cents?: number | null
+  coupon_code?: string | null
+  customer_name?: string | null
+  customer_company_name?: string | null
+  customer_trade_name?: string | null
+  customer_phone?: string | null
   meta?: {
     checkout?: {
       notes?: string | null
@@ -101,6 +188,8 @@ type BackendOrder = {
         code?: string | null
         name?: string | null
         price_cents?: number | null
+        delivery_days?: number | null
+        note?: string | null
       }
       address?: {
         street?: string | null
@@ -112,11 +201,17 @@ type BackendOrder = {
         zip_code?: string | null
       }
     }
+    shipping_option?: {
+      code?: string | null
+      name?: string | null
+      note?: string | null
+    }
     backoffice?: {
       internal_notes?: string | null
       tracking?: {
         code?: string | null
         url?: string | null
+        source?: string | null
       }
     }
   }
@@ -127,7 +222,8 @@ type BackendOrder = {
 type BackendOrderInvoice = {
   id: number
   store_id: number
-  order_id: number
+  order_id: number | null
+  invoice_type?: string | null
   status: string
   payload?: Record<string, unknown> | null
   meta?: Record<string, unknown> | null
@@ -143,11 +239,37 @@ type BackendOrderInvoice = {
   updated_at: string
 }
 
+type OrdersSummary = {
+  totalOrders: number
+  paidOrders: number
+  totalRequestedValue: number
+  paidOrdersValue: number
+}
+
+type BackendOrderInvoicesListResponse = {
+  items?: BackendOrderInvoice[]
+  total?: number
+  page?: number
+  page_size?: number
+  total_pages?: number
+}
+
+type BackendOrderLabelsListResponse = {
+  items?: BackendOrderLabel[]
+  total?: number
+  page?: number
+  page_size?: number
+  total_pages?: number
+}
+
 type BackendOrderLabel = {
   id: number
   store_id: number
-  order_id: number
+  order_id?: number | null
+  label_mode?: string
   status: string
+  chave_nfe?: string | null
+  numero_nfe?: string | null
   tracking_code?: string | null
   carrier?: string | null
   pdf_url?: string | null
@@ -176,10 +298,12 @@ type BackendOrderItem = {
   status?: 'active' | 'attended' | 'removed' | string
   origin?: 'customer' | 'manager_added' | 'replacement' | 'gift' | string
   product_name?: string
+  product_sku?: string | null
   variant_sku?: string | null
   variant_combination_key?: string | null
   variant_stock_qty?: number
   variant_reserved_qty?: number
+  composition_discount_allocated_cents?: number
 }
 
 type BackendStorefrontOrderDetailResponse = {
@@ -187,10 +311,21 @@ type BackendStorefrontOrderDetailResponse = {
   items?: BackendOrderItem[]
 }
 
+type BackendAdminOrderDetailResponse = {
+  order?: BackendOrder
+  items?: BackendOrderItem[]
+  customer?: BackendB2BCustomer | null
+  invoice?: BackendOrderInvoice | null
+  label?: BackendOrderLabel | null
+  payments?: OrderPaymentResponse[]
+  coupon_code?: string | null
+}
+
 type BackendB2BCustomer = {
   id: number
   status?: string
   assigned_seller_id?: number | null
+  assigned_seller_name?: string | null
   price_table_id?: number | null
   min_pieces_override?: number | null
   extra_discount_bps?: number | null
@@ -250,16 +385,71 @@ type OrderPaymentResponse = {
   provider: string | null
   status: string
   amount_cents: number
+  installments?: number | null
   gateway_transaction_id: string | null
   gateway_reference: string | null
   payment_code: string | null
   payment_label: string | null
+  snapshot_json?: Record<string, unknown> | null
   authorized_at: string | null
   paid_at: string | null
   failed_at: string | null
   created_at: string
   updated_at: string
   events: OrderPaymentEventResponse[]
+}
+
+type PaymentLinkEventResponse = {
+  id: number
+  payment_link_id: number
+  event_type: string
+  event_source: string | null
+  payload_json: Record<string, unknown> | null
+  occurred_at: string
+  created_at: string
+}
+
+type PaymentLinkResponse = {
+  id: number
+  store_id: number
+  order_id: number | null
+  customer_id: number
+  customer_name?: string | null
+  payment_method_id: number | null
+  token: string
+  status: string
+  amount_cents: number
+  currency: string
+  description: string | null
+  expires_at: string | null
+  completed_order_payment_id: number | null
+  open_count: number
+  attempt_count: number
+  last_opened_at: string | null
+  completed_at: string | null
+  meta: Record<string, unknown> | null
+  created_at: string
+  updated_at: string
+}
+
+type PaymentLinkCustomerResponse = {
+  id: number
+  name: string | null
+  email: string
+  document: string | null
+}
+
+type PaymentLinkDetailResponse = {
+  link: PaymentLinkResponse
+  customer?: PaymentLinkCustomerResponse | null
+  events: PaymentLinkEventResponse[]
+}
+
+type PaymentLinksListResponse = {
+  items: PaymentLinkResponse[]
+  total: number
+  limit: number
+  offset: number
 }
 
 function normalizeOrderItemOrigin(
@@ -359,6 +549,17 @@ function normalizePositiveInteger(value: unknown): number | null {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null
 }
 
+function readAggregateCents(record: Record<string, unknown>, keys: string[]): number | null {
+  for (const key of keys) {
+    const raw = record[key]
+    const parsed = Number(raw)
+    if (Number.isFinite(parsed)) {
+      return parsed
+    }
+  }
+  return null
+}
+
 async function resolveDefaultStoreId(): Promise<string | null> {
   const cookieStore = await cookies()
   const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
@@ -417,22 +618,10 @@ function mapBackendB2BCustomerToCustomer(raw: BackendB2BCustomer): Customer {
     ? (meta as Record<string, unknown>).payment_terms as unknown[]
     : []
 
-  const supportedPaymentMethods: PaymentMethod[] = [
-    'PIX',
-    'BOLETO',
-    'FATURADO',
-    'CARTAO_EXTERNO',
-    'CARTAO_CREDITO',
-    'CARTAO_DEBITO',
-    'CHEQUE',
-    'DINHEIRO',
-    'TRANSFERENCIA',
-  ]
-
   const paymentTerms = paymentTermsRaw
     .map((value) => String(value || '').toUpperCase())
     .filter((value): value is Customer['paymentTerms'][number] =>
-      supportedPaymentMethods.includes(value as PaymentMethod)
+      ['PIX', 'BOLETO', 'FATURADO', 'CARTAO_EXTERNO'].includes(value)
     )
 
   return {
@@ -462,7 +651,7 @@ function mapBackendB2BCustomerToCustomer(raw: BackendB2BCustomer): Customer {
     paymentTerms: paymentTerms.length > 0 ? paymentTerms : ['PIX'],
     assignedSellerId:
       typeof raw.assigned_seller_id === 'number' ? String(raw.assigned_seller_id) : null,
-    assignedSellerName: null,
+    assignedSellerName: raw.assigned_seller_name ? String(raw.assigned_seller_name) : null,
     receitawsMeta: null,
     createdAt: new Date(raw.created_at || new Date()),
     updatedAt: new Date(raw.updated_at || new Date()),
@@ -474,11 +663,13 @@ function mapBackendOrderInvoice(raw: BackendOrderInvoice): OrderInvoice {
   const status = ['PENDING', 'PROCESSING', 'AUTHORIZED', 'REJECTED', 'CANCELLED', 'ERROR'].includes(normalizedStatus)
     ? normalizedStatus as OrderInvoice['status']
     : 'PENDING'
+  const issuedAt = raw.issued_at || raw.updated_at
 
   return {
     id: String(raw.id),
     storeId: String(raw.store_id),
-    orderId: String(raw.order_id),
+    orderId: raw.order_id != null ? String(raw.order_id) : null,
+    invoiceType: raw.invoice_type === 'standalone' ? 'standalone' : ('order' as const),
     status,
     payload: raw.payload && typeof raw.payload === 'object' ? raw.payload : {},
     meta: raw.meta && typeof raw.meta === 'object' ? raw.meta : {},
@@ -489,7 +680,7 @@ function mapBackendOrderInvoice(raw: BackendOrderInvoice): OrderInvoice {
     integrationName: raw.integration_name ? String(raw.integration_name) : null,
     integrationReferenceId: raw.integration_reference_id ? String(raw.integration_reference_id) : null,
     errorMessage: raw.error_message ? String(raw.error_message) : null,
-    issuedAt: raw.issued_at ? new Date(raw.issued_at) : null,
+    issuedAt: issuedAt ? new Date(issuedAt) : null,
     createdAt: new Date(raw.created_at),
     updatedAt: new Date(raw.updated_at),
   }
@@ -497,15 +688,19 @@ function mapBackendOrderInvoice(raw: BackendOrderInvoice): OrderInvoice {
 
 function mapBackendOrderLabel(raw: BackendOrderLabel): OrderLabel {
   const normalizedStatus = String(raw.status || 'ISSUED').toUpperCase()
-  const status = ['ISSUED', 'ERROR'].includes(normalizedStatus)
+  const status = ['ISSUED', 'ERROR', 'PROCESSING'].includes(normalizedStatus)
     ? normalizedStatus as OrderLabel['status']
     : 'ISSUED'
+  const labelModeRaw = String(raw.label_mode || 'order').toLowerCase()
 
   return {
     id: String(raw.id),
     storeId: String(raw.store_id),
-    orderId: String(raw.order_id),
+    orderId: raw.order_id != null ? String(raw.order_id) : null,
+    labelMode: labelModeRaw === 'standalone' ? 'standalone' : 'order',
     status,
+    chaveNfe: raw.chave_nfe ? String(raw.chave_nfe) : null,
+    numeroNfe: raw.numero_nfe ? String(raw.numero_nfe) : null,
     trackingCode: raw.tracking_code ? String(raw.tracking_code) : null,
     carrier: raw.carrier ? String(raw.carrier) : null,
     pdfUrl: raw.pdf_url ? String(raw.pdf_url) : null,
@@ -530,6 +725,7 @@ function mapBackendOrderDetailToAdminOrder(
   order: BackendOrder,
   items: BackendOrderItem[]
 ): Order {
+  const orderRecord = order as unknown as Record<string, unknown>
   const hasItems = Array.isArray(items) && items.length > 0
   const totalsByItemStatus = (items || []).reduce(
     (acc, item) => {
@@ -545,16 +741,36 @@ function mapBackendOrderDetailToAdminOrder(
     { totalItems: 0, fulfilledItems: 0 }
   )
 
-  const subtotal = hasItems
+  const hasFulfillmentProgress = (items || []).some((item) => {
+    const status = String(item.status || 'active').toLowerCase()
+    return status === 'attended' || status === 'removed'
+  })
+
+  const subtotalFromItems = hasItems
     ? (items || []).reduce(
         (sum, item) => {
           const status = String(item.status || 'active').toLowerCase()
           if (status === 'removed') return sum
+          if (hasFulfillmentProgress && status !== 'attended') return sum
           return sum + (Number(item.unit_price_cents || 0) / 100) * Number(item.quantity || 0)
         },
         0
       )
-    : Math.max(0, Number(order.order_subtotal_cents ?? 0)) / 100
+    : 0
+
+  const aggregatedSubtotalCents = readAggregateCents(orderRecord, [
+    'items_subtotal_cents',
+    'itemsSubtotalCents',
+    'order_subtotal_cents',
+  ])
+  const aggregatedSubtotal = aggregatedSubtotalCents !== null
+    ? Math.max(0, aggregatedSubtotalCents) / 100
+    : null
+  const subtotal = aggregatedSubtotal !== null && !(hasItems && aggregatedSubtotal <= 0 && subtotalFromItems > 0)
+    ? aggregatedSubtotal
+    : hasItems
+      ? subtotalFromItems
+      : Math.max(0, Number(order.order_subtotal_cents ?? 0)) / 100
 
   const rawCouponDiscount = Number(order.coupon_discount_cents ?? 0) / 100
   const rawTierDiscount = Number(order.tier_discount_cents ?? 0) / 100
@@ -564,61 +780,96 @@ function mapBackendOrderDetailToAdminOrder(
         0
       )
     : Number(order.order_payment_method_discount_cents ?? 0) / 100
-  const discountTotal =
-    Math.abs(rawCouponDiscount) +
-    Math.abs(rawTierDiscount) +
-    Math.abs(rawPaymentMethodDiscount)
+  const compositionDiscountTotal = (items || []).reduce(
+    (sum, item) => sum + (Math.max(0, Number(item.composition_discount_allocated_cents || 0)) / 100),
+    0,
+  )
+  const aggregatedDiscountTotalCents = readAggregateCents(orderRecord, [
+    'total_discount_cents',
+    'totalDiscountCents',
+    'order_discount_total_cents',
+  ])
+  const discountTotal = aggregatedDiscountTotalCents !== null
+    ? Math.max(0, aggregatedDiscountTotalCents) / 100
+    : Math.abs(rawCouponDiscount) +
+      Math.abs(rawTierDiscount) +
+      Math.abs(rawPaymentMethodDiscount)
   const rawDiscount = rawCouponDiscount + rawTierDiscount + rawPaymentMethodDiscount
   const shippingPrice = Math.max(
     0,
     Number(order.shipping_price_cents ?? order.meta?.checkout?.shipping?.price_cents ?? 0)
   ) / 100
   const manualDiscount = Math.max(0, Number(order.manual_discount_cents ?? 0)) / 100
+  const aggregatedTotalPriceCents = readAggregateCents(orderRecord, [
+    'total_price_cents',
+    'totalPriceCents',
+    'order_total_price_cents',
+  ])
+  const computedTotal = Math.max(0, subtotal + rawDiscount - manualDiscount + shippingPrice)
+  const aggregatedTotal = aggregatedTotalPriceCents !== null
+    ? Math.max(0, aggregatedTotalPriceCents) / 100
+    : null
 
   const paymentCode = String(order.meta?.checkout?.payment?.code || '').trim()
+  const paymentMethodCodeFromRow = String(orderRecord.payment_method_code ?? '').trim()
+  const paymentMethodNameFromRow = String(orderRecord.payment_method_name ?? '').trim()
+  const rawPaymentMethod = paymentCode || paymentMethodCodeFromRow || paymentMethodNameFromRow || 'PIX'
+  const upperRawPaymentMethod = rawPaymentMethod.toUpperCase()
   const normalizedPayment = [
     'PIX',
     'BOLETO',
     'FATURADO',
     'CARTAO_EXTERNO',
-    'CARTAO_CREDITO',
-    'CARTAO_DEBITO',
-    'CHEQUE',
-    'DINHEIRO',
-    'TRANSFERENCIA',
-  ].includes(paymentCode)
-    ? paymentCode
-    : 'PIX'
+  ].includes(upperRawPaymentMethod)
+    ? upperRawPaymentMethod
+    : rawPaymentMethod
 
   const paymentStatusRaw = String(order.payment_status || order.meta?.checkout?.payment?.status || 'PENDING').toUpperCase()
   const paymentStatus = ['PENDING', 'PAID', 'PARTIAL', 'REFUNDED', 'CANCELLED'].includes(paymentStatusRaw)
     ? paymentStatusRaw
     : 'PENDING'
   const shippingName = order.shipping_method_name || order.meta?.checkout?.shipping?.name || null
+  const shippingMethodCode = order.shipping_method_code || order.meta?.checkout?.shipping?.code || order.meta?.shipping_option?.code || null
+  const shippingDeliveryDaysRaw = Number(order.shipping_delivery_days ?? order.meta?.checkout?.shipping?.delivery_days ?? NaN)
+  const shippingDeliveryDays = Number.isFinite(shippingDeliveryDaysRaw) ? shippingDeliveryDaysRaw : null
+  const shippingNote = order.meta?.checkout?.shipping?.note ?? order.meta?.shipping_option?.note ?? null
 
   return {
     id: String(order.id),
+    code: typeof order.code === 'string' ? order.code : null,
     customerId: String(order.customer_id),
+    assignedSellerId:
+      typeof order.assigned_seller_id === 'number' ? String(order.assigned_seller_id) : null,
+    assignedSellerName: order.assigned_seller_name ? String(order.assigned_seller_name) : null,
     createdByUserId: '',
     createdBySellerId: null,
+    origin: typeof order.origin === 'string' ? order.origin : null,
     status: String(order.status || 'PENDING').toUpperCase() as OrderStatus,
     paymentStatus: paymentStatus as Order['paymentStatus'],
     subtotal,
     couponDiscount: Math.abs(rawCouponDiscount),
     tierDiscount: Math.abs(rawTierDiscount),
+    compositionDiscountTotal,
+    hasCompositionDiscount: compositionDiscountTotal > 0,
     discountTotal,
     manualDiscount,
-    total: Math.max(0, subtotal + rawDiscount - manualDiscount + shippingPrice),
-    fulfilledTotal: 0,
+    total: aggregatedTotal !== null && !(hasItems && aggregatedTotal <= 0 && computedTotal > 0)
+      ? aggregatedTotal
+      : computedTotal,
+    fulfilledTotal: Math.max(0, Number(order.order_fulfilled_subtotal_cents ?? 0)) / 100,
     totalItems: hasItems ? totalsByItemStatus.totalItems : Math.max(0, Number(order.order_total_items ?? 0)),
     fulfilledItems: hasItems ? totalsByItemStatus.fulfilledItems : Math.max(0, Number(order.order_fulfilled_items ?? 0)),
     shippingName,
+    shippingMethodCode,
+    shippingDeliveryDays,
+    shippingNote,
     shippingPrice,
     paymentMethod: normalizedPayment as Order['paymentMethod'],
     notes: order.meta?.checkout?.notes ?? order.note ?? null,
     internalNotes: order.meta?.backoffice?.internal_notes ?? null,
     trackingCode: order.meta?.backoffice?.tracking?.code ?? null,
     trackingUrl: order.meta?.backoffice?.tracking?.url ?? null,
+    trackingSource: order.meta?.backoffice?.tracking?.source ?? null,
     shippingStreet: order.meta?.checkout?.address?.street || '-',
     shippingNumber: order.meta?.checkout?.address?.number || '-',
     shippingComplement: order.meta?.checkout?.address?.complement || null,
@@ -626,6 +877,9 @@ function mapBackendOrderDetailToAdminOrder(
     shippingCity: order.meta?.checkout?.address?.city || '-',
     shippingState: order.meta?.checkout?.address?.state || '-',
     shippingZipCode: order.meta?.checkout?.address?.zip_code || '-',
+    customerName: String(order.customer_company_name || order.customer_trade_name || order.customer_name || '').trim() || null,
+    customerPhone: String(order.customer_phone || '').trim() || null,
+    couponCode: typeof order.coupon_code === 'string' && order.coupon_code.trim() ? order.coupon_code.trim() : null,
     createdAt: new Date(order.created_at),
     updatedAt: new Date(order.updated_at),
   }
@@ -635,6 +889,7 @@ function mapBackendOrderDetailToStorefront(
   order: BackendOrder,
   items: BackendOrderItem[]
 ): StorefrontOrder {
+  const orderRecord = order as unknown as Record<string, unknown>
   const mappedItems: StorefrontOrderItem[] = (items || []).map((item) => {
     const quantity = Number(item.quantity || 0)
     const unitPrice = Number(item.unit_price_cents || 0) / 100
@@ -654,24 +909,64 @@ function mapBackendOrderDetailToStorefront(
     }
   })
 
-  const subtotal = mappedItems.reduce((sum, item) => sum + (item.unitPrice * item.quantity), 0)
+  const hasItems = mappedItems.length > 0
+  const subtotalFromItems = hasItems
+    ? mappedItems.reduce((sum, item) => sum + (item.unitPrice * item.quantity), 0)
+    : 0
+
+  const aggregatedSubtotalCents = readAggregateCents(orderRecord, [
+    'items_subtotal_cents',
+    'itemsSubtotalCents',
+    'order_subtotal_cents',
+  ])
+  const aggregatedSubtotal = aggregatedSubtotalCents !== null
+    ? Math.max(0, aggregatedSubtotalCents) / 100
+    : null
+  const subtotal = aggregatedSubtotal !== null && !(hasItems && aggregatedSubtotal <= 0 && subtotalFromItems > 0)
+    ? aggregatedSubtotal
+    : hasItems
+      ? subtotalFromItems
+      : Math.max(0, Number(order.order_subtotal_cents ?? 0)) / 100
   const checkoutMeta = order.meta?.checkout
   const rawCouponDiscount = Number(order.coupon_discount_cents ?? 0) / 100
   const rawTierDiscount = Number(order.tier_discount_cents ?? 0) / 100
-  const rawPaymentMethodDiscount = (items || []).reduce(
-    (sum, item) => sum + (Number(item.payment_method_discount_cents ?? 0) / 100),
-    0
+  const rawPaymentMethodDiscount = hasItems
+    ? (items || []).reduce(
+        (sum, item) => sum + (Number(item.payment_method_discount_cents ?? 0) / 100),
+        0
+      )
+    : Number(order.order_payment_method_discount_cents ?? 0) / 100
+  const compositionDiscountTotal = (items || []).reduce(
+    (sum, item) => sum + (Math.max(0, Number(item.composition_discount_allocated_cents || 0)) / 100),
+    0,
   )
   const rawDiscount = rawCouponDiscount + rawTierDiscount + rawPaymentMethodDiscount
-  const discountAmount =
-    Math.abs(rawCouponDiscount) +
-    Math.abs(rawTierDiscount) +
-    Math.abs(rawPaymentMethodDiscount)
+  const aggregatedDiscountTotalCents = readAggregateCents(orderRecord, [
+    'total_discount_cents',
+    'totalDiscountCents',
+    'order_discount_total_cents',
+  ])
+  const discountAmount = aggregatedDiscountTotalCents !== null
+    ? Math.max(0, aggregatedDiscountTotalCents) / 100
+    : Math.abs(rawCouponDiscount) +
+      Math.abs(rawTierDiscount) +
+      Math.abs(rawPaymentMethodDiscount)
   const shippingCost = Math.max(
     0,
     Number(order.shipping_price_cents ?? checkoutMeta?.shipping?.price_cents ?? 0)
   ) / 100
-  const totalAmount = Math.max(0, subtotal + rawDiscount + shippingCost)
+  const aggregatedTotalPriceCents = readAggregateCents(orderRecord, [
+    'total_price_cents',
+    'totalPriceCents',
+    'order_total_price_cents',
+  ])
+  const computedTotalAmount = Math.max(0, subtotal + rawDiscount + shippingCost)
+  const aggregatedTotalAmount = aggregatedTotalPriceCents !== null
+    ? Math.max(0, aggregatedTotalPriceCents) / 100
+    : null
+  const totalAmount = aggregatedTotalAmount !== null && !(hasItems && aggregatedTotalAmount <= 0 && computedTotalAmount > 0)
+    ? aggregatedTotalAmount
+    : computedTotalAmount
   const paymentStatusRaw = String(order.payment_status || checkoutMeta?.payment?.status || 'PENDING').toUpperCase()
   const paymentStatus = ['PENDING', 'PAID', 'PARTIAL', 'REFUNDED', 'CANCELLED'].includes(paymentStatusRaw)
     ? paymentStatusRaw
@@ -680,6 +975,7 @@ function mapBackendOrderDetailToStorefront(
   return {
     id: String(order.id),
     orderNumber: String(order.id),
+    origin: typeof order.origin === 'string' ? order.origin : null,
     status: String(order.status || 'PENDING').toUpperCase(),
     createdAt: order.created_at,
     totalAmount,
@@ -781,28 +1077,10 @@ export async function getMyOrdersAction(storeId?: number | string): Promise<ApiR
     }
 
     const orders = (await listResponse.json()) as BackendOrder[]
+    const mappedOrders = (Array.isArray(orders) ? orders : [])
+      .map((order) => mapBackendOrderDetailToStorefront(order, []))
 
-    const details = await Promise.all(
-      (Array.isArray(orders) ? orders : []).map(async (order) => {
-        const detailResponse = await fetch(new URL(`/storefront/orders/${order.id}`, base), {
-          headers: requestHeaders,
-          cache: 'no-store',
-        })
-
-        if (!detailResponse.ok) {
-          return mapBackendOrderDetailToStorefront(order, [])
-        }
-
-        const payload = await detailResponse.json()
-        const parsedPayload = parseStorefrontOrderDetailPayload(payload, order)
-        const backendOrder = parsedPayload.order || order
-        const backendItems = parsedPayload.items
-
-        return mapBackendOrderDetailToStorefront(backendOrder, backendItems)
-      })
-    )
-
-    return { success: true, data: details }
+    return { success: true, data: mappedOrders }
   } catch (error) {
     return {
       success: false,
@@ -915,9 +1193,14 @@ export async function getMyOrderDetailAction(id: string, storeId?: number | stri
 export async function getOrdersAction(filters?: {
   customerId?: string
   status?: string
+  paymentStatus?: string
   assignedSellerId?: string
   storeId?: string
-}): Promise<ApiResponse<Order[]>> {
+  cardMode?: boolean
+  q?: string
+  from?: string
+  to?: string
+}): Promise<ApiResponse<Order[]> & { summary?: OrdersSummary }> {
   const session = await getSession()
   const cookieStore = await cookies()
   const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
@@ -925,6 +1208,12 @@ export async function getOrdersAction(filters?: {
   if (!session && !hasAdminToken) {
     return { success: false, error: 'Não autorizado' }
   }
+
+  if (!(await canViewOrders())) {
+    return { success: false, error: 'Você não tem permissão para visualizar pedidos' }
+  }
+
+  const enforceAssignedOnlyScope = Boolean(session?.id) && (await canViewAssignedOrdersOnly())
 
   if (hasAdminToken || session?.role === 'ADMIN' || session?.role === 'SALES_MANAGER') {
     const base = resolveBackendBaseUrl()
@@ -946,6 +1235,26 @@ export async function getOrdersAction(filters?: {
       if (filters?.status) {
         listUrl.searchParams.set('status', String(filters.status))
       }
+      if (filters?.paymentStatus) {
+        listUrl.searchParams.set('payment_status', String(filters.paymentStatus))
+      }
+      if (enforceAssignedOnlyScope && session?.id) {
+        listUrl.searchParams.set('assigned_seller_id', String(session.id))
+      } else if (filters?.assignedSellerId) {
+        listUrl.searchParams.set('assigned_seller_id', String(filters.assignedSellerId))
+      }
+      if (filters?.q) {
+        listUrl.searchParams.set('q', String(filters.q).trim())
+      }
+      if (filters?.from) {
+        listUrl.searchParams.set('from', String(filters.from).trim())
+      }
+      if (filters?.to) {
+        listUrl.searchParams.set('to', String(filters.to).trim())
+      }
+      if (filters?.cardMode) {
+        listUrl.searchParams.set('cardmode', '1')
+      }
 
       const listResponse = await fetch(listUrl, {
         headers: {
@@ -960,11 +1269,31 @@ export async function getOrdersAction(filters?: {
       }
 
       const orders = (await listResponse.json()) as BackendOrder[]
-      const mappedOrders = (Array.isArray(orders) ? orders : []).map((order) =>
+      let mappedOrders = (Array.isArray(orders) ? orders : []).map((order) =>
         mapBackendOrderDetailToAdminOrder(order, [])
       )
 
-      return { success: true, data: mappedOrders }
+      if (enforceAssignedOnlyScope && session?.id) {
+        mappedOrders = mappedOrders.filter((order) => String(order.assignedSellerId || '') === String(session.id))
+      }
+
+      const normalizedPaymentStatus = String(filters?.paymentStatus || '').trim().toUpperCase()
+      if (normalizedPaymentStatus) {
+        mappedOrders = mappedOrders.filter((order) => {
+          const currentPaymentStatus = String(order.paymentStatus || '').trim().toUpperCase()
+          return currentPaymentStatus === normalizedPaymentStatus
+        })
+      }
+
+      const paidOrders = mappedOrders.filter((order) => String(order.paymentStatus || '').trim().toUpperCase() === 'PAID')
+      const summary: OrdersSummary = {
+        totalOrders: mappedOrders.length,
+        paidOrders: paidOrders.length,
+        totalRequestedValue: mappedOrders.reduce((acc, order) => acc + Number(order.total || 0), 0),
+        paidOrdersValue: paidOrders.reduce((acc, order) => acc + Number(order.total || 0), 0),
+      }
+
+      return { success: true, data: mappedOrders, summary }
     } catch (error) {
       return {
         success: false,
@@ -984,8 +1313,69 @@ export async function getOrdersAction(filters?: {
     filters = { ...filters, assignedSellerId: session.id }
   }
 
+  if (enforceAssignedOnlyScope && session?.id) {
+    filters = { ...filters, assignedSellerId: session.id }
+  }
+
   const orders = await getOrders(filters)
-  return { success: true, data: orders }
+  const paidOrders = orders.filter((order) => String(order.paymentStatus || '').trim().toUpperCase() === 'PAID')
+  const summary: OrdersSummary = {
+    totalOrders: orders.length,
+    paidOrders: paidOrders.length,
+    totalRequestedValue: orders.reduce((acc, order) => acc + Number(order.total || 0), 0),
+    paidOrdersValue: paidOrders.reduce((acc, order) => acc + Number(order.total || 0), 0),
+  }
+
+  return { success: true, data: orders, summary }
+}
+
+export async function softDeleteOrderAction(orderId: string): Promise<ApiResponse<{ id: number }>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if (!session && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  if (!(hasAdminToken || session?.role === 'ADMIN' || session?.role === 'SALES_MANAGER')) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const numericId = Number(orderId)
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return { success: false, error: 'Pedido inválido' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+
+  try {
+    const response = await fetch(new URL(`/orders/${Math.trunc(numericId)}`, base), {
+      method: 'DELETE',
+      headers: {
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao excluir pedido' }
+    }
+
+    revalidatePath('/orders')
+    return { success: true, data: { id: Math.trunc(numericId) } }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao excluir pedido',
+    }
+  }
 }
 
 export async function getCustomerOrderSummaryAction(filters?: {
@@ -1068,6 +1458,10 @@ export async function getOrderDetailAction(id: string): Promise<ApiResponse<Orde
     return { success: false, error: 'Não autorizado' }
   }
 
+  if (!(await canViewOrders())) {
+    return { success: false, error: 'Você não tem permissão para visualizar pedidos' }
+  }
+
   if (hasAdminToken || session?.role === 'ADMIN' || session?.role === 'SALES_MANAGER') {
     const base = resolveBackendBaseUrl()
     if (!base) {
@@ -1094,15 +1488,36 @@ export async function getOrderDetailAction(id: string): Promise<ApiResponse<Orde
         return { success: false, error: errorText || 'Pedido não encontrado' }
       }
 
-      const payload = (await response.json()) as [BackendOrder, BackendOrderItem[]]
-      const backendOrder = payload?.[0]
-      const backendItems = Array.isArray(payload?.[1]) ? payload[1] : []
+      const payload = await response.json()
+      let backendOrder: BackendOrder | null = null
+      let backendItems: BackendOrderItem[] = []
+      let backendCustomer: BackendB2BCustomer | null = null
+      let backendInvoice: BackendOrderInvoice | null = null
+      let backendLabel: BackendOrderLabel | null = null
+      let backendPayments: OrderPaymentResponse[] = []
+
+      if (Array.isArray(payload)) {
+        backendOrder = (payload[0] as BackendOrder | undefined) || null
+        backendItems = Array.isArray(payload[1]) ? (payload[1] as BackendOrderItem[]) : []
+      } else if (payload && typeof payload === 'object') {
+        const objectPayload = payload as BackendAdminOrderDetailResponse
+        backendOrder = objectPayload.order || null
+        if (backendOrder && objectPayload.coupon_code) {
+          backendOrder = { ...backendOrder, coupon_code: objectPayload.coupon_code }
+        }
+        backendItems = Array.isArray(objectPayload.items) ? objectPayload.items : []
+        backendCustomer = objectPayload.customer || null
+        backendInvoice = objectPayload.invoice || null
+        backendLabel = objectPayload.label || null
+        backendPayments = Array.isArray(objectPayload.payments) ? objectPayload.payments : []
+      }
 
       if (!backendOrder) {
         return { success: false, error: 'Pedido não encontrado' }
       }
 
       const mappedOrder = mapBackendOrderDetailToAdminOrder(backendOrder, backendItems)
+      const stockConfig = await getStockModeConfigForOrders()
       const mappedItems: OrderItem[] = backendItems.map((item) => {
         const unitPrice = Number(item.unit_price_cents || 0) / 100
         const qty = Number(item.quantity || 0)
@@ -1113,7 +1528,11 @@ export async function getOrderDetailAction(id: string): Promise<ApiResponse<Orde
           : 'active'
         const variantStockQty = Number(item.variant_stock_qty ?? 0)
         const variantReservedQty = Number(item.variant_reserved_qty ?? 0)
-        const variantAvailableQty = Math.max(0, variantStockQty - variantReservedQty)
+        const variantAvailableQty = resolveOrderItemVariantAvailableQty(
+          stockConfig,
+          variantStockQty,
+          variantReservedQty,
+        )
 
         return {
           id: String(item.id),
@@ -1127,6 +1546,7 @@ export async function getOrderDetailAction(id: string): Promise<ApiResponse<Orde
           assetImageUrl: item.asset_image_url ? String(item.asset_image_url) : null,
           imageUrl: item.image_url ? String(item.image_url) : null,
           nameSnapshot: String(item.asset_name || item.product_name || `Produto #${item.product_id}`),
+          productSkuSnapshot: item.product_sku ? String(item.product_sku) : null,
           skuSnapshot: String(item.variant_sku || `VAR-${item.variant_id}`),
           variantCombinationKey: item.variant_combination_key ? String(item.variant_combination_key) : null,
           colorSnapshot: combination.colorSnapshot,
@@ -1141,10 +1561,16 @@ export async function getOrderDetailAction(id: string): Promise<ApiResponse<Orde
           variantAvailableQty,
           status,
           origin: normalizeOrderItemOrigin(item.origin),
+          compositionDiscountAllocatedCents: Math.max(0, Number(item.composition_discount_allocated_cents || 0)),
         }
       })
 
-      const customer = await getCustomerById(String(backendOrder.customer_id))
+      const customer = backendCustomer
+        ? mapBackendB2BCustomerToCustomer(backendCustomer)
+        : await getCustomerById(String(backendOrder.customer_id))
+
+      const invoice = backendInvoice ? mapBackendOrderInvoice(backendInvoice) : null
+      const label = backendLabel ? mapBackendOrderLabel(backendLabel) : null
 
       return {
         success: true,
@@ -1152,6 +1578,9 @@ export async function getOrderDetailAction(id: string): Promise<ApiResponse<Orde
           ...mappedOrder,
           items: mappedItems,
           customer: customer || undefined,
+          invoice,
+          label,
+          payments: backendPayments,
         },
       }
     } catch (error) {
@@ -1186,6 +1615,112 @@ export async function getOrderDetailAction(id: string): Promise<ApiResponse<Orde
   return {
     success: true,
     data: { ...order, items, customer: customer || undefined },
+  }
+}
+
+export async function getOrderInvoicesAction(filters?: {
+  storeId?: string
+  status?: string
+  orderId?: string
+  invoiceType?: string
+  updatedFrom?: string
+  updatedTo?: string
+  page?: number
+  pageSize?: number
+}): Promise<ApiResponse<PaginatedResponse<OrderInvoice>>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if ((!session || !canManageOrders(session.role)) && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+
+  try {
+    const listUrl = new URL('/orders/invoices', base)
+    const scopedStoreId = String(filters?.storeId || '').trim() || (await resolveDefaultStoreId())
+    if (scopedStoreId) {
+      listUrl.searchParams.set('store_id', scopedStoreId)
+    }
+
+    const normalizedStatus = String(filters?.status || '').trim().toUpperCase()
+    if (normalizedStatus) {
+      listUrl.searchParams.set('status', normalizedStatus)
+    }
+
+    const normalizedOrderId = String(filters?.orderId || '').trim()
+    if (normalizedOrderId) {
+      listUrl.searchParams.set('order_id', normalizedOrderId)
+    }
+
+    const normalizedInvoiceType = String(filters?.invoiceType || '').trim().toLowerCase()
+    if (normalizedInvoiceType === 'order' || normalizedInvoiceType === 'standalone') {
+      listUrl.searchParams.set('invoice_type', normalizedInvoiceType)
+    }
+
+    const normalizedUpdatedFrom = String(filters?.updatedFrom || '').trim()
+    if (normalizedUpdatedFrom) {
+      listUrl.searchParams.set('updated_from', normalizedUpdatedFrom)
+    }
+
+    const normalizedUpdatedTo = String(filters?.updatedTo || '').trim()
+    if (normalizedUpdatedTo) {
+      listUrl.searchParams.set('updated_to', normalizedUpdatedTo)
+    }
+
+    const normalizedPage = Number(filters?.page)
+    if (Number.isInteger(normalizedPage) && normalizedPage > 0) {
+      listUrl.searchParams.set('page', String(normalizedPage))
+    }
+
+    const normalizedPageSize = Number(filters?.pageSize)
+    if (Number.isInteger(normalizedPageSize) && normalizedPageSize > 0) {
+      listUrl.searchParams.set('page_size', String(normalizedPageSize))
+    }
+
+    const response = await fetch(listUrl, {
+      headers: {
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao buscar invoices' }
+    }
+
+    const payload = (await response.json()) as BackendOrderInvoicesListResponse
+    const rawItems = Array.isArray(payload?.items) ? payload.items : []
+    const invoices = rawItems.map((entry) => mapBackendOrderInvoice(entry))
+
+    const page = Number(payload?.page)
+    const pageSize = Number(payload?.page_size)
+    const total = Number(payload?.total)
+    const totalPages = Number(payload?.total_pages)
+
+    return {
+      success: true,
+      data: {
+        items: invoices,
+        page: Number.isFinite(page) && page > 0 ? page : 1,
+        pageSize: Number.isFinite(pageSize) && pageSize > 0 ? pageSize : invoices.length,
+        total: Number.isFinite(total) && total >= 0 ? total : invoices.length,
+        totalPages: Number.isFinite(totalPages) && totalPages >= 0 ? totalPages : 1,
+      },
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao buscar invoices',
+    }
   }
 }
 
@@ -1273,6 +1808,410 @@ export async function getOrderLabelAction(id: string): Promise<ApiResponse<Order
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Erro ao buscar etiqueta do pedido',
+    }
+  }
+}
+
+export async function generateOrderLabelAction(
+  id: string,
+  data?: { chaveNfe?: string; numeroNfe?: string },
+): Promise<ApiResponse<OrderLabel>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if ((!session || !canManageOrders(session.role)) && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const numericId = Number(id)
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return { success: false, error: 'Pedido inválido' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+
+  try {
+    const response = await fetch(new URL(`/orders/${numericId}/label`, base), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      body: JSON.stringify({
+        chave_nfe: data?.chaveNfe?.trim() || undefined,
+        numero_nfe: data?.numeroNfe?.trim() || undefined,
+      }),
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Não foi possível gerar a etiqueta' }
+    }
+
+    const payload = (await response.json()) as BackendOrderLabel
+    return { success: true, data: mapBackendOrderLabel(payload) }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao gerar etiqueta do pedido',
+    }
+  }
+}
+
+export async function regenerateOrderLabelAction(
+  id: string,
+  data?: { chaveNfe?: string; numeroNfe?: string },
+): Promise<ApiResponse<OrderLabel>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if ((!session || !canManageOrders(session.role)) && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const numericId = Number(id)
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return { success: false, error: 'Pedido inválido' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+
+  try {
+    const response = await fetch(new URL(`/orders/${numericId}/label/regenerate`, base), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      body: JSON.stringify({
+        chave_nfe: data?.chaveNfe?.trim() || undefined,
+        numero_nfe: data?.numeroNfe?.trim() || undefined,
+      }),
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Não foi possível regenerar a etiqueta' }
+    }
+
+    const payload = (await response.json()) as BackendOrderLabel
+    return { success: true, data: mapBackendOrderLabel(payload) }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao regenerar etiqueta do pedido',
+    }
+  }
+}
+
+export interface CreateStandaloneLabelRequest {
+  chave_nfe: string
+  numero_nfe?: string
+  carrier?: string
+  order_id?: number
+  recipient_name: string
+  recipient_document?: string
+  shipping_zip_code: string
+  shipping_street: string
+  shipping_number: string
+  shipping_complement?: string
+  shipping_neighborhood: string
+  shipping_city: string
+  shipping_state: string
+  weight_grams?: number
+  length_cm?: number
+  width_cm?: number
+  height_cm?: number
+  service_code?: string
+}
+
+export async function getOrderLabelsAction(filters?: {
+  storeId?: string
+  status?: string
+  orderId?: string
+  labelMode?: string
+  search?: string
+  page?: number
+  pageSize?: number
+}): Promise<ApiResponse<PaginatedResponse<OrderLabel>>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if ((!session || !canManageOrders(session.role)) && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+
+  try {
+    const listUrl = new URL('/orders/labels', base)
+    const scopedStoreId = String(filters?.storeId || '').trim() || (await resolveDefaultStoreId())
+    if (scopedStoreId) {
+      listUrl.searchParams.set('store_id', scopedStoreId)
+    }
+
+    const normalizedStatus = String(filters?.status || '').trim().toUpperCase()
+    if (normalizedStatus) {
+      listUrl.searchParams.set('status', normalizedStatus)
+    }
+
+    const normalizedOrderId = String(filters?.orderId || '').trim()
+    if (normalizedOrderId) {
+      listUrl.searchParams.set('order_id', normalizedOrderId)
+    }
+
+    const normalizedLabelMode = String(filters?.labelMode || '').trim().toLowerCase()
+    if (normalizedLabelMode === 'order' || normalizedLabelMode === 'standalone') {
+      listUrl.searchParams.set('label_mode', normalizedLabelMode)
+    }
+
+    const normalizedSearch = String(filters?.search || '').trim()
+    if (normalizedSearch) {
+      listUrl.searchParams.set('search', normalizedSearch)
+    }
+
+    const normalizedPage = Number(filters?.page)
+    if (Number.isInteger(normalizedPage) && normalizedPage > 0) {
+      listUrl.searchParams.set('page', String(normalizedPage))
+    }
+
+    const normalizedPageSize = Number(filters?.pageSize)
+    if (Number.isInteger(normalizedPageSize) && normalizedPageSize > 0) {
+      listUrl.searchParams.set('page_size', String(normalizedPageSize))
+    }
+
+    const response = await fetch(listUrl, {
+      headers: {
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao buscar etiquetas' }
+    }
+
+    const payload = (await response.json()) as BackendOrderLabelsListResponse
+    const rawItems = Array.isArray(payload?.items) ? payload.items : []
+    const labels = rawItems.map((entry) => mapBackendOrderLabel(entry))
+
+    const page = Number(payload?.page)
+    const pageSize = Number(payload?.page_size)
+    const total = Number(payload?.total)
+    const totalPages = Number(payload?.total_pages)
+
+    return {
+      success: true,
+      data: {
+        items: labels,
+        page: Number.isFinite(page) && page > 0 ? page : 1,
+        pageSize: Number.isFinite(pageSize) && pageSize > 0 ? pageSize : labels.length,
+        total: Number.isFinite(total) && total >= 0 ? total : labels.length,
+        totalPages: Number.isFinite(totalPages) && totalPages >= 0 ? totalPages : 1,
+      },
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao buscar etiquetas',
+    }
+  }
+}
+
+export async function createStandaloneLabelAction(
+  data: CreateStandaloneLabelRequest,
+): Promise<ApiResponse<OrderLabel>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if ((!session || !canManageOrders(session.role)) && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+
+  try {
+    const response = await fetch(new URL('/orders/labels/standalone', base), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      body: JSON.stringify(data),
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao gerar etiqueta avulsa' }
+    }
+
+    const payload = (await response.json()) as BackendOrderLabel
+    return { success: true, data: mapBackendOrderLabel(payload) }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao gerar etiqueta avulsa',
+    }
+  }
+}
+
+export async function refreshStandaloneLabelAction(id: string): Promise<ApiResponse<OrderLabel>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if ((!session || !canManageOrders(session.role)) && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const numericId = Number(id)
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return { success: false, error: 'Etiqueta inválida' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+
+  try {
+    const response = await fetch(new URL(`/orders/labels/standalone/${numericId}`, base), {
+      headers: {
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao consultar etiqueta' }
+    }
+
+    const payload = (await response.json()) as BackendOrderLabel
+    return { success: true, data: mapBackendOrderLabel(payload) }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao consultar etiqueta',
+    }
+  }
+}
+
+export async function regenerateStandaloneLabelAction(id: string): Promise<ApiResponse<OrderLabel>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if ((!session || !canManageOrders(session.role)) && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const numericId = Number(id)
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return { success: false, error: 'Etiqueta inválida' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+
+  try {
+    const response = await fetch(new URL(`/orders/labels/standalone/${numericId}/regenerate`, base), {
+      method: 'POST',
+      headers: {
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao regenerar etiqueta avulsa' }
+    }
+
+    const payload = (await response.json()) as BackendOrderLabel
+    return { success: true, data: mapBackendOrderLabel(payload) }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao regenerar etiqueta avulsa',
+    }
+  }
+}
+
+export async function deleteOrderLabelAction(id: string): Promise<ApiResponse<void>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if ((!session || !canManageOrders(session.role)) && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const numericId = Number(id)
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return { success: false, error: 'Etiqueta inválida' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+
+  try {
+    const response = await fetch(new URL(`/orders/labels/${numericId}`, base), {
+      method: 'DELETE',
+      headers: {
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao excluir etiqueta' }
+    }
+
+    return { success: true }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao excluir etiqueta',
     }
   }
 }
@@ -1367,6 +2306,10 @@ export async function generateOrderInvoiceAction(id: string): Promise<ApiRespons
     return { success: false, error: 'Não autorizado' }
   }
 
+  if (!(await canEditOrders())) {
+    return { success: false, error: 'Você não tem permissão para editar pedidos' }
+  }
+
   const base = resolveBackendBaseUrl()
   if (!base) {
     return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
@@ -1402,6 +2345,58 @@ export async function generateOrderInvoiceAction(id: string): Promise<ApiRespons
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Erro ao gerar invoice do pedido',
+    }
+  }
+}
+
+export async function refreshOrderInvoiceStatusAction(id: string): Promise<ApiResponse<OrderInvoice>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if ((!session || !canManageOrders(session.role)) && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  if (!(await canEditOrders())) {
+    return { success: false, error: 'Você não tem permissão para editar pedidos' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const numericId = Number(id)
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return { success: false, error: 'Pedido inválido' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+
+  try {
+    const response = await fetch(new URL(`/orders/${numericId}/invoice/status`, base), {
+      method: 'POST',
+      headers: {
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao consultar status da nota fiscal' }
+    }
+
+    const payload = (await response.json()) as BackendOrderInvoice
+
+    revalidatePath('/orders')
+    revalidatePath(`/orders/${id}`)
+
+    return { success: true, data: mapBackendOrderInvoice(payload) }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao consultar status da nota fiscal',
     }
   }
 }
@@ -1453,7 +2448,7 @@ export async function createOrderAction(
 
   const validation = checkoutSchema.safeParse(data)
   if (!validation.success) {
-    return { success: false, error: validation.error.errors[0].message }
+    return { success: false, error: getValidationErrorMessage(validation.error) }
   }
 
   const cartResult = await getCartAction()
@@ -1669,9 +2664,21 @@ export async function updateOrderStatusAction(
     return { success: false, error: 'Não autorizado' }
   }
 
+  if (!(await canEditOrders())) {
+    return { success: false, error: 'Você não tem permissão para editar pedidos' }
+  }
+
   const order = await getOrderById(id)
   if (!order) {
     return { success: false, error: 'Pedido não encontrado' }
+  }
+
+  if (status === 'CANCELLED' && !(await hasOrderPermission('orders.cancel'))) {
+    return { success: false, error: 'Você não tem permissão para cancelar pedidos' }
+  }
+
+  if ((status === 'SHIPPED' || status === 'DELIVERED') && !(await hasOrderPermission('orders.manage_shipping'))) {
+    return { success: false, error: 'Você não tem permissão para gerenciar a entrega dos pedidos' }
   }
 
   const beforeData = { ...order }
@@ -1691,8 +2698,84 @@ export async function updateOrderStatusAction(
 
   revalidatePath('/orders')
   revalidatePath(`/orders/${id}`)
-  
+
   return { success: true, data: updated }
+}
+
+export async function assignOrderSellerFromCustomerAction(
+  orderId: string,
+): Promise<ApiResponse<{ assignedSellerId: string; assignedSellerName: string | null }>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if ((!session || !canManageOrders(session.role)) && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  if (!(await canEditOrders())) {
+    return { success: false, error: 'Você não tem permissão para editar pedidos' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const numericId = Number(orderId)
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return { success: false, error: 'Pedido inválido' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+  if (!cookieHeader) {
+    return { success: false, error: 'Sessão admin não encontrada' }
+  }
+
+  try {
+    const response = await fetch(new URL(`/orders/${numericId}/assigned-seller`, base), {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        cookie: cookieHeader,
+      },
+      body: JSON.stringify({}),
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao atribuir vendedora ao pedido' }
+    }
+
+    const payload = (await response.json()) as {
+      assigned_seller_id?: number | null
+      assigned_seller_name?: string | null
+    }
+
+    const assignedSellerId = Number(payload.assigned_seller_id)
+    if (!Number.isFinite(assignedSellerId) || assignedSellerId <= 0) {
+      return { success: false, error: 'Resposta inválida ao atribuir vendedora' }
+    }
+
+    revalidatePath('/orders')
+    revalidatePath(`/orders/${orderId}`)
+
+    return {
+      success: true,
+      data: {
+        assignedSellerId: String(assignedSellerId),
+        assignedSellerName: payload.assigned_seller_name
+          ? String(payload.assigned_seller_name)
+          : null,
+      },
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao atribuir vendedora ao pedido',
+    }
+  }
 }
 
 // Assisted order (seller creates order for customer)
@@ -1700,6 +2783,10 @@ export async function createAssistedOrderAction(formData: FormData): Promise<Api
   const session = await getSession()
   if (!session) {
     return { success: false, error: 'Não autorizado' }
+  }
+
+  if (!(await canCreateOrders())) {
+    return { success: false, error: 'Você não tem permissão para criar pedidos' }
   }
 
   // Check if seller can create orders
@@ -1716,7 +2803,9 @@ export async function createAssistedOrderAction(formData: FormData): Promise<Api
     customerId: formData.get('customerId') as string,
     items: JSON.parse(formData.get('items') as string),
     shippingOptionId: formData.get('shippingOptionId') as string,
-    paymentMethod: formData.get('paymentMethod') as 'PIX' | 'BOLETO' | 'FATURADO' | 'CARTAO_EXTERNO',
+    paymentMethodId: String(formData.get('paymentMethodId') || '').trim(),
+    paymentMethod: String(formData.get('paymentMethod') || '').trim(),
+    paymentMethodLabel: String(formData.get('paymentMethodLabel') || '').trim(),
     notes: formData.get('notes') as string || undefined,
   }
   const shippingPriceRaw = Number(formData.get('shippingPrice') ?? 0)
@@ -1727,10 +2816,20 @@ export async function createAssistedOrderAction(formData: FormData): Promise<Api
   const manualDiscount = Number.isFinite(manualDiscountRaw)
     ? Math.max(0, manualDiscountRaw)
     : 0
+  const manualDiscountBpsValue = formData.get('manualDiscountBps')
+  const manualDiscountBps =
+    typeof manualDiscountBpsValue === 'string' && manualDiscountBpsValue.trim() !== ''
+      ? (() => {
+          const parsed = Number(manualDiscountBpsValue)
+          return Number.isFinite(parsed)
+            ? Math.max(0, Math.min(10_000, Math.round(parsed)))
+            : null
+        })()
+      : null
 
   const validation = assistedOrderSchema.safeParse(data)
   if (!validation.success) {
-    return { success: false, error: validation.error.errors[0].message }
+    return { success: false, error: getValidationErrorMessage(validation.error) }
   }
 
   // Get customer
@@ -1750,8 +2849,10 @@ export async function createAssistedOrderAction(formData: FormData): Promise<Api
   }
 
   // Validate payment method only when customer has explicit payment terms
+  const corePaymentMethods = ['PIX', 'BOLETO', 'FATURADO', 'CARTAO_EXTERNO'] as const
+  const isCorePaymentMethod = corePaymentMethods.includes(data.paymentMethod as (typeof corePaymentMethods)[number])
   const hasPaymentTerms = Array.isArray(customer.paymentTerms) && customer.paymentTerms.length > 0
-  if (hasPaymentTerms && !customer.paymentTerms.includes(data.paymentMethod)) {
+  if (hasPaymentTerms && isCorePaymentMethod && !customer.paymentTerms.includes(data.paymentMethod as (typeof corePaymentMethods)[number])) {
     return { success: false, error: 'Forma de pagamento não disponível para este cliente' }
   }
 
@@ -1770,7 +2871,22 @@ export async function createAssistedOrderAction(formData: FormData): Promise<Api
     return { success: false, error: 'Cliente inválido' }
   }
 
-  const mappedItems: Array<{ variant_id: number; quantity: number }> = []
+  const parsedPaymentMethodId = Number(data.paymentMethodId)
+  const paymentMethodId = Number.isFinite(parsedPaymentMethodId) && parsedPaymentMethodId > 0
+    ? Math.trunc(parsedPaymentMethodId)
+    : null
+
+  const mappedItems: Array<{
+    variant_id: number
+    quantity: number
+    source_cart_composition_instance_id?: number
+    composition_item_id?: number
+    composition_group_uuid?: string
+    composition_name_snapshot?: string
+    composition_pricing_mode_snapshot?: string
+    composition_display_mode_snapshot?: string
+    composition_discount_allocated_cents?: number
+  }> = []
   for (const item of data.items) {
     const variantId = Number(item.variantId)
     if (!Number.isFinite(variantId) || variantId <= 0) {
@@ -1785,6 +2901,27 @@ export async function createAssistedOrderAction(formData: FormData): Promise<Api
     mappedItems.push({
       variant_id: Math.trunc(variantId),
       quantity: Math.trunc(quantity),
+      ...(Number.isFinite(Number(item.sourceCartCompositionInstanceId)) && Number(item.sourceCartCompositionInstanceId) > 0
+        ? { source_cart_composition_instance_id: Math.trunc(Number(item.sourceCartCompositionInstanceId)) }
+        : {}),
+      ...(Number.isFinite(Number(item.compositionItemId)) && Number(item.compositionItemId) > 0
+        ? { composition_item_id: Math.trunc(Number(item.compositionItemId)) }
+        : {}),
+      ...(typeof item.compositionGroupUuid === 'string' && item.compositionGroupUuid.trim().length > 0
+        ? { composition_group_uuid: item.compositionGroupUuid.trim() }
+        : {}),
+      ...(typeof item.compositionNameSnapshot === 'string' && item.compositionNameSnapshot.trim().length > 0
+        ? { composition_name_snapshot: item.compositionNameSnapshot.trim() }
+        : {}),
+      ...(typeof item.compositionPricingModeSnapshot === 'string' && item.compositionPricingModeSnapshot.trim().length > 0
+        ? { composition_pricing_mode_snapshot: item.compositionPricingModeSnapshot.trim() }
+        : {}),
+      ...(typeof item.compositionDisplayModeSnapshot === 'string' && item.compositionDisplayModeSnapshot.trim().length > 0
+        ? { composition_display_mode_snapshot: item.compositionDisplayModeSnapshot.trim() }
+        : {}),
+      ...(Number.isFinite(Number(item.compositionDiscountAllocatedCents)) && Number(item.compositionDiscountAllocatedCents) > 0
+        ? { composition_discount_allocated_cents: Math.trunc(Number(item.compositionDiscountAllocatedCents)) }
+        : {}),
     })
   }
 
@@ -1792,25 +2929,32 @@ export async function createAssistedOrderAction(formData: FormData): Promise<Api
   const shippingPriceCents = Math.max(0, Math.round(manualShippingPrice * 100))
   const manualDiscountCents = Math.max(0, Math.round(manualDiscount * 100))
   const paymentLabel =
-    data.paymentMethod === 'BOLETO'
+    data.paymentMethodLabel ||
+    (data.paymentMethod === 'BOLETO'
       ? 'Boleto'
       : data.paymentMethod === 'FATURADO'
       ? 'Faturado'
       : data.paymentMethod === 'CARTAO_EXTERNO'
-      ? 'Cartão (externo)'
-      : 'PIX'
+      ? 'Cartão'
+      : data.paymentMethod === 'PIX'
+      ? 'PIX'
+      : data.paymentMethod)
 
   const createPayload = {
     customer_id: Math.trunc(parsedCustomerId),
+    ...(paymentMethodId ? { payment_method_id: paymentMethodId } : {}),
     ...(scopedStoreId ? { store_id: Number(scopedStoreId) } : {}),
     origin: session.role === 'SELLER' ? 'manager' : 'manager',
     note: data.notes || 'Pedido assistido',
     shipping_price_cents: shippingPriceCents,
     shipping_delivery_days: 0,
     manual_discount_cents: manualDiscountCents,
+    manual_discount_bps: manualDiscountBps,
     meta: {
       checkout: {
         notes: data.notes || null,
+        manual_discount_cents: manualDiscountCents,
+        manual_discount_bps: manualDiscountBps,
         payment: {
           code: data.paymentMethod,
           name: paymentLabel,
@@ -1870,9 +3014,10 @@ export async function createAssistedOrderAction(formData: FormData): Promise<Api
     })
 
     if (detailResponse.ok) {
-      const detailPayload = (await detailResponse.json()) as [BackendOrder, BackendOrderItem[]]
-      const backendOrder = detailPayload?.[0] || createdOrder
-      const backendItems = Array.isArray(detailPayload?.[1]) ? detailPayload[1] : []
+      const detailPayload = await detailResponse.json()
+      const parsedDetail = parseStorefrontOrderDetailPayload(detailPayload, createdOrder)
+      const backendOrder = parsedDetail.order || createdOrder
+      const backendItems = parsedDetail.items
       mappedOrder = mapBackendOrderDetailToAdminOrder(backendOrder, backendItems)
     } else {
       mappedOrder = mapBackendOrderDetailToAdminOrder(createdOrder, [])
@@ -1881,8 +3026,14 @@ export async function createAssistedOrderAction(formData: FormData): Promise<Api
     mappedOrder = mapBackendOrderDetailToAdminOrder(createdOrder, [])
   }
 
+  const clearResult = await clearCartAction()
+  if (!clearResult.success) {
+    console.error('[createAssistedOrderAction] pedido criado, mas falha ao limpar carrinho', clearResult.error)
+  }
+
   revalidatePath('/seller/orders')
   revalidatePath('/orders')
+  revalidatePath('/orders/new')
 
   return { success: true, data: mappedOrder }
 }
@@ -1893,13 +3044,14 @@ export async function updateOrderAction(
   data: {
     status?: OrderStatus
     paymentStatus?: 'PENDING' | 'PAID' | 'PARTIAL' | 'REFUNDED' | 'CANCELLED'
+    paymentMethodId?: number
     shippingPrice?: number
     manualDiscount?: number
     trackingCode?: string
     trackingUrl?: string
     notes?: string
     internalNotes?: string
-    paymentMethod?: PaymentMethod
+    paymentMethod?: Order['paymentMethod']
   }
 ): Promise<ApiResponse<Order>> {
   const session = await getSession()
@@ -1907,6 +3059,34 @@ export async function updateOrderAction(
   const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
   if ((!session || !canManageOrders(session.role)) && !hasAdminToken) {
     return { success: false, error: 'Não autorizado' }
+  }
+
+  if (!(await canEditOrders())) {
+    return { success: false, error: 'Você não tem permissão para editar pedidos' }
+  }
+
+  if (data.status === 'CANCELLED' && !(await hasOrderPermission('orders.cancel'))) {
+    return { success: false, error: 'Você não tem permissão para cancelar pedidos' }
+  }
+
+  if ((data.status === 'SHIPPED' || data.status === 'DELIVERED') && !(await hasOrderPermission('orders.manage_shipping'))) {
+    return { success: false, error: 'Você não tem permissão para gerenciar a entrega dos pedidos' }
+  }
+
+  if (data.paymentStatus !== undefined && !(await canUpdateOrderPaymentStatus(data.paymentStatus))) {
+    return {
+      success: false,
+      error: data.paymentStatus === 'REFUNDED' || data.paymentStatus === 'CANCELLED'
+        ? 'Você não tem permissão para gerenciar devoluções do pedido'
+        : 'Você não tem permissão para marcar pedidos como pagos',
+    }
+  }
+
+  if (
+    (data.shippingPrice !== undefined || data.trackingCode !== undefined || data.trackingUrl !== undefined)
+    && !(await hasOrderPermission('orders.manage_shipping'))
+  ) {
+    return { success: false, error: 'Você não tem permissão para gerenciar a entrega dos pedidos' }
   }
 
   if (hasAdminToken || session?.role === 'ADMIN' || session?.role === 'SALES_MANAGER') {
@@ -1968,6 +3148,7 @@ export async function updateOrderAction(
 
       if (
         data.paymentStatus !== undefined ||
+        data.paymentMethodId !== undefined ||
         data.paymentMethod !== undefined ||
         data.trackingCode !== undefined ||
         data.trackingUrl !== undefined ||
@@ -1982,6 +3163,9 @@ export async function updateOrderAction(
           body: JSON.stringify({
             ...(data.paymentStatus !== undefined
               ? { payment_status: data.paymentStatus }
+              : {}),
+            ...(data.paymentMethodId !== undefined && Number.isFinite(data.paymentMethodId) && data.paymentMethodId > 0
+              ? { payment_method_id: Math.trunc(data.paymentMethodId) }
               : {}),
             ...(data.paymentMethod !== undefined
               ? { payment_method: data.paymentMethod }
@@ -2016,9 +3200,10 @@ export async function updateOrderAction(
         return { success: false, error: errorText || 'Erro ao buscar pedido atualizado' }
       }
 
-      const payload = (await detailResponse.json()) as [BackendOrder, BackendOrderItem[]]
-      const backendOrder = payload?.[0]
-      const backendItems = Array.isArray(payload?.[1]) ? payload[1] : []
+      const payload = await detailResponse.json()
+      const parsedDetail = parseStorefrontOrderDetailPayload(payload)
+      const backendOrder = parsedDetail.order
+      const backendItems = parsedDetail.items
 
       if (!backendOrder) {
         return { success: false, error: 'Pedido atualizado não encontrado' }
@@ -2044,7 +3229,7 @@ export async function updateOrderAction(
   }
 
   const beforeData = { ...order }
-  
+
   // Calculate new total if shipping or discount changed
   let newTotal = order.total
   if (data.shippingPrice !== undefined || data.manualDiscount !== undefined) {
@@ -2052,7 +3237,7 @@ export async function updateOrderAction(
     const oldManualDiscount = (order as unknown as { manualDiscount?: number }).manualDiscount || 0
     const newShipping = data.shippingPrice ?? oldShipping
     const newManualDiscount = data.manualDiscount ?? oldManualDiscount
-    
+
     // Recalculate: subtotal - discounts + shipping
     newTotal = order.subtotal - order.discountTotal - newManualDiscount + newShipping
   }
@@ -2061,7 +3246,7 @@ export async function updateOrderAction(
     ...data,
     total: newTotal,
   })
-  
+
   if (!updated) {
     return { success: false, error: 'Erro ao atualizar pedido' }
   }
@@ -2077,24 +3262,8 @@ export async function updateOrderAction(
 
   revalidatePath('/orders')
   revalidatePath(`/orders/${id}`)
-  
-  return { success: true, data: updated }
-}
 
-// Stock Mode Helpers for Order Actions
-async function getStockModeConfig(): Promise<StockModeConfig> {
-  try {
-    const result = await getSiteSettingsAction()
-    if (result.success && result.data) {
-      return {
-        stockMode: (result.data.stockMode as StockMode) || 'FANTASY',
-        variantMaxQty: Math.max(1, Number(result.data.variantMaxQty || 999)),
-      }
-    }
-  } catch {
-    // Silently fall back to defaults
-  }
-  return { stockMode: 'FANTASY', variantMaxQty: 999 }
+  return { success: true, data: updated }
 }
 
 // Add item to existing order
@@ -2115,6 +3284,10 @@ export async function addOrderItemAction(
     return { success: false, error: 'Não autorizado' }
   }
 
+  if (!(await canEditOrders())) {
+    return { success: false, error: 'Você não tem permissão para editar pedidos' }
+  }
+
   if (hasAdminToken || session?.role === 'ADMIN' || session?.role === 'SALES_MANAGER') {
     const base = resolveBackendBaseUrl()
     if (!base) {
@@ -2132,8 +3305,7 @@ export async function addOrderItemAction(
       return { success: false, error: 'Quantidade inválida' }
     }
 
-    const stockConfig = await getStockModeConfig()
-    const normalizedQty = normalizeQuantityByStockMode(quantity, stockConfig)
+    const normalizedQty = Math.max(1, Math.trunc(quantity))
 
     const unitPriceCents = Math.max(0, Math.round(Number(data.unitPrice || 0) * 100))
     const cookieHeader = await buildBackofficeCookieHeader()
@@ -2169,7 +3341,12 @@ export async function addOrderItemAction(
       const origin = normalizeOrderItemOrigin(createdItem.origin)
       const variantStockQty = Number(createdItem.variant_stock_qty ?? 0)
       const variantReservedQty = Number(createdItem.variant_reserved_qty ?? 0)
-      const variantAvailableQty = Math.max(0, variantStockQty - variantReservedQty)
+      const stockConfig = await getStockModeConfigForOrders()
+      const variantAvailableQty = resolveOrderItemVariantAvailableQty(
+        stockConfig,
+        variantStockQty,
+        variantReservedQty,
+      )
 
       revalidatePath(`/orders/${orderId}`)
 
@@ -2187,6 +3364,7 @@ export async function addOrderItemAction(
           assetImageUrl: createdItem.asset_image_url ? String(createdItem.asset_image_url) : null,
           imageUrl: createdItem.image_url ? String(createdItem.image_url) : null,
           nameSnapshot: String(createdItem.asset_name || createdItem.product_name || `Produto #${createdItem.product_id}`),
+          productSkuSnapshot: createdItem.product_sku ? String(createdItem.product_sku) : null,
           skuSnapshot: String(createdItem.variant_sku || `VAR-${createdItem.variant_id}`),
           variantCombinationKey: createdItem.variant_combination_key ? String(createdItem.variant_combination_key) : null,
           colorSnapshot: combination.colorSnapshot,
@@ -2218,7 +3396,7 @@ export async function addOrderItemAction(
 
   const product = await getProductById(data.productId)
   const variant = await getVariantById(data.variantId)
-  
+
   if (!product || !variant) {
     return { success: false, error: 'Produto ou variação não encontrado' }
   }
@@ -2262,7 +3440,7 @@ export async function addOrderItemAction(
   })
 
   revalidatePath(`/orders/${orderId}`)
-  
+
   return { success: true, data: item }
 }
 
@@ -2279,6 +3457,10 @@ export async function removeOrderItemAction(
   const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
   if ((!session || !canManageOrders(session.role)) && !hasAdminToken) {
     return { success: false, error: 'Não autorizado' }
+  }
+
+  if (!(await canEditOrders())) {
+    return { success: false, error: 'Você não tem permissão para editar pedidos' }
   }
 
   if (hasAdminToken || session?.role === 'ADMIN' || session?.role === 'SALES_MANAGER') {
@@ -2307,15 +3489,16 @@ export async function removeOrderItemAction(
         return { success: false, error: 'Erro ao buscar origem do item' }
       }
 
-      const detailPayload = (await detailResponse.json()) as [BackendOrder, BackendOrderItem[]]
-      const backendItems = Array.isArray(detailPayload?.[1]) ? detailPayload[1] : []
+      const detailPayload = await detailResponse.json()
+      const parsedDetail = parseStorefrontOrderDetailPayload(detailPayload)
+      const backendItems = parsedDetail.items
       const currentItem = backendItems.find((entry) => String(entry.id) === String(numericItemId))
 
       if (!currentItem) {
         return { success: false, error: 'Item não encontrado no pedido' }
       }
 
-      const shouldHardDelete = normalizeOrderItemOrigin(currentItem.origin) === 'manager_added' || options?.hardDelete === true
+      const shouldHardDelete = options?.hardDelete === true
 
       const response = shouldHardDelete
         ? await fetch(new URL(`/orders/${numericOrderId}/items/${numericItemId}`, base), {
@@ -2355,7 +3538,7 @@ export async function removeOrderItemAction(
 
   const items = await getOrderItems(orderId)
   const item = items.find(i => i.id === itemId)
-  
+
   if (!item) {
     return { success: false, error: 'Item não encontrado' }
   }
@@ -2390,8 +3573,69 @@ export async function removeOrderItemAction(
   })
 
   revalidatePath(`/orders/${orderId}`)
-  
+
   return { success: true }
+}
+
+export async function deleteOrderItemAction(
+  orderId: string,
+  itemId: string,
+): Promise<ApiResponse<void>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+  if ((!session || !canManageOrders(session.role)) && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  if (!(await canEditOrders())) {
+    return { success: false, error: 'Você não tem permissão para editar pedidos' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const numericOrderId = Number(orderId)
+  const numericItemId = Number(itemId)
+  if (!Number.isFinite(numericOrderId) || numericOrderId <= 0 || !Number.isFinite(numericItemId) || numericItemId <= 0) {
+    return { success: false, error: 'Pedido ou item inválido' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+
+  try {
+    const response = await fetch(new URL(`/orders/${numericOrderId}/items/${numericItemId}`, base), {
+      method: 'DELETE',
+      headers: {
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao excluir item' }
+    }
+
+    const orderDetailResponse = await fetch(new URL(`/orders/${numericOrderId}`, base), {
+      headers: {
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      cache: 'no-store',
+    })
+
+    if (!orderDetailResponse.ok) {
+      return { success: false, error: 'Erro ao buscar pedido atualizado' }
+    }
+
+    await orderDetailResponse.json()
+    revalidatePath(`/orders/${orderId}`)
+    return { success: true }
+  } catch (error) {
+    console.error('Erro ao excluir item do pedido:', error)
+    return { success: false, error: 'Erro inesperado ao excluir item' }
+  }
 }
 
 // Update order item quantity or fulfilled status
@@ -2405,6 +3649,10 @@ export async function updateOrderItemAction(
   const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
   if ((!session || !canManageOrders(session.role)) && !hasAdminToken) {
     return { success: false, error: 'Não autorizado' }
+  }
+
+  if (!(await canEditOrders())) {
+    return { success: false, error: 'Você não tem permissão para editar pedidos' }
   }
 
   if (hasAdminToken || session?.role === 'ADMIN' || session?.role === 'SALES_MANAGER') {
@@ -2430,12 +3678,11 @@ export async function updateOrderItemAction(
 
       if (data.quantity !== undefined) {
         const quantity = Number(data.quantity)
-        if (!Number.isFinite(quantity) || quantity < 0) {
+        if (!Number.isFinite(quantity) || quantity <= 0) {
           return { success: false, error: 'Quantidade atendida inválida' }
         }
 
-        const stockConfig = await getStockModeConfig()
-        const normalizedQty = quantity === 0 ? 0 : normalizeQuantityByStockMode(quantity, stockConfig)
+        const normalizedQty = Math.max(1, Math.trunc(quantity))
 
         response = await fetch(new URL(`/orders/${numericOrderId}/items/${numericItemId}`, base), {
           method: 'PUT',
@@ -2474,8 +3721,9 @@ export async function updateOrderItemAction(
         return { success: false, error: 'Erro ao buscar item atualizado' }
       }
 
-      const payload = (await detailResponse.json()) as [BackendOrder, BackendOrderItem[]]
-      const backendItems = Array.isArray(payload?.[1]) ? payload[1] : []
+      const payload = await detailResponse.json()
+      const parsedDetail = parseStorefrontOrderDetailPayload(payload)
+      const backendItems = parsedDetail.items
       const updatedItem = backendItems.find((entry) => String(entry.id) === String(numericItemId))
 
       if (!updatedItem) {
@@ -2492,7 +3740,12 @@ export async function updateOrderItemAction(
       const origin = normalizeOrderItemOrigin(updatedItem.origin)
       const variantStockQty = Number(updatedItem.variant_stock_qty ?? 0)
       const variantReservedQty = Number(updatedItem.variant_reserved_qty ?? 0)
-      const variantAvailableQty = Math.max(0, variantStockQty - variantReservedQty)
+      const stockConfig = await getStockModeConfigForOrders()
+      const variantAvailableQty = resolveOrderItemVariantAvailableQty(
+        stockConfig,
+        variantStockQty,
+        variantReservedQty,
+      )
 
       revalidatePath(`/orders/${orderId}`)
 
@@ -2510,6 +3763,7 @@ export async function updateOrderItemAction(
           assetImageUrl: updatedItem.asset_image_url ? String(updatedItem.asset_image_url) : null,
           imageUrl: updatedItem.image_url ? String(updatedItem.image_url) : null,
           nameSnapshot: String(updatedItem.asset_name || updatedItem.product_name || `Produto #${updatedItem.product_id}`),
+          productSkuSnapshot: updatedItem.product_sku ? String(updatedItem.product_sku) : null,
           skuSnapshot: String(updatedItem.variant_sku || `VAR-${updatedItem.variant_id}`),
           variantCombinationKey: updatedItem.variant_combination_key ? String(updatedItem.variant_combination_key) : null,
           colorSnapshot: combination.colorSnapshot,
@@ -2541,7 +3795,7 @@ export async function updateOrderItemAction(
 
   const items = await getOrderItems(orderId)
   const item = items.find(i => i.id === itemId)
-  
+
   if (!item) {
     return { success: false, error: 'Item não encontrado' }
   }
@@ -2581,7 +3835,7 @@ export async function updateOrderItemAction(
   })
 
   revalidatePath(`/orders/${orderId}`)
-  
+
   return { success: true, data: updated }
 }
 
@@ -2615,17 +3869,167 @@ export async function getSellerStats() {
   const customersResult = await getCustomersAction({ assignedSellerId: session.id })
   const customers = customersResult.success && customersResult.data ? customersResult.data : []
   const orders = await getOrders({ assignedSellerId: session.id })
-  
+
   const totalSales = orders.reduce((sum, o) => sum + o.total, 0)
   const pendingOrders = orders.filter(o => o.status === 'PENDING').length
-  
-  return { 
-    success: true, 
+
+  return {
+    success: true,
     data: {
       totalCustomers: customers.length,
       totalOrders: orders.length,
       totalSales,
       pendingOrders,
+    }
+  }
+}
+
+export type OrderWebhookEvent =
+  | 'order.created'
+  | 'order.updated'
+  | 'order.confirmed'
+  | 'order.payment_confirmed'
+  | 'order.shipped'
+  | 'order.delivered'
+  | 'order.cancelled'
+
+type DispatchOrderWebhookActionResponse = {
+  success: boolean
+  message: string
+  event: OrderWebhookEvent
+  order_id: number
+  store_id: number
+  payload?: Record<string, unknown> | null
+}
+
+export type PaymentLinkWebhookEvent =
+  | 'payment_link.created'
+  | 'payment_link.updated'
+  | 'payment_link.cancelled'
+  | 'payment_link.expired'
+  | 'payment_link.completed'
+  | 'payment_link.payment_failed'
+
+type DispatchPaymentLinkWebhookActionResponse = {
+  success: boolean
+  message: string
+  event: PaymentLinkWebhookEvent
+  payment_link_id: number
+  store_id: number
+  payload?: Record<string, unknown> | null
+}
+
+export async function dispatchPaymentLinkWebhookAction(
+  paymentLinkId: number | string,
+  event: PaymentLinkWebhookEvent,
+  storefrontBaseUrl?: string,
+): Promise<ApiResponse<DispatchPaymentLinkWebhookActionResponse>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if (!session && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  if (!(hasAdminToken || session?.role === 'ADMIN' || session?.role === 'SALES_MANAGER')) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const numericId = Number(paymentLinkId)
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return { success: false, error: 'Link inválido' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+
+  try {
+    const response = await fetch(
+      new URL(`/payment-links/${Math.trunc(numericId)}/webhooks/dispatch`, base),
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(cookieHeader ? { cookie: cookieHeader } : {}),
+        },
+        body: JSON.stringify({
+          event,
+          storefront_base_url: storefrontBaseUrl?.trim() || undefined,
+        }),
+        cache: 'no-store',
+      },
+    )
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao disparar webhook do link' }
+    }
+
+    const payload = (await response.json()) as DispatchPaymentLinkWebhookActionResponse
+    return { success: true, data: payload }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao disparar webhook do link',
+    }
+  }
+}
+
+export async function dispatchOrderWebhookAction(
+  orderId: string,
+  event: OrderWebhookEvent,
+): Promise<ApiResponse<DispatchOrderWebhookActionResponse>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if (!session && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  if (!(hasAdminToken || session?.role === 'ADMIN' || session?.role === 'SALES_MANAGER')) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const numericId = Number(orderId)
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return { success: false, error: 'Pedido inválido' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+
+  try {
+    const response = await fetch(new URL(`/orders/${numericId}/webhooks/dispatch`, base), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      body: JSON.stringify({ event }),
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao disparar webhook do pedido' }
+    }
+
+    const payload = (await response.json()) as DispatchOrderWebhookActionResponse
+    return { success: true, data: payload }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao disparar webhook do pedido',
     }
   }
 }
@@ -2678,13 +4082,74 @@ export async function getOrderPaymentsAction(orderId: string): Promise<ApiRespon
   return { success: false, error: 'Não autorizado' }
 }
 
-export async function retryOrderPaymentAction(orderId: string): Promise<ApiResponse<OrderPaymentResponse>> {
+export async function getPaymentPublicKeyAction(storeId: number): Promise<ApiResponse<{ provider: string; sdk: string; public_key: string }>> {
   const session = await getSession()
   const cookieStore = await cookies()
   const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
 
   if (!session && !hasAdminToken) {
     return { success: false, error: 'Não autorizado' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const storefrontApiKey = await resolveStorefrontApiKeyFromRequest(storeId)
+  if (!storefrontApiKey) {
+    return { success: false, error: 'Não foi possível resolver a chave da loja' }
+  }
+
+  try {
+    const response = await fetch(new URL('/v1/storefront/payment/public-key', base), {
+      headers: {
+        'X-API-Key': storefrontApiKey,
+      },
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao buscar public key de pagamento' }
+    }
+
+    const payload = await response.json() as { provider?: string; sdk?: string; public_key?: string }
+    if (!payload.public_key) {
+      return { success: false, error: 'Public key de pagamento não configurada para esta loja' }
+    }
+
+    return {
+      success: true,
+      data: {
+        provider: String(payload.provider || ''),
+        sdk: String(payload.sdk || ''),
+        public_key: String(payload.public_key),
+      },
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao buscar public key de pagamento',
+    }
+  }
+}
+
+export async function retryOrderPaymentAction(
+  orderId: string,
+  cardToken?: string | null,
+  installments?: number | null,
+): Promise<ApiResponse<OrderPaymentResponse>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if (!session && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  if (!(await canEditOrders())) {
+    return { success: false, error: 'Você não tem permissão para editar pedidos' }
   }
 
   if (hasAdminToken || session?.role === 'ADMIN' || session?.role === 'SALES_MANAGER') {
@@ -2701,12 +4166,21 @@ export async function retryOrderPaymentAction(orderId: string): Promise<ApiRespo
     const cookieHeader = await buildBackofficeCookieHeader()
 
     try {
-      const response = await fetch(new URL(`/orders/${numericId}/payments/retry`, base), {
+      const retryUrl = new URL(`/orders/${numericId}/payments/retry`, base)
+      if (cardToken && cardToken.trim()) {
+        retryUrl.searchParams.set('card_token', cardToken.trim())
+      }
+      if (Number.isInteger(installments) && Number(installments) && Number(installments) > 0) {
+        retryUrl.searchParams.set('installments', String(Math.trunc(Number(installments))))
+      }
+
+      const response = await fetch(retryUrl, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
           ...(cookieHeader ? { cookie: cookieHeader } : {}),
         },
+        body: '{}',
         cache: 'no-store',
       })
 
@@ -2726,4 +4200,577 @@ export async function retryOrderPaymentAction(orderId: string): Promise<ApiRespo
   }
 
   return { success: false, error: 'Não autorizado' }
+}
+
+export async function createOrderPaymentLinkAction(
+  orderId: string,
+  input?: {
+    description?: string | null
+    expiresInHours?: number | null
+  },
+): Promise<ApiResponse<PaymentLinkDetailResponse>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if (!session && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  if (!(await canEditOrders())) {
+    return { success: false, error: 'Você não tem permissão para editar pedidos' }
+  }
+
+  if (!(hasAdminToken || session?.role === 'ADMIN' || session?.role === 'SALES_MANAGER')) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const numericId = Number(orderId)
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return { success: false, error: 'Pedido inválido' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+
+  try {
+    const response = await fetch(new URL('/payment-links', base), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      body: JSON.stringify({
+        order_id: numericId,
+        description: input?.description ?? undefined,
+        expires_in_hours:
+          Number.isInteger(input?.expiresInHours) && Number(input?.expiresInHours) > 0
+            ? Number(input?.expiresInHours)
+            : undefined,
+      }),
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao criar link de pagamento' }
+    }
+
+    const payload = (await response.json()) as PaymentLinkDetailResponse
+
+    return {
+      success: true,
+      data: payload,
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao criar link de pagamento',
+    }
+  }
+}
+
+export async function cancelOrderPaymentLinkAction(
+  paymentLinkId: number,
+  reason?: string | null,
+): Promise<ApiResponse<PaymentLinkDetailResponse>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if (!session && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  if (!(await canEditOrders())) {
+    return { success: false, error: 'Você não tem permissão para editar pedidos' }
+  }
+
+  if (!(hasAdminToken || session?.role === 'ADMIN' || session?.role === 'SALES_MANAGER')) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const normalizedId = Number(paymentLinkId)
+  if (!Number.isFinite(normalizedId) || normalizedId <= 0) {
+    return { success: false, error: 'Link inválido' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+
+  try {
+    const response = await fetch(new URL(`/payment-links/${Math.trunc(normalizedId)}/cancel`, base), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      body: JSON.stringify({
+        reason: reason?.trim() || 'cancelled_from_admin',
+      }),
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao cancelar link de pagamento' }
+    }
+
+    const payload = (await response.json()) as PaymentLinkDetailResponse
+
+    return {
+      success: true,
+      data: payload,
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao cancelar link de pagamento',
+    }
+  }
+}
+
+export async function getPaymentLinkDetailAction(
+  paymentLinkId: number,
+): Promise<ApiResponse<PaymentLinkDetailResponse>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if (!session && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  if (!(hasAdminToken || session?.role === 'ADMIN' || session?.role === 'SALES_MANAGER')) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const normalizedId = Number(paymentLinkId)
+  if (!Number.isFinite(normalizedId) || normalizedId <= 0) {
+    return { success: false, error: 'Link inválido' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+
+  try {
+    const response = await fetch(new URL(`/payment-links/${Math.trunc(normalizedId)}`, base), {
+      method: 'GET',
+      headers: {
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao carregar eventos do link' }
+    }
+
+    const payload = (await response.json()) as PaymentLinkDetailResponse
+    return { success: true, data: payload }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao carregar eventos do link',
+    }
+  }
+}
+
+export async function listPaymentLinksAction(input?: {
+  status?: string | null
+  orderId?: number | null
+  customerId?: number | null
+  search?: string | null
+  limit?: number | null
+  offset?: number | null
+}): Promise<ApiResponse<PaymentLinksListResponse>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if (!session && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  if (!(hasAdminToken || session?.role === 'ADMIN' || session?.role === 'SALES_MANAGER')) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+
+  try {
+    const url = new URL('/payment-links', base)
+    const status = String(input?.status || '').trim().toUpperCase()
+    if (status) {
+      url.searchParams.set('status', status)
+    }
+
+    const orderId = Number(input?.orderId)
+    if (Number.isFinite(orderId) && orderId > 0) {
+      url.searchParams.set('order_id', String(Math.trunc(orderId)))
+    }
+
+    const customerId = Number(input?.customerId)
+    if (Number.isFinite(customerId) && customerId > 0) {
+      url.searchParams.set('customer_id', String(Math.trunc(customerId)))
+    }
+
+    const search = String(input?.search || '').trim()
+    if (search) {
+      url.searchParams.set('search', search)
+    }
+
+    const limit = Number(input?.limit)
+    if (Number.isFinite(limit) && limit > 0) {
+      url.searchParams.set('limit', String(Math.trunc(limit)))
+    }
+
+    const offset = Number(input?.offset)
+    if (Number.isFinite(offset) && offset >= 0) {
+      url.searchParams.set('offset', String(Math.trunc(offset)))
+    }
+
+    const response = await fetch(url, {
+      headers: {
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao listar links de pagamento' }
+    }
+
+    const payload = (await response.json()) as PaymentLinksListResponse
+    return { success: true, data: payload }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao listar links de pagamento',
+    }
+  }
+}
+
+export async function createManualPaymentLinkAction(input: {
+  amountCents: number
+  description?: string | null
+  expiresInHours?: number | null
+  expiresAt?: string | null
+  customerId: number
+  paymentType?: 'PIX' | 'BOLETO' | 'CARD'
+  paymentTypes?: Array<'PIX' | 'BOLETO' | 'CARD'>
+}): Promise<ApiResponse<PaymentLinkDetailResponse>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if (!session && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  if (!(hasAdminToken || session?.role === 'ADMIN' || session?.role === 'SALES_MANAGER')) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const normalizedAmount = Number(input.amountCents)
+  if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
+    return { success: false, error: 'amountCents inválido' }
+  }
+
+  const normalizedCustomerId = Number(input.customerId)
+  if (!Number.isFinite(normalizedCustomerId) || normalizedCustomerId <= 0) {
+    return { success: false, error: 'Cliente é obrigatório' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+  const normalizedPaymentTypes = Array.from(
+    new Set(
+      (Array.isArray(input.paymentTypes) ? input.paymentTypes : [input.paymentType || 'PIX'])
+        .map((entry) => String(entry || '').trim().toUpperCase())
+        .filter((entry) => ['PIX', 'BOLETO', 'CARD'].includes(entry))
+    )
+  ) as Array<'PIX' | 'BOLETO' | 'CARD'>
+
+  if (normalizedPaymentTypes.length === 0) {
+    return { success: false, error: 'Selecione ao menos um tipo de pagamento' }
+  }
+
+  const defaultPaymentType = normalizedPaymentTypes[0]
+
+  const expiresAt = String(input.expiresAt || '').trim()
+  let expiresInHours: number | undefined
+
+  if (expiresAt) {
+    const selectedDate = new Date(`${expiresAt}T23:59:59`)
+    if (Number.isNaN(selectedDate.getTime())) {
+      return { success: false, error: 'Data de expiração inválida' }
+    }
+
+    const diffMs = selectedDate.getTime() - Date.now()
+    const diffHours = Math.ceil(diffMs / (1000 * 60 * 60))
+    if (!Number.isFinite(diffHours) || diffHours <= 0) {
+      return { success: false, error: 'A data de expiração deve estar no futuro' }
+    }
+
+    expiresInHours = diffHours
+  } else if (Number.isInteger(input.expiresInHours) && Number(input.expiresInHours) > 0) {
+    expiresInHours = Number(input.expiresInHours)
+  }
+
+  try {
+    const response = await fetch(new URL('/payment-links', base), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      body: JSON.stringify({
+        amount_cents: Math.trunc(normalizedAmount),
+        description: input.description?.trim() || undefined,
+        customer_id: Math.trunc(normalizedCustomerId),
+        expires_in_hours: expiresInHours,
+        meta: {
+          payment_type: defaultPaymentType,
+          default_payment_type: defaultPaymentType,
+          payment_types: normalizedPaymentTypes,
+        },
+      }),
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao criar link avulso' }
+    }
+
+    const payload = (await response.json()) as PaymentLinkDetailResponse
+    revalidatePath('/payment-links')
+    return { success: true, data: payload }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao criar link avulso',
+    }
+  }
+}
+
+export async function updateManualPaymentLinkAction(
+  paymentLinkId: number,
+  input: {
+    amountCents: number
+    description?: string | null
+    expiresInHours?: number | null
+    expiresAt?: string | null
+    customerId: number
+    paymentType?: 'PIX' | 'BOLETO' | 'CARD'
+    paymentTypes?: Array<'PIX' | 'BOLETO' | 'CARD'>
+  }
+): Promise<ApiResponse<PaymentLinkDetailResponse>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if (!session && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  if (!(hasAdminToken || session?.role === 'ADMIN' || session?.role === 'SALES_MANAGER')) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const normalizedId = Number(paymentLinkId)
+  if (!Number.isFinite(normalizedId) || normalizedId <= 0) {
+    return { success: false, error: 'Link inválido' }
+  }
+
+  const normalizedAmount = Number(input.amountCents)
+  if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
+    return { success: false, error: 'amountCents inválido' }
+  }
+
+  const normalizedCustomerId = Number(input.customerId)
+  if (!Number.isFinite(normalizedCustomerId) || normalizedCustomerId <= 0) {
+    return { success: false, error: 'Cliente é obrigatório' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+  const normalizedPaymentTypes = Array.from(
+    new Set(
+      (Array.isArray(input.paymentTypes) ? input.paymentTypes : [input.paymentType || 'PIX'])
+        .map((entry) => String(entry || '').trim().toUpperCase())
+        .filter((entry) => ['PIX', 'BOLETO', 'CARD'].includes(entry))
+    )
+  ) as Array<'PIX' | 'BOLETO' | 'CARD'>
+
+  if (normalizedPaymentTypes.length === 0) {
+    return { success: false, error: 'Selecione ao menos um tipo de pagamento' }
+  }
+
+  const defaultPaymentType = normalizedPaymentTypes[0]
+
+  const expiresAt = String(input.expiresAt || '').trim()
+  let expiresInHours: number | undefined
+
+  if (expiresAt) {
+    const selectedDate = new Date(`${expiresAt}T23:59:59`)
+    if (Number.isNaN(selectedDate.getTime())) {
+      return { success: false, error: 'Data de expiração inválida' }
+    }
+
+    const diffMs = selectedDate.getTime() - Date.now()
+    const diffHours = Math.ceil(diffMs / (1000 * 60 * 60))
+    if (!Number.isFinite(diffHours) || diffHours <= 0) {
+      return { success: false, error: 'A data de expiração deve estar no futuro' }
+    }
+
+    expiresInHours = diffHours
+  } else if (Number.isInteger(input.expiresInHours) && Number(input.expiresInHours) > 0) {
+    expiresInHours = Number(input.expiresInHours)
+  }
+
+  try {
+    const response = await fetch(new URL(`/payment-links/${Math.trunc(normalizedId)}`, base), {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      body: JSON.stringify({
+        amount_cents: Math.trunc(normalizedAmount),
+        description: input.description?.trim() || undefined,
+        customer_id: Math.trunc(normalizedCustomerId),
+        expires_in_hours: expiresInHours,
+        meta: {
+          payment_type: defaultPaymentType,
+          default_payment_type: defaultPaymentType,
+          payment_types: normalizedPaymentTypes,
+        },
+      }),
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao editar link avulso' }
+    }
+
+    const payload = (await response.json()) as PaymentLinkDetailResponse
+    revalidatePath('/payment-links')
+    return { success: true, data: payload }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao editar link avulso',
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Standalone invoice (NF avulsa)
+// ---------------------------------------------------------------------------
+
+export interface StandaloneInvoiceRecipient {
+  name: string
+  cnpj?: string
+  cpf?: string
+  email?: string
+  phone?: string
+  zip: string
+  street: string
+  street_type?: string
+  number: string
+  complement?: string
+  district: string
+  city: string
+  state: string
+  city_code?: string
+}
+
+export interface StandaloneInvoiceItem {
+  description: string
+  ncm: string
+  cfop?: string
+  unit?: string
+  quantity: number
+  unit_price_cents: number
+}
+
+export interface CreateStandaloneInvoiceRequest {
+  operation_nature_id: number
+  recipient: StandaloneInvoiceRecipient
+  items: StandaloneInvoiceItem[]
+  note?: string
+}
+
+export async function createStandaloneInvoiceAction(
+  data: CreateStandaloneInvoiceRequest,
+): Promise<ApiResponse<OrderInvoice>> {
+  const session = await getSession()
+  const cookieStore = await cookies()
+  const hasAdminToken = Boolean(cookieStore.get('adminAuthToken')?.value)
+
+  if ((!session || !canManageOrders(session.role)) && !hasAdminToken) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const cookieHeader = await buildBackofficeCookieHeader()
+
+  try {
+    const response = await fetch(new URL('/orders/invoices/standalone', base), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      body: JSON.stringify(data),
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao emitir NF avulsa' }
+    }
+
+    const payload = (await response.json()) as BackendOrderInvoice
+    return { success: true, data: mapBackendOrderInvoice(payload) }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao emitir NF avulsa',
+    }
+  }
 }

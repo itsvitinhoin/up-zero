@@ -8,7 +8,7 @@ import { RefreshCw, AlertTriangle, Activity, Users } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button-1'
 import { KpiCard, SectionHeader } from '@/components/dashboard/shared'
-import { useDashboardData } from '@/contexts/dashboard-data'
+import { COHORT_DATA, DASHBOARD_CUSTOMERS } from '@/lib/dashboard-mock-data'
 
 const COL_LABELS = ['M0', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7']
 
@@ -26,8 +26,11 @@ function daysSince(date: Date | null): number {
   return Math.floor((Date.now() - date.getTime()) / (1000 * 60 * 60 * 24))
 }
 
+function fmtRoundedPct(value: number): string {
+  return `${Math.round(value)}%`
+}
+
 export default function DashboardRetention() {
-  const { cohortData: COHORT_DATA, customers: DASHBOARD_CUSTOMERS } = useDashboardData()
   const activeCustomers = DASHBOARD_CUSTOMERS.filter(c => c.status === 'active').length
 
   // Avg M1 retention
@@ -106,7 +109,7 @@ export default function DashboardRetention() {
                       return (
                         <td key={colIdx} className="px-2 py-2.5 text-center">
                           <span className={`inline-flex items-center justify-center rounded text-xs font-medium w-10 h-6 ${cls}`}>
-                            {value === null ? '—' : `${value}%`}
+                            {value === null ? '—' : fmtRoundedPct(value)}
                           </span>
                         </td>
                       )
@@ -152,14 +155,14 @@ export default function DashboardRetention() {
                 />
                 <YAxis
                   domain={[0, 100]}
-                  tickFormatter={v => `${v}%`}
+                  tickFormatter={(v) => fmtRoundedPct(Number(v || 0))}
                   tick={{ fontSize: 11, fill: 'var(--color-muted-foreground)' }}
                   axisLine={false}
                   tickLine={false}
                   width={36}
                 />
                 <Tooltip
-                  formatter={(v) => `${v}%`}
+                  formatter={(v) => fmtRoundedPct(Number(v || 0))}
                   contentStyle={{ borderRadius: 8, border: '1px solid var(--color-border)', fontSize: 12 }}
                 />
                 <Line
@@ -186,7 +189,7 @@ export default function DashboardRetention() {
                 Nenhum cliente em risco no momento
               </div>
             ) : (
-              <ul className="divide-y divide-border max-h-64 overflow-y-auto">
+              <ul className="divide-y divide-border">
                 {reEngagementCandidates.map(c => {
                   const days = daysSince(c.lastPurchaseAt)
                   return (

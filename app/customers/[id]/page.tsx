@@ -1,51 +1,54 @@
 import { notFound } from 'next/navigation'
+import { Suspense } from 'react'
+import { connection } from 'next/server'
+import { AdminRouteSkeleton } from '@/components/admin/admin-route-skeleton'
 import { CustomerDetail } from '@/components/admin/customer-detail'
 import { getCustomerDetailAction } from '@/lib/actions/customers'
 import { getPriceTablesAction } from '@/lib/actions/settings'
 import { getOrdersAction } from '@/lib/actions/orders'
 import { getAdminsAction } from '@/lib/actions/admins'
-import { adminMockCustomers, adminMockOrders, adminMockPriceTables } from '@/lib/admin-mock-data'
+import { getOnlineCustomerOfflineLinkAction } from '@/lib/actions/offline'
 import type { User } from '@/lib/types'
 
 export const metadata = {
   title: 'Detalhes do Cliente | Admin',
 }
 
-export const dynamic = 'force-dynamic'
-export const revalidate = 0
+export const instant = false
 
 interface Props {
   params: Promise<{ id: string }>
 }
 
-export default async function CustomerDetailPage({ params }: Props) {
+export default function CustomerDetailPage({ params }: Props) {
+  return (
+    <Suspense fallback={<AdminRouteSkeleton />}>
+      <CustomerDetailPageContent params={params} />
+    </Suspense>
+  )
+}
+
+async function CustomerDetailPageContent({ params }: Props) {
+  await connection()
+
   const { id } = await params
 
-  const [customerResult, priceTablesResult, ordersResult, adminsResult] = await Promise.all([
+  const [customerResult, priceTablesResult, ordersResult, adminsResult, offlineLinkResult] = await Promise.all([
     getCustomerDetailAction(id),
     getPriceTablesAction(),
-    getOrdersAction({ customerId: id }),
+    getOrdersAction({ customerId: id, cardMode: true }),
     getAdminsAction(),
+    getOnlineCustomerOfflineLinkAction(id),
   ])
 
-  // Fall back to mock data when the API doesn't have this customer
-  const mockCustomer = adminMockCustomers.find((c) => c.id === id)
-
   if (!customerResult.success || !customerResult.data) {
-    if (!mockCustomer) notFound()
+    notFound()
   }
 
-  const customer = (customerResult.success && customerResult.data) ? customerResult.data : mockCustomer!
-
-  const priceTables = priceTablesResult.success && priceTablesResult.data?.length
-    ? priceTablesResult.data
-    : adminMockPriceTables
-
-  const orders = ordersResult.success && ordersResult.data?.length
-    ? ordersResult.data
-    : adminMockOrders.filter((o) => o.customerId === id)
-
-  const sellers: User[] = adminsResult.success && adminsResult.data?.length
+  const customer = customerResult.data
+  const priceTables = priceTablesResult.success && priceTablesResult.data ? priceTablesResult.data : []
+  const orders = ordersResult.success && ordersResult.data ? ordersResult.data : []
+  const sellers: User[] = adminsResult.success && adminsResult.data
     ? adminsResult.data.map((admin) => ({
         id: String(admin.id),
         name: admin.name,
@@ -53,19 +56,18 @@ export default async function CustomerDetailPage({ params }: Props) {
         passwordHash: '',
         role: 'SELLER',
         isActive: admin.active,
-        createdAt: admin.createdAt ? new Date(admin.createdAt) : new Date(),
-        updatedAt: admin.updatedAt ? new Date(admin.updatedAt) : new Date(),
+        createdAt: admin.createdAt ? new Date(admin.createdAt) : new Date(0),
+        updatedAt: admin.updatedAt ? new Date(admin.updatedAt) : new Date(0),
       }))
-    : [
-        { id: 'seller-1', name: 'Ana Souza', email: 'ana@loja.com', passwordHash: '', role: 'SELLER', isActive: true, createdAt: new Date(), updatedAt: new Date() },
-        { id: 'seller-2', name: 'Renata Lima', email: 'renata@loja.com', passwordHash: '', role: 'SELLER', isActive: true, createdAt: new Date(), updatedAt: new Date() },
-      ]
-
+    : []
   const seller = sellers.find((item) => item.id === customer.assignedSellerId)
   const priceTable = priceTables.find((table) => table.id === customer.priceTableId)
 
+  const offlineLink =
+    offlineLinkResult.success && offlineLinkResult.data ? offlineLinkResult.data : null
+
   return (
-    <div className="space-y-6 p-4 sm:p-6 lg:p-8">
+    <div className="space-y-6 p-6 lg:p-8">
       <CustomerDetail
         customer={customer}
         user={undefined}
@@ -76,6 +78,7 @@ export default async function CustomerDetailPage({ params }: Props) {
         auditLogs={[]}
         orders={orders}
         canManage
+        offlineLink={offlineLink}
       />
     </div>
   )

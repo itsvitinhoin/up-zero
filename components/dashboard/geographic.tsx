@@ -6,27 +6,25 @@ import {
 import { MapPin, Star, Building2, TrendingUp } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { KpiCard, SectionHeader, currencyTooltipFormatter } from '@/components/dashboard/shared'
-import { fmt, fmtPct } from '@/lib/dashboard-mock-data'
-import { useDashboardData } from '@/contexts/dashboard-data'
+import { GEO_DATA, fmt, fmtPct } from '@/lib/dashboard-mock-data'
+
+// ── Derived data ─────────────────────────────────────────────────────────────
+const sortedStates = [...GEO_DATA].sort((a, b) => b.requested - a.requested)
+const maxRequested = sortedStates[0]?.requested ?? 1
+const topState = sortedStates[0]
+
+const allCities = GEO_DATA.flatMap(g =>
+  g.cities.map(c => ({ ...c, stateCode: g.stateCode }))
+).sort((a, b) => b.revenue - a.revenue).slice(0, 10)
+const topCity = allCities[0]
+
+const totalRequested = GEO_DATA.reduce((s, g) => s + g.requested, 0)
+const spEntry = GEO_DATA.find(g => g.stateCode === 'SP')
+const spPct = spEntry ? (spEntry.requested / totalRequested) * 100 : 0
+
+const top8 = sortedStates.slice(0, 8)
 
 export default function DashboardGeographic() {
-  const { geoData: GEO_DATA } = useDashboardData()
-
-  const sortedStates = [...GEO_DATA].sort((a, b) => b.requested - a.requested)
-  const maxRequested = sortedStates[0]?.requested ?? 1
-  const topState     = sortedStates[0]
-
-  const allCities = GEO_DATA.flatMap(g =>
-    g.cities.map(c => ({ ...c, stateCode: g.stateCode }))
-  ).sort((a, b) => b.revenue - a.revenue).slice(0, 10)
-  const topCity = allCities[0]
-
-  const totalRequested = GEO_DATA.reduce((s, g) => s + g.requested, 0)
-  const spEntry = GEO_DATA.find(g => g.stateCode === 'SP')
-  const spPct   = spEntry && totalRequested > 0 ? (spEntry.requested / totalRequested) * 100 : 0
-
-  const top8 = sortedStates.slice(0, 8)
-
   return (
     <div className="space-y-6">
       <SectionHeader
@@ -181,43 +179,54 @@ export default function DashboardGeographic() {
         </Card>
       </div>
 
-      {/* Geographic insights — dynamic */}
-      {sortedStates.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Insights Geográficos</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              {sortedStates.slice(0, 4).map((g, i) => {
-                const COLORS = [
-                  { color: '#6366f1', bg: '#eef2ff' },
-                  { color: '#f59e0b', bg: '#fffbeb' },
-                  { color: '#10b981', bg: '#d1fae5' },
-                  { color: '#a855f7', bg: '#f3e8ff' },
-                ]
-                const { color, bg } = COLORS[i]
-                const rate  = g.requested > 0 ? ((g.fulfilled / g.requested) * 100).toFixed(0) : '0'
-                const share = totalRequested > 0 ? ((g.requested / totalRequested) * 100).toFixed(0) : '0'
-                const topCity = g.cities[0]
-                return (
-                  <div key={g.stateCode} className="rounded-xl p-4 border" style={{ backgroundColor: bg, borderColor: color + '40' }}>
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="size-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
-                      <span className="text-xs font-semibold text-foreground">{g.stateCode} — {g.state}</span>
-                    </div>
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      {g.customers} cliente{g.customers !== 1 ? 's' : ''}, {g.orders} pedido{g.orders !== 1 ? 's' : ''}.
-                      {' '}{share}% da receita total. Taxa de realização {rate}%.
-                      {topCity ? ` Cidade top: ${topCity.city}.` : ''}
-                    </p>
-                  </div>
-                )
-              })}
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {/* Geographic insights */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Insights Geográficos</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {[
+              {
+                label: 'Sudeste dominante',
+                text: 'SP concentra 28% dos clientes e 27% da receita',
+                color: '#6366f1',
+                bg: '#eef2ff',
+              },
+              {
+                label: 'Nordeste emergente',
+                text: 'CE + PE + PB = 5 clientes, potencial R$ 73.200',
+                color: '#f59e0b',
+                bg: '#fffbeb',
+              },
+              {
+                label: 'Sul consolidado',
+                text: 'RS + PR + SC = 10 clientes com boa recorrência',
+                color: '#10b981',
+                bg: '#d1fae5',
+              },
+              {
+                label: 'Centro-Oeste crescimento',
+                text: 'GO + DF = 2 clientes com alto ticket médio',
+                color: '#a855f7',
+                bg: '#f3e8ff',
+              },
+            ].map(ins => (
+              <div
+                key={ins.label}
+                className="rounded-xl p-4 border"
+                style={{ backgroundColor: ins.bg, borderColor: ins.color + '40' }}
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="size-2 rounded-full shrink-0" style={{ backgroundColor: ins.color }} />
+                  <span className="text-xs font-semibold text-foreground">{ins.label}</span>
+                </div>
+                <p className="text-xs text-muted-foreground leading-relaxed">{ins.text}</p>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   )
 }

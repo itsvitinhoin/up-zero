@@ -46,6 +46,7 @@ import {
 } from "@/lib/actions/asset-categories"
 import type { Category } from "@/lib/types"
 import { useToast } from "@/hooks/use-toast"
+import { useAdminStore } from "@/contexts/admin-store-context"
 
 interface AdminAssetCategoriesPageClientProps {
   initialCategories: Category[]
@@ -58,6 +59,7 @@ export default function AdminAssetCategoriesPageClient({
 }: AdminAssetCategoriesPageClientProps) {
   const router = useRouter()
   const { toast } = useToast()
+  const { session } = useAdminStore()
   const [categories, setCategories] = useState<Category[]>(initialCategories)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [editingCategory, setEditingCategory] = useState<Category | null>(null)
@@ -70,6 +72,12 @@ export default function AdminAssetCategoriesPageClient({
   const [isSaving, setIsSaving] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [categoryToDelete, setCategoryToDelete] = useState<string | null>(null)
+  const permissionCodes = Array.isArray(session?.permissionCodes)
+    ? session.permissionCodes.map((code) => String(code || '').trim().toLowerCase()).filter(Boolean)
+    : null
+  const canCreateAssets = permissionCodes === null || permissionCodes.includes('assets.create')
+  const canEditAssets = permissionCodes === null || permissionCodes.includes('assets.edit')
+  const canDeleteAssets = permissionCodes === null || permissionCodes.includes('assets.delete')
 
   useEffect(() => {
     setCategories(initialCategories)
@@ -92,6 +100,11 @@ export default function AdminAssetCategoriesPageClient({
   }
 
   function openCreateDialog() {
+    if (!canCreateAssets) {
+      toast({ description: "Você não tem permissão para criar assets", variant: "destructive" })
+      return
+    }
+
     setEditingCategory(null)
     setFormData({
       name: "",
@@ -102,6 +115,11 @@ export default function AdminAssetCategoriesPageClient({
   }
 
   function openEditDialog(category: Category) {
+    if (!canEditAssets) {
+      toast({ description: "Você não tem permissão para editar assets", variant: "destructive" })
+      return
+    }
+
     setEditingCategory(category)
     setFormData({
       name: category.name,
@@ -113,6 +131,15 @@ export default function AdminAssetCategoriesPageClient({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    if (editingCategory && !canEditAssets) {
+      toast({ description: "Você não tem permissão para editar assets", variant: "destructive" })
+      return
+    }
+    if (!editingCategory && !canCreateAssets) {
+      toast({ description: "Você não tem permissão para criar assets", variant: "destructive" })
+      return
+    }
+
     if (!formData.name.trim()) {
       toast({
         description: "Nome é obrigatório",
@@ -185,12 +212,21 @@ export default function AdminAssetCategoriesPageClient({
   }
 
   function handleDelete(id: string) {
+    if (!canDeleteAssets) {
+      toast({ description: "Você não tem permissão para excluir assets", variant: "destructive" })
+      return
+    }
+
     setCategoryToDelete(id)
     setDeleteDialogOpen(true)
   }
 
   async function confirmDelete() {
     if (!categoryToDelete) return
+    if (!canDeleteAssets) {
+      toast({ description: "Você não tem permissão para excluir assets", variant: "destructive" })
+      return
+    }
 
     try {
       const result = await deleteAssetCategoryAction(categoryToDelete)
@@ -232,12 +268,14 @@ export default function AdminAssetCategoriesPageClient({
           <p className="text-sm text-muted-foreground">Organize seus assets em categorias próprias</p>
         </div>
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-          <DialogTrigger asChild>
-            <Button onClick={openCreateDialog} className="cursor-pointer">
-              <Plus className="mr-2 h-4 w-4" />
-              Nova Categoria de Asset
-            </Button>
-          </DialogTrigger>
+          {canCreateAssets ? (
+            <DialogTrigger asChild>
+              <Button onClick={openCreateDialog} className="cursor-pointer">
+                <Plus className="mr-2 h-4 w-4" />
+                Nova Categoria de Asset
+              </Button>
+            </DialogTrigger>
+          ) : null}
           <DialogContent>
             <DialogHeader>
               <DialogTitle>
@@ -355,29 +393,35 @@ export default function AdminAssetCategoriesPageClient({
                     )}
                   </TableCell>
                   <TableCell>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" className="cursor-pointer">
-                          <MoreHorizontal className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          onClick={() => openEditDialog(category)}
-                          className="cursor-pointer"
-                        >
-                          <Pencil className="mr-2 h-4 w-4" />
-                          Editar
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={() => handleDelete(category.id)}
-                          className="cursor-pointer text-destructive"
-                        >
-                          <Trash2 className="mr-2 h-4 w-4" />
-                          Deletar
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                    {canEditAssets || canDeleteAssets ? (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="cursor-pointer">
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          {canEditAssets ? (
+                            <DropdownMenuItem
+                              onClick={() => openEditDialog(category)}
+                              className="cursor-pointer"
+                            >
+                              <Pencil className="mr-2 h-4 w-4" />
+                              Editar
+                            </DropdownMenuItem>
+                          ) : null}
+                          {canDeleteAssets ? (
+                            <DropdownMenuItem
+                              onClick={() => handleDelete(category.id)}
+                              className="cursor-pointer text-destructive"
+                            >
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              Deletar
+                            </DropdownMenuItem>
+                          ) : null}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    ) : null}
                   </TableCell>
                 </TableRow>
               ))

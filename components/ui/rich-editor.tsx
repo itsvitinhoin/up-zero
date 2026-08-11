@@ -3,6 +3,7 @@
 import { useEffect } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
+import Underline from '@tiptap/extension-underline'
 import { Bold, Italic, List, ListOrdered, Redo2, Strikethrough, Underline as UnderlineIcon, Undo2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -22,7 +23,7 @@ export function RichEditor({
   className,
 }: RichEditorProps) {
   const editor = useEditor({
-    extensions: [StarterKit],
+    extensions: [StarterKit, Underline],
     content: value,
     editorProps: {
       attributes: {

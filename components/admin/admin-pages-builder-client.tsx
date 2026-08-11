@@ -12,12 +12,13 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { ImageUpload } from "@/components/ui/image-upload";
+import RichTextEditor from "@/components/form/RichTextEditor";
 import {
   ArrowLeft, Save, Plus, ArrowUp, ArrowDown, Trash2,
   Heading, AlignLeft, MousePointer, Image as ImageIcon,
   CircleUser, Minus, Square, Code, Columns3, BoxSelect,
   ChevronLeft, Settings, Eye, ExternalLink, X,
-  AlignCenter, AlignRight, LayoutTemplate,
+  AlignCenter, AlignRight, LayoutTemplate, Video,
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -28,6 +29,7 @@ import type { InstitutionalPage } from "@/lib/types";
 
 export type BlockType =
   | "heading" | "text" | "button" | "image"
+  | "videoGallery"
   | "avatar" | "divider" | "spacer" | "html"
   | "columns" | "container"
   // legacy (hidden from palette, still renderable)
@@ -44,6 +46,59 @@ function uid() {
   return Math.random().toString(36).slice(2, 11);
 }
 
+type VideoGalleryItem = {
+  url: string;
+  thumbUrl: string;
+};
+
+function normalizeVideoGalleryItems(rawVideos: unknown): VideoGalleryItem[] {
+  if (!Array.isArray(rawVideos)) {
+    return [];
+  }
+
+  return rawVideos
+    .map((item) => {
+      if (typeof item === "string") {
+        return {
+          url: item,
+          thumbUrl: "",
+        };
+      }
+
+      if (item && typeof item === "object") {
+        const candidate = item as {
+          url?: unknown;
+          videoUrl?: unknown;
+          thumbUrl?: unknown;
+          thumbnailUrl?: unknown;
+          thumb?: unknown;
+          poster?: unknown;
+        };
+
+        const url = String(candidate.url ?? candidate.videoUrl ?? "").trim();
+        const thumbUrl = String(
+          candidate.thumbUrl
+          ?? candidate.thumbnailUrl
+          ?? candidate.thumb
+          ?? candidate.poster
+          ?? "",
+        ).trim();
+
+        if (!url) {
+          return null;
+        }
+
+        return {
+          url,
+          thumbUrl,
+        };
+      }
+
+      return null;
+    })
+    .filter((item): item is VideoGalleryItem => Boolean(item));
+}
+
 // ─── Block Catalogue ────────────────────────────────────────────────────────
 
 interface BlockMeta {
@@ -57,6 +112,7 @@ const BLOCK_CATALOGUE: Record<string, BlockMeta> = {
   text:      { name: "Text",      icon: <AlignLeft size={20} />,    defaults: { content: "<p>Seu texto aqui...</p>" } },
   button:    { name: "Button",    icon: <MousePointer size={20} />, defaults: { label: "Clique Aqui", url: "/", variant: "primary", align: "left" } },
   image:     { name: "Image",     icon: <ImageIcon size={20} />,    defaults: { src: "", alt: "", width: 100, borderRadius: 0 } },
+  videoGallery: { name: "Galeria de Vídeos", icon: <Video size={20} />, defaults: { title: "Galeria de Vídeos", sectionId: "", videos: [], orientation: "horizontal" } },
   avatar:    { name: "Avatar",    icon: <CircleUser size={20} />,   defaults: { src: "", size: 80, shape: "circle" } },
   divider:   { name: "Divider",   icon: <Minus size={20} />,        defaults: { style: "solid", color: "#e2e8f0", widthPercent: 100 } },
   spacer:    { name: "Spacer",    icon: <Square size={20} />,       defaults: { height: 40 } },
@@ -302,8 +358,14 @@ export default function AdminPagesBuilderClient({ storeId, page }: BuilderProps)
 
       case "text":
         return (<>
-          <div className="space-y-2"><Label>Conteúdo (HTML)</Label>
-            <Textarea className="min-h-[200px] max-h-[80vh]  font-mono text-xs" value={d.content} onChange={e => set({ content: e.target.value })} />
+          <div className="space-y-2">
+            <Label>Conteúdo</Label>
+            <RichTextEditor
+              value={d.content || ""}
+              onChange={({ html }) => set({ content: html })}
+              minHeight={200}
+              maxHeight={480}
+            />
           </div>
         </>);
 
@@ -339,6 +401,20 @@ export default function AdminPagesBuilderClient({ storeId, page }: BuilderProps)
             </div>
           </div>
         </>);
+
+      case "videoGallery":
+        return (
+          <VideoGalleryEditor
+            title={d.title || ""}
+            sectionId={d.sectionId || ""}
+            videos={normalizeVideoGalleryItems(d.videos)}
+            orientation={d.orientation === "vertical" ? "vertical" : "horizontal"}
+            onTitleChange={(value) => set({ title: value })}
+            onSectionIdChange={(value) => set({ sectionId: value })}
+            onVideosChange={(videos) => set({ videos })}
+            onOrientationChange={(orientation) => set({ orientation })}
+          />
+        );
 
       case "avatar":
         return (<>
@@ -669,6 +745,59 @@ function BlockPreview({ block, isSelected, onSelect, onMoveUp, onMoveDown, onDel
         </div>
       )}
 
+      {block.type === "videoGallery" && (
+        <div className="px-8 py-8" id={typeof d.sectionId === "string" && d.sectionId.trim() ? d.sectionId.trim() : undefined}>
+          <h3 className="text-xl font-semibold mb-4">{d.title || "Galeria de Vídeos"}</h3>
+          {(() => {
+            const orientation = d.orientation === "vertical" ? "vertical" : "horizontal";
+            const wrapperClass = orientation === "vertical" ? "w-[240px] sm:w-[280px]" : "w-[320px] sm:w-[420px]";
+            const mediaClass = orientation === "vertical" ? "w-full h-[420px] object-cover" : "w-full h-56 object-cover";
+
+            return (
+              <>
+          {Array.isArray(d.videos) && d.videos.length > 0 ? (
+            <div className="flex gap-4 overflow-x-auto pb-2 snap-x snap-mandatory overscroll-x-contain">
+              {normalizeVideoGalleryItems(d.videos)
+                .map((item: VideoGalleryItem, index: number) => {
+                  const normalizedUrl = item.url.trim();
+                  const normalizedThumbUrl = item.thumbUrl.trim();
+                  const isBunnyEmbed = /iframe\.mediadelivery\.net\/embed\//i.test(normalizedUrl);
+
+                  return (
+                    <div key={`${item.url}-${index}`} className={`shrink-0 snap-start rounded-lg border bg-black/90 overflow-hidden ${wrapperClass}`}>
+                      {isBunnyEmbed ? (
+                        <iframe
+                          src={normalizedUrl}
+                          className={mediaClass}
+                          loading="lazy"
+                          allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture;"
+                          allowFullScreen
+                        />
+                      ) : (
+                        <video
+                          src={normalizedUrl}
+                          controls
+                          preload="metadata"
+                          poster={normalizedThumbUrl || undefined}
+                          className={mediaClass}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+            </div>
+          ) : (
+            <div className="border-2 border-dashed rounded-lg py-8 text-center text-muted-foreground text-sm">
+              <Video size={24} className="mx-auto mb-2 opacity-40" />
+              Nenhum vídeo configurado
+            </div>
+          )}
+              </>
+            );
+          })()}
+        </div>
+      )}
+
       {block.type === "avatar" && (
         <div className="px-8 py-4 flex justify-center">
           {d.src ? (
@@ -790,6 +919,327 @@ function BlockPreview({ block, isSelected, onSelect, onMoveUp, onMoveDown, onDel
           ))}</div>
         </div>
       )}
+    </div>
+  );
+}
+
+function VideoGalleryEditor({
+  title,
+  sectionId,
+  videos,
+  orientation,
+  onTitleChange,
+  onSectionIdChange,
+  onVideosChange,
+  onOrientationChange,
+}: {
+  title: string;
+  sectionId: string;
+  videos: VideoGalleryItem[];
+  orientation: "horizontal" | "vertical";
+  onTitleChange: (value: string) => void;
+  onSectionIdChange: (value: string) => void;
+  onVideosChange: (videos: VideoGalleryItem[]) => void;
+  onOrientationChange: (value: "horizontal" | "vertical") => void;
+}) {
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadUrlType, setUploadUrlType] = useState<"360p" | "480p" | "m3u8">("m3u8");
+
+  const normalizeSectionId = (value: string) =>
+    String(value || "")
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9_-]/g, "");
+
+  const convertBunnyVideoUrl = (url: string, targetType: "360p" | "480p" | "m3u8") => {
+    const normalized = String(url || "").trim();
+    if (!normalized) return normalized;
+
+    const suffixPattern = /\/(playlist\.m3u8|play_480p\.mp4|play_360p\.mp4)$/i;
+    if (!suffixPattern.test(normalized)) {
+      return normalized;
+    }
+
+    const baseUrl = normalized.replace(suffixPattern, "");
+
+    if (targetType === "m3u8") {
+      return `${baseUrl}/playlist.m3u8`;
+    }
+
+    if (targetType === "480p") {
+      return `${baseUrl}/play_480p.mp4`;
+    }
+
+    return `${baseUrl}/play_360p.mp4`;
+  };
+
+  const setVideoAt = (index: number, value: string) => {
+    const next = [...videos];
+    next[index] = {
+      ...next[index],
+      url: value,
+    };
+    onVideosChange(next);
+  };
+
+  const setVideoThumbAt = (index: number, value: string) => {
+    const next = [...videos];
+    next[index] = {
+      ...next[index],
+      thumbUrl: value,
+    };
+    onVideosChange(next);
+  };
+
+  const removeVideoAt = (index: number) => {
+    const next = videos.filter((_, i) => i !== index);
+    onVideosChange(next);
+  };
+
+  const moveVideoAt = (index: number, direction: "up" | "down") => {
+    const current = Array.isArray(videos) ? [...videos] : [];
+    const targetIndex = direction === "up" ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= current.length) return;
+
+    const temp = current[index];
+    current[index] = current[targetIndex];
+    current[targetIndex] = temp;
+    onVideosChange(current);
+  };
+
+  const addEmptyVideo = () => {
+    onVideosChange([...(Array.isArray(videos) ? videos : []), { url: "", thumbUrl: "" }]);
+  };
+
+  const handleUploadUrlTypeChange = (nextType: "360p" | "480p" | "m3u8") => {
+    setUploadUrlType(nextType);
+    const converted = (Array.isArray(videos) ? videos : []).map((item) => ({
+      ...item,
+      url: convertBunnyVideoUrl(item.url, nextType),
+    }));
+    onVideosChange(converted);
+  };
+
+  const handleUploadVideo = async (file: File) => {
+    setIsUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch("/api/upload/video", {
+        method: "POST",
+        body: formData,
+      });
+
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result?.error || "Falha no upload do vídeo");
+      }
+
+      const hlsUrl = String(result?.hlsUrl || result?.url || "").trim();
+      const mp4_360pUrl = String(result?.mp4_360pUrl || "").trim();
+      const mp4_480pUrl = String(result?.mp4_480pUrl || "").trim();
+      const uploadedUrl = uploadUrlType === "360p"
+        ? (mp4_360pUrl || mp4_480pUrl || hlsUrl)
+        : uploadUrlType === "480p"
+          ? (mp4_480pUrl || mp4_360pUrl || hlsUrl)
+          : (hlsUrl || mp4_480pUrl || mp4_360pUrl);
+      if (!uploadedUrl) {
+        throw new Error("Upload concluído sem URL retornada");
+      }
+
+      onVideosChange([...(Array.isArray(videos) ? videos : []), { url: uploadedUrl, thumbUrl: "" }]);
+      toast.success("Vídeo enviado com sucesso");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Erro ao enviar vídeo");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="space-y-2">
+        <Label>Título da Galeria</Label>
+        <Input value={title} onChange={(e) => onTitleChange(e.target.value)} placeholder="Galeria de Vídeos" />
+      </div>
+
+      <div className="space-y-2">
+        <Label>ID da Seção</Label>
+        <Input
+          value={sectionId}
+          onChange={(e) => onSectionIdChange(normalizeSectionId(e.target.value))}
+          placeholder="secao-videos-home"
+        />
+        <p className="text-xs text-muted-foreground">Usado para integrações, âncoras (#id) e customização via CSS/JS.</p>
+      </div>
+
+      <div className="space-y-2">
+        <Label>Orientação do Vídeo</Label>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant={orientation === "horizontal" ? "default" : "outline"}
+            className="w-full"
+            onClick={() => onOrientationChange("horizontal")}
+          >
+            Horizontal
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={orientation === "vertical" ? "default" : "outline"}
+            className="w-full"
+            onClick={() => onOrientationChange("vertical")}
+          >
+            Vertical
+          </Button>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <Label>Vídeos</Label>
+          <Button type="button" size="sm" variant="outline" onClick={addEmptyVideo}>
+            <Plus className="h-3.5 w-3.5 mr-1" />
+            Adicionar URL
+          </Button>
+        </div>
+
+        <VideoUploadButton
+          isUploading={isUploading}
+          uploadUrlType={uploadUrlType}
+          onUploadUrlTypeChange={handleUploadUrlTypeChange}
+          onUpload={handleUploadVideo}
+        />
+
+        {videos.length === 0 && (
+          <p className="text-xs text-muted-foreground">Nenhum vídeo adicionado.</p>
+        )}
+
+        {videos.length > 0 && (
+          <div className="max-h-80 overflow-y-auto pr-1 space-y-2">
+            {videos.map((video, index) => (
+              <div key={`video-input-${index}`} className="space-y-2 border rounded-md p-2">
+                <Input
+                  className="w-full min-w-0"
+                  value={video?.url || ""}
+                  onChange={(e) => setVideoAt(index, e.target.value)}
+                  placeholder="https://.../video.mp4"
+                />
+                <Input
+                  className="w-full min-w-0"
+                  value={video?.thumbUrl || ""}
+                  onChange={(e) => setVideoThumbAt(index, e.target.value)}
+                  placeholder="https://.../thumb.jpg"
+                />
+                <div className="flex items-center gap-2 justify-end">
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    disabled={index === 0}
+                    onClick={() => moveVideoAt(index, "up")}
+                    aria-label={`Subir vídeo ${index + 1}`}
+                    title="Mover para cima"
+                  >
+                    <ArrowUp className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    disabled={index === videos.length - 1}
+                    onClick={() => moveVideoAt(index, "down")}
+                    aria-label={`Descer vídeo ${index + 1}`}
+                    title="Mover para baixo"
+                  >
+                    <ArrowDown className="h-4 w-4" />
+                  </Button>
+                  <Button type="button" size="icon" variant="outline" className="shrink-0" onClick={() => removeVideoAt(index)}>
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function VideoUploadButton({
+  isUploading,
+  uploadUrlType,
+  onUploadUrlTypeChange,
+  onUpload,
+}: {
+  isUploading: boolean;
+  uploadUrlType: "360p" | "480p" | "m3u8";
+  onUploadUrlTypeChange: (value: "360p" | "480p" | "m3u8") => void;
+  onUpload: (file: File) => Promise<void>;
+}) {
+  const inputId = "video-upload-input";
+
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={inputId}>Upload de Vídeo</Label>
+      <div className="flex items-center gap-2">
+        <Input
+          id={inputId}
+          type="file"
+          accept="video/mp4,video/webm,video/ogg,video/quicktime"
+          disabled={isUploading}
+          onChange={async (e) => {
+            const input = e.currentTarget;
+            const file = input.files?.[0];
+            if (!file) return;
+            await onUpload(file);
+            input.value = "";
+          }}
+        />
+      </div>
+      <div className="space-y-2 rounded-md border p-2">
+        <Label className="text-xs">Formato da URL ao adicionar</Label>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant={uploadUrlType === "360p" ? "default" : "outline"}
+            className="w-full"
+            disabled={isUploading}
+            onClick={() => onUploadUrlTypeChange("360p")}
+          >
+            360
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={uploadUrlType === "480p" ? "default" : "outline"}
+            className="w-full"
+            disabled={isUploading}
+            onClick={() => onUploadUrlTypeChange("480p")}
+          >
+            480
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={uploadUrlType === "m3u8" ? "default" : "outline"}
+            className="w-full"
+            disabled={isUploading}
+            onClick={() => onUploadUrlTypeChange("m3u8")}
+          >
+            m3u8
+          </Button>
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Após o upload, a URL retornada é adicionada automaticamente na lista.
+      </p>
     </div>
   );
 }

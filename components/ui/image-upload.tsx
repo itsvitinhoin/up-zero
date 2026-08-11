@@ -6,14 +6,18 @@ import { useState, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Upload, X, ImageIcon, Loader2 } from "lucide-react"
 import Image from "next/image"
+import { CloudflareImage } from "@/components/ui/cloudflare-image"
 
 // Standard e-commerce image dimensions
 export const IMAGE_DIMENSIONS = {
   logo: { width: 200, height: 60, label: 'Logo', aspectRatio: '200x60px' },
   favicon: { width: 32, height: 32, label: 'Favicon', aspectRatio: '32x32px' },
+  loginSideImage: { width: 768, height: 885, label: 'Imagem de Login', aspectRatio: '768x885px' },
   mainBanner: { width: 1500, height: 600, label: 'Banner Principal', aspectRatio: '1500x600px' },
+  mainBannerMobile: { width: 1000, height: 1500, label: 'Banner Mobile', aspectRatio: '1000x1500px' },
+  popupSquare: { width: 1500, height: 1500, label: 'Popup', aspectRatio: '1500x1500px' },
   categoryBanner: { width: 1200, height: 400, label: 'Banner de Categoria', aspectRatio: '1200x400px' },
-  productImage: { width: 640, height: 840, label: 'Imagem de Produto', aspectRatio: '640x840px' },
+  productImage: { width: 683, height: 1024, label: 'Imagem de Produto', aspectRatio: '683x1024px' },
   productThumbnail: { width: 320, height: 420, label: 'Miniatura', aspectRatio: '320x420px' },
   pageContent: { width: 1200, height: 800, label: 'Imagem de Página', aspectRatio: '1200x800px' },
 } as const
@@ -30,10 +34,10 @@ interface ImageUploadProps {
   hideRecommendation?: boolean
 }
 
-export function ImageUpload({ 
-  value, 
-  onChange, 
-  imageType, 
+export function ImageUpload({
+  value,
+  onChange,
+  imageType,
   folder = 'uploads',
   disabled = false,
   className = '',
@@ -42,7 +46,7 @@ export function ImageUpload({
   const [isUploading, setIsUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  
+
   const dimensions = IMAGE_DIMENSIONS[imageType]
 
   async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
@@ -106,15 +110,16 @@ export function ImageUpload({
           Tamanho recomendado: {dimensions.aspectRatio}
         </div>
       )}
-      
+
       {value ? (
-        <div className="relative inline-block w-full max-w-[400px]">
-          <div 
+        <div className="relative inline-block w-full max-w-100">
+          <div
             className="relative border rounded-lg overflow-hidden bg-muted w-full"
             style={{ aspectRatio }}
           >
-            <Image
+            <CloudflareImage
               src={value || "/placeholder.svg"}
+              cloudflare={{ width: dimensions.width, height: dimensions.height, fit: "cover", dpr: 2 }}
               alt={dimensions.label}
               fill
               className="object-contain"
@@ -138,7 +143,7 @@ export function ImageUpload({
         </div>
       ) : (
         <div
-          className="border-2 border-dashed rounded-lg p-6 text-center cursor-pointer hover:border-primary/50 hover:bg-muted/50 transition-colors w-full max-w-[400px]"
+          className="border-2 border-dashed rounded-lg p-6 text-center cursor-pointer hover:border-primary/50 hover:bg-muted/50 transition-colors w-full max-w-100"
           style={{ aspectRatio: Math.max(aspectRatio, 1.5) }}
           onClick={() => !disabled && !isUploading && fileInputRef.current?.click()}
         >

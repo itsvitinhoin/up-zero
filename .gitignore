@@ -16,6 +16,10 @@ build/
 .env.local
 .env.*.local
 
+# local sandbox and generated deliveries
+.sandbox/
+output/
+
 # vercel / misc
 .vercel
 .data

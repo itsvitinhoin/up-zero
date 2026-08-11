@@ -15,6 +15,7 @@ export interface CartWithCalculation extends Cart {
   discountAmount: number
   couponDiscountAmount: number
   tierDiscountAmount: number
+  paymentMethodDiscountAmount?: number
   total: number
   shippingAmount?: number
   shippingMethodId?: string | null
@@ -22,7 +23,10 @@ export interface CartWithCalculation extends Cart {
   paymentMethodId?: string | null
   paymentOptionCode?: string | null
   checkoutNotes?: string | null
+  assistedCustomerId?: string | null
+  assistedCustomerName?: string | null
   manualDiscountAmount?: number
+  manualDiscountBps?: number
   appliedCoupon: {
     code: string
     discountType: 'PERCENTAGE' | 'FIXED'
@@ -46,6 +50,14 @@ interface BackendCartItem {
   tier_discount_cents?: number
   payment_method_discount_cents?: number
   manual_discount_cents?: number
+  composition_instance_id?: number | null
+  composition_instance_quantity?: number | null
+  composition_item_id?: number | null
+  composition_group_uuid?: string | null
+  composition_name_snapshot?: string | null
+  composition_pricing_mode_snapshot?: string | null
+  composition_display_mode_snapshot?: string | null
+  composition_discount_allocated_cents?: number | null
   product_name: string
   product_code: string
   variant_sku?: string | null
@@ -55,11 +67,16 @@ interface BackendCartItem {
 
 interface BackendCart {
   id: number
+  client_id?: number | null
   total_items: number
   total_price_cents: number
   coupon_code?: string | null
   coupon_discount_cents: number
   tier_discount_cents: number
+  payment_method_discount_cents?: number
+  manual_discount_cents?: number
+  total_discount_cents?: number
+  grand_total_cents?: number
   payment_method_id?: number | null
   shipping_method_id?: number | null
   shipping_price_cents: number
@@ -75,10 +92,59 @@ interface BackendCart {
     }
     checkout?: {
       notes?: string | null
+      assisted_customer_id?: number | string | null
+      assisted_customer_name?: string | null
       manual_discount_cents?: number | null
+      manual_discount_bps?: number | null
     }
   }
   items: BackendCartItem[]
+}
+
+export interface AddCompositionToCartBackendResponse {
+  instance_id: number
+  composition_id: number
+  cart_id: number
+  quantity: number
+  name_snapshot: string
+  pricing_mode_snapshot: string
+  display_mode_snapshot: string
+  item_templates: Array<{
+    id: number
+    product_id: number
+    variant_image_level_code?: string | null
+    asset_id?: number | null
+    quantity: number
+    item_discount_mode: string
+    item_discount_value: number
+    sort_order: number
+  }>
+}
+
+export interface CompositionInstanceDetailBackendResponse {
+  instance_id: number
+  composition_id: number
+  cart_id: number
+  quantity: number
+  name_snapshot: string
+  pricing_mode_snapshot: string
+  display_mode_snapshot: string
+  item_templates: Array<{
+    id: number
+    product_id: number
+    variant_image_level_code?: string | null
+    asset_id?: number | null
+    quantity: number
+    item_discount_mode: string
+    item_discount_value: number
+    sort_order: number
+  }>
+  selected_items: Array<{
+    composition_item_id: number
+    product_variant_id: number
+    quantity: number
+    asset_id?: number | null
+  }>
 }
 
 interface UpdateCartShippingInput {
@@ -98,6 +164,8 @@ interface UpdateCartPaymentInput {
 
 interface UpdateCartNotesInput {
   notes?: string
+  assistedCustomerId?: string | number | null
+  assistedCustomerName?: string | null
 }
 
 interface UpdateCartCheckoutAddressInput {
@@ -207,12 +275,17 @@ async function resolveStorefrontScopeKey(preferredStoreId?: number | string | nu
   const apiKey = await resolveCartStorefrontApiKey(preferredStoreId)
   const routeScope = await resolveRouteScopeToken()
 
-  // Normaliza o storeId: preferredStoreId tem prioridade, depois routeScope (primeiro segmento da URL)
+  // Normaliza o storeId: preferredStoreId tem prioridade, depois routeScope quando ele for numérico.
   const storeIdNum = preferredStoreId != null ? Number(preferredStoreId) : null
+  const routeStoreIdNum = routeScope != null ? Number(routeScope) : null
+  const routeStoreId =
+    routeStoreIdNum !== null && Number.isInteger(routeStoreIdNum) && routeStoreIdNum > 0
+      ? String(routeStoreIdNum)
+      : null
   const validStoreId =
     storeIdNum !== null && Number.isInteger(storeIdNum) && storeIdNum > 0
       ? String(storeIdNum)
-      : routeScope  // ex.: "1" ou "2" extraído do referer/x-next-url
+      : routeStoreId  // ex.: "1" ou "2" extraído do referer/x-next-url
 
   if (apiKey) {
     // Inclui sempre o storeId para evitar colisão entre lojas com a mesma API key
@@ -235,6 +308,8 @@ function parseActionStoreId(formData: FormData, fieldName = 'storeId'): number |
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null
 }
 
+const ADMIN_FALLBACK_SESSION_COOKIE_NAME = 'sessionID_scope_admin'
+
 async function buildCartCookieHeader(preferredStoreId?: number | string | null): Promise<string | undefined> {
   const cookieStore = await cookies()
   const parts: string[] = []
@@ -244,11 +319,17 @@ async function buildCartCookieHeader(preferredStoreId?: number | string | null):
     scopeKey
       ? `sessionID_scope_${scopeKey}`
       : null
+  const fallbackScopedSessionId =
+    cookieStore.get(ADMIN_FALLBACK_SESSION_COOKIE_NAME)?.value
+    || cookieStore.getAll().find((cookie) => cookie.name.startsWith('sessionID_scope_'))?.value
   const sessionId = scopedSessionCookieName
     ? cookieStore.get(scopedSessionCookieName)?.value
-    : undefined
+    : cookieStore.get('sessionID')?.value || fallbackScopedSessionId
+  const adminAuthToken = cookieStore.get('adminAuthToken')?.value
   const clientAuthToken =
-    cookieStore.get('clientAuthToken')?.value ?? cookieStore.get('b2bAuthToken')?.value
+    adminAuthToken
+      ? undefined
+      : cookieStore.get('clientAuthToken')?.value ?? cookieStore.get('b2bAuthToken')?.value
 
   if (sessionId) parts.push(`sessionID=${sessionId}`)
   if (clientAuthToken) parts.push(`clientAuthToken=${clientAuthToken}`)
@@ -263,10 +344,10 @@ async function persistCartResponseCookies(
   const cookieStore = await cookies()
 
   const scopeKey = await resolveStorefrontScopeKey(preferredStoreId)
-  const scopedSessionCookieName =
+  const targetSessionCookieName =
     scopeKey
       ? `sessionID_scope_${scopeKey}`
-      : null
+      : ADMIN_FALLBACK_SESSION_COOKIE_NAME
 
   const getSetCookie = (response.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie
   const rawSetCookies =
@@ -286,15 +367,13 @@ async function persistCartResponseCookies(
     const maxAge = maxAgeMatch?.[1] ? Number(maxAgeMatch[1]) : undefined
 
     try {
-      if (scopedSessionCookieName) {
-        cookieStore.set(scopedSessionCookieName, sessionId, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'lax',
-          path: '/',
-          ...(Number.isFinite(maxAge) ? { maxAge } : {}),
-        })
-      }
+      cookieStore.set(targetSessionCookieName, sessionId, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        path: '/',
+        ...(Number.isFinite(maxAge) ? { maxAge } : {}),
+      })
     } catch {
       // Ignora em contextos de renderização server-side onde cookies são somente leitura.
     }
@@ -340,8 +419,18 @@ function mapBackendCartToFrontend(cart: BackendCart | null | undefined): CartWit
       extraDiscountCents: Number(item.extra_discount_cents || 0),
       couponDiscountCents: Number(item.coupon_discount_cents || 0),
       tierDiscountCents: Number(item.tier_discount_cents || 0),
-      paymentMethodDiscountCents: Number(item.payment_method_discount_cents || 0),
       manualDiscountCents: Number(item.manual_discount_cents || 0),
+      compositionInstanceId:
+        typeof item.composition_instance_id === 'number' ? item.composition_instance_id : null,
+      compositionInstanceQuantity:
+        typeof item.composition_instance_quantity === 'number' ? item.composition_instance_quantity : null,
+      compositionItemId:
+        typeof item.composition_item_id === 'number' ? item.composition_item_id : null,
+      compositionGroupUuid: typeof item.composition_group_uuid === 'string' ? item.composition_group_uuid : null,
+      compositionNameSnapshot: item.composition_name_snapshot || null,
+      compositionPricingModeSnapshot: item.composition_pricing_mode_snapshot || null,
+      compositionDisplayModeSnapshot: item.composition_display_mode_snapshot || null,
+      compositionDiscountAllocatedCents: Number(item.composition_discount_allocated_cents || 0),
       variant: {
         id: String(item.product_variant_id),
         productId: item.product_code || '',
@@ -380,9 +469,14 @@ function mapBackendCartToFrontend(cart: BackendCart | null | undefined): CartWit
   const subtotal = (cart.total_price_cents || 0) / 100
   const couponDiscountAmount = Math.abs(cart.coupon_discount_cents || 0) / 100
   const tierDiscountAmount = Math.abs(cart.tier_discount_cents || 0) / 100
-  const discountAmount = couponDiscountAmount + tierDiscountAmount
+  const paymentMethodDiscountAmount = Math.abs(cart.payment_method_discount_cents || 0) / 100
+  const discountAmount = couponDiscountAmount + tierDiscountAmount + paymentMethodDiscountAmount
+  const manualDiscountAmount = Math.max(0, Number(cart.manual_discount_cents || 0) / 100)
   const shippingAmount = (cart.shipping_price_cents || 0) / 100
-  const total = Math.max(0, subtotal - discountAmount + shippingAmount)
+  const total =
+    typeof cart.grand_total_cents === 'number'
+      ? Math.max(0, cart.grand_total_cents / 100)
+      : Math.max(0, subtotal - discountAmount - manualDiscountAmount + shippingAmount)
 
   return {
     items,
@@ -391,6 +485,7 @@ function mapBackendCartToFrontend(cart: BackendCart | null | undefined): CartWit
     discountAmount,
     couponDiscountAmount,
     tierDiscountAmount,
+    paymentMethodDiscountAmount,
     total,
     shippingAmount,
     paymentMethodId:
@@ -400,7 +495,13 @@ function mapBackendCartToFrontend(cart: BackendCart | null | undefined): CartWit
     paymentOptionCode: cart.meta?.payment_option?.code || null,
     shippingOptionCode: cart.meta?.shipping_option?.code || null,
     checkoutNotes: cart.meta?.checkout?.notes || null,
-    manualDiscountAmount: Number(cart.meta?.checkout?.manual_discount_cents || 0) / 100,
+    assistedCustomerId:
+      cart.meta?.checkout?.assisted_customer_id != null
+        ? String(cart.meta?.checkout?.assisted_customer_id)
+        : null,
+    assistedCustomerName: cart.meta?.checkout?.assisted_customer_name || null,
+    manualDiscountAmount,
+    manualDiscountBps: Number(cart.meta?.checkout?.manual_discount_bps || 0),
     appliedCoupon: cart.coupon_code
       ? {
           code: cart.coupon_code,
@@ -649,7 +750,7 @@ export async function addToAdminCustomerCartBatchAction(
     }
 
     const normalizedQty = normalizeQuantityByStockMode(item.quantity, stockConfig)
-    
+
     parsedItems.push({
       product_variant_id: parsedVariantId,
       quantity: normalizedQty,
@@ -828,18 +929,29 @@ export async function updateAdminCustomerCartPaymentAction(
   }
 
   const methods = (await methodsResponse.json()) as Array<{
-    id: number
+    id: number | string
     name?: string
     method_type?: string
+    type?: string
   }>
 
+  const normalizedMethods = methods
+    .map((method) => ({
+      id: Number(method.id),
+      name: String(method.name || '').trim(),
+      methodType: String(method.method_type || method.type || '').trim(),
+    }))
+    .filter((method) => Number.isFinite(method.id) && method.id > 0)
+
   const resolvedMethod =
-    methods.find((method) => String(method.method_type || '').trim().toUpperCase() === normalizedCode) ||
-    methods.find((method) => String(method.name || '').trim().toLowerCase() === normalizedName) ||
-    methods[0]
+    normalizedMethods.find((method) => method.methodType.toUpperCase() === normalizedCode) ||
+    normalizedMethods.find((method) => method.name.toLowerCase() === normalizedName)
 
   if (!resolvedMethod || !Number.isFinite(resolvedMethod.id) || resolvedMethod.id <= 0) {
-    return { success: false, error: 'Método de pagamento não encontrado no backend' }
+    return {
+      success: false,
+      error: 'Metodo de pagamento aceito na configuracao nao esta cadastrado no backend. Cadastre em Configuracoes > Metodos de Pagamento.',
+    }
   }
 
   const response = await fetchAdminCustomerCartEndpoint(customerId, '/payment', {
@@ -883,21 +995,29 @@ export async function updateAdminCustomerCartNotesAction(
 
 export async function updateAdminCustomerCartManualDiscountAction(
   customerId: string,
-  manualDiscount: number
+  input: {
+    manualDiscount: number
+    manualDiscountBps?: number | null
+  }
 ): Promise<ApiResponse<CartWithCalculation>> {
   const MAX_MANUAL_DISCOUNT_CENTS = 2_147_483_647
-  const normalizedDiscount = Number.isFinite(manualDiscount)
-    ? Math.max(0, manualDiscount)
+  const MAX_MANUAL_DISCOUNT_BPS = 10_000
+  const normalizedDiscount = Number.isFinite(input.manualDiscount)
+    ? Math.max(0, input.manualDiscount)
     : 0
   const normalizedCents = Math.min(
     MAX_MANUAL_DISCOUNT_CENTS,
     Math.max(0, Math.round(normalizedDiscount * 100))
   )
+  const normalizedBps = Number.isFinite(input.manualDiscountBps)
+    ? Math.max(0, Math.min(MAX_MANUAL_DISCOUNT_BPS, Math.round(Number(input.manualDiscountBps))))
+    : null
 
   const response = await fetchAdminCustomerCartEndpoint(customerId, '/manual-discount', {
     method: 'POST',
     body: JSON.stringify({
       manual_discount_cents: normalizedCents,
+      manual_discount_bps: normalizedBps,
     }),
   })
 
@@ -947,7 +1067,7 @@ export async function addToCartBatchAction(
     }
 
     const normalizedQty = normalizeQuantityByStockMode(item.quantity, stockConfig)
-    
+
     parsedItems.push({
       product_variant_id: parsedVariantId,
       quantity: normalizedQty,
@@ -972,7 +1092,256 @@ export async function addToCartBatchAction(
 
   revalidatePath('/cart')
   revalidatePath('/checkout')
-  
+
+  return { success: true, data: mapBackendCartToFrontend(payload) }
+}
+
+export async function addCompositionToCartAction(
+  compositionId: number,
+  quantity = 1,
+  storeId?: number | string | null,
+): Promise<ApiResponse<AddCompositionToCartBackendResponse>> {
+  const parsedCompositionId = Number(compositionId)
+  if (!Number.isFinite(parsedCompositionId) || parsedCompositionId <= 0) {
+    return { success: false, error: 'Composição inválida' }
+  }
+
+  const normalizedQuantity = Number.isFinite(quantity) ? Math.max(1, Math.round(quantity)) : 1
+
+  const response = await fetchCartEndpoint(
+    `/cart/compositions/${Math.trunc(parsedCompositionId)}`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ quantity: normalizedQuantity }),
+    },
+    storeId,
+  )
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '')
+    return { success: false, error: errorText || 'Erro ao iniciar composição no carrinho' }
+  }
+
+  const payload = (await response.json()) as AddCompositionToCartBackendResponse
+  revalidatePath('/cart')
+  revalidatePath('/checkout')
+  return { success: true, data: payload }
+}
+
+export async function selectCompositionItemVariantAction(
+  instanceId: number,
+  compositionItemId: number,
+  input: {
+    productVariantId: number
+    quantity?: number
+    assetId?: number | null
+  },
+  storeId?: number | string | null,
+): Promise<ApiResponse<CartWithCalculation>> {
+  const parsedInstanceId = Number(instanceId)
+  const parsedCompositionItemId = Number(compositionItemId)
+  const parsedVariantId = Number(input.productVariantId)
+
+  if (!Number.isFinite(parsedInstanceId) || parsedInstanceId <= 0) {
+    return { success: false, error: 'Instância da composição inválida' }
+  }
+
+  if (!Number.isFinite(parsedCompositionItemId) || parsedCompositionItemId <= 0) {
+    return { success: false, error: 'Item da composição inválido' }
+  }
+
+  if (!Number.isFinite(parsedVariantId) || parsedVariantId <= 0) {
+    return { success: false, error: 'Variação inválida para o item da composição' }
+  }
+
+  const normalizedQuantity = Number.isFinite(input.quantity)
+    ? Math.max(1, Math.round(Number(input.quantity)))
+    : undefined
+
+  const response = await fetchCartEndpoint(
+    `/cart/compositions/${Math.trunc(parsedInstanceId)}/items/${Math.trunc(parsedCompositionItemId)}/variant`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        product_variant_id: Math.trunc(parsedVariantId),
+        quantity: normalizedQuantity,
+        asset_id:
+          input.assetId == null
+            ? undefined
+            : Math.trunc(Number(input.assetId)),
+      }),
+    },
+    storeId,
+  )
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '')
+    return { success: false, error: errorText || 'Erro ao selecionar variante da composição' }
+  }
+
+  const payload = (await response.json()) as BackendCart
+  revalidatePath('/cart')
+  revalidatePath('/checkout')
+  return { success: true, data: mapBackendCartToFrontend(payload) }
+}
+
+export async function selectCompositionItemsBatchAction(
+  instanceId: number,
+  input: {
+    items: Array<{
+      compositionItemId: number
+      productVariantId: number
+      quantity?: number
+      assetId?: number | null
+    }>
+  },
+  storeId?: number | string | null,
+): Promise<ApiResponse<CartWithCalculation>> {
+  const parsedInstanceId = Number(instanceId)
+  if (!Number.isFinite(parsedInstanceId) || parsedInstanceId <= 0) {
+    return { success: false, error: 'Instância da composição inválida' }
+  }
+
+  const parsedItems: Array<{
+    composition_item_id: number
+    product_variant_id: number
+    quantity?: number
+    asset_id?: number
+  }> = []
+
+  const rawItems = Array.isArray(input.items) ? input.items : []
+  if (rawItems.length === 0) {
+    return { success: false, error: 'Itens da composição não informados' }
+  }
+
+  for (const item of rawItems) {
+    const parsedCompositionItemId = Number(item.compositionItemId)
+    const parsedVariantId = Number(item.productVariantId)
+
+    if (!Number.isFinite(parsedCompositionItemId) || parsedCompositionItemId <= 0) {
+      return { success: false, error: 'Item da composição inválido' }
+    }
+
+    if (!Number.isFinite(parsedVariantId) || parsedVariantId <= 0) {
+      return { success: false, error: 'Variação inválida para o item da composição' }
+    }
+
+    const normalizedQuantity = Number.isFinite(item.quantity)
+      ? Math.max(1, Math.round(Number(item.quantity)))
+      : undefined
+
+    parsedItems.push({
+      composition_item_id: Math.trunc(parsedCompositionItemId),
+      product_variant_id: Math.trunc(parsedVariantId),
+      quantity: normalizedQuantity,
+      asset_id:
+        item.assetId == null
+          ? undefined
+          : Math.trunc(Number(item.assetId)),
+    })
+  }
+
+  const response = await fetchCartEndpoint(
+    `/cart/compositions/${Math.trunc(parsedInstanceId)}/selections`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ items: parsedItems }),
+    },
+    storeId,
+  )
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '')
+    return { success: false, error: errorText || 'Erro ao selecionar itens da composição' }
+  }
+
+  const payload = (await response.json()) as BackendCart
+  revalidatePath('/cart')
+  revalidatePath('/checkout')
+  return { success: true, data: mapBackendCartToFrontend(payload) }
+}
+
+export async function getCompositionInstanceAction(
+  instanceId: number,
+  storeId?: number | string | null,
+): Promise<ApiResponse<CompositionInstanceDetailBackendResponse>> {
+  const parsedInstanceId = Number(instanceId)
+  if (!Number.isFinite(parsedInstanceId) || parsedInstanceId <= 0) {
+    return { success: false, error: 'Instância da composição inválida' }
+  }
+
+  const response = await fetchCartEndpoint(
+    `/cart/composition-instances/${Math.trunc(parsedInstanceId)}`,
+    { method: 'GET' },
+    storeId,
+  )
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '')
+    return { success: false, error: errorText || 'Composição do carrinho não encontrada' }
+  }
+
+  const payload = (await response.json()) as CompositionInstanceDetailBackendResponse
+  return { success: true, data: payload }
+}
+
+export async function removeCompositionInstanceAction(
+  instanceId: number,
+  storeId?: number | string | null,
+): Promise<ApiResponse<CartWithCalculation>> {
+  const parsedInstanceId = Number(instanceId)
+  if (!Number.isFinite(parsedInstanceId) || parsedInstanceId <= 0) {
+    return { success: false, error: 'Instância da composição inválida' }
+  }
+
+  const response = await fetchCartEndpoint(
+    `/cart/composition-instances/${Math.trunc(parsedInstanceId)}`,
+    { method: 'DELETE' },
+    storeId,
+  )
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '')
+    return { success: false, error: errorText || 'Erro ao remover composição do carrinho' }
+  }
+
+  const payload = (await response.json()) as BackendCart
+  revalidatePath('/cart')
+  revalidatePath('/checkout')
+  return { success: true, data: mapBackendCartToFrontend(payload) }
+}
+
+export async function updateCompositionInstanceQuantityAction(
+  instanceId: number,
+  quantity: number,
+  storeId?: number | string | null,
+): Promise<ApiResponse<CartWithCalculation>> {
+  const parsedInstanceId = Number(instanceId)
+  if (!Number.isFinite(parsedInstanceId) || parsedInstanceId <= 0) {
+    return { success: false, error: 'Instância da composição inválida' }
+  }
+
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    return { success: false, error: 'Quantidade inválida' }
+  }
+
+  const response = await fetchCartEndpoint(
+    `/cart/composition-instances/${Math.trunc(parsedInstanceId)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ quantity: Math.max(1, Math.round(quantity)) }),
+    },
+    storeId,
+  )
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '')
+    return { success: false, error: errorText || 'Erro ao atualizar quantidade da composição' }
+  }
+
+  const payload = (await response.json()) as BackendCart
+  revalidatePath('/cart')
+  revalidatePath('/checkout')
   return { success: true, data: mapBackendCartToFrontend(payload) }
 }
 
@@ -997,7 +1366,7 @@ export async function updateCartItemAction(
   } else {
     const stockConfig = await getStockModeConfig()
     const normalizedQty = normalizeQuantityByStockMode(quantity, stockConfig)
-    
+
     const response = await fetchCartEndpoint(`/cart/items/${itemId}`, {
       method: 'PUT',
       body: JSON.stringify({ quantity: normalizedQty }),
@@ -1010,7 +1379,7 @@ export async function updateCartItemAction(
 
   revalidatePath('/cart')
   revalidatePath('/checkout')
-  
+
   return getCartAction(scopedStoreId)
 }
 
@@ -1059,8 +1428,89 @@ export async function removeFromCartAction(
 
   revalidatePath('/cart')
   revalidatePath('/checkout')
-  
+
   return getCartAction(scopedStoreId)
+}
+
+export async function updateCartItemQuantityAction(
+  itemId: string,
+  quantity: number,
+  storeId?: number | string | null,
+): Promise<ApiResponse<CartWithCalculation>> {
+  const normalizedItemId = String(itemId || '').trim()
+  if (!normalizedItemId) {
+    return { success: false, error: 'Item inválido' }
+  }
+
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    return { success: false, error: 'Quantidade inválida' }
+  }
+
+  const stockConfig = await getStockModeConfig()
+  const normalizedQty = normalizeQuantityByStockMode(quantity, stockConfig)
+
+  const response = await fetchCartEndpoint(`/cart/items/${normalizedItemId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ quantity: normalizedQty }),
+  }, storeId)
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '')
+    return { success: false, error: errorText || 'Erro ao atualizar item do carrinho' }
+  }
+
+  const payload = (await response.json()) as BackendCart
+
+  revalidatePath('/cart')
+  revalidatePath('/checkout')
+
+  return { success: true, data: mapBackendCartToFrontend(payload) }
+}
+
+export async function removeCartItemByIdAction(
+  itemId: string,
+  variantId?: string,
+  storeId?: number | string | null,
+): Promise<ApiResponse<CartWithCalculation>> {
+  const normalizedItemId = String(itemId || '').trim()
+  if (!normalizedItemId) {
+    return { success: false, error: 'Item inválido' }
+  }
+
+  const deleteByItemId = async (id: string): Promise<{ ok: boolean; errorText: string }> => {
+    const response = await fetchCartEndpoint(`/cart/items/${id}`, { method: 'DELETE' }, storeId)
+    if (response.ok) {
+      return { ok: true, errorText: '' }
+    }
+
+    const errorText = await response.text().catch(() => '')
+    return { ok: false, errorText }
+  }
+
+  let deletion = await deleteByItemId(normalizedItemId)
+
+  if (!deletion.ok && deletion.errorText.includes('Cart item not found') && variantId) {
+    const latestCart = await getCartAction(storeId)
+    if (latestCart.success && latestCart.data) {
+      const fallbackItem = latestCart.data.items.find((item) => String(item.variantId) === variantId)
+
+      if (fallbackItem?.id && String(fallbackItem.id) !== normalizedItemId) {
+        deletion = await deleteByItemId(String(fallbackItem.id))
+      }
+    }
+  }
+
+  if (!deletion.ok) {
+    return {
+      success: false,
+      error: deletion.errorText || 'Erro ao remover item do carrinho',
+    }
+  }
+
+  revalidatePath('/cart')
+  revalidatePath('/checkout')
+
+  return getCartAction(storeId)
 }
 
 export async function applyCouponAction(
@@ -1069,7 +1519,7 @@ export async function applyCouponAction(
 ): Promise<ApiResponse<CartWithCalculation>> {
   const code = (formData.get('couponCode') as string)?.toUpperCase()
   const scopedStoreId = parseActionStoreId(formData)
-  
+
   if (!code) {
     return { success: false, error: 'Código do cupom é obrigatório' }
   }
@@ -1086,7 +1536,7 @@ export async function applyCouponAction(
 
   revalidatePath('/cart')
   revalidatePath('/checkout')
-  
+
   return getCartAction(scopedStoreId)
 }
 
@@ -1105,7 +1555,7 @@ export async function removeCouponAction(
   const payload = (await response.json()) as BackendCart
   revalidatePath('/cart')
   revalidatePath('/checkout')
-  
+
   return { success: true, data: mapBackendCartToFrontend(payload) }
 }
 
@@ -1214,14 +1664,107 @@ export async function updateCartPaymentAction(
   return { success: true, data: mapBackendCartToFrontend(payload) }
 }
 
+export async function updateCartPaymentByCodeAction(
+  input: {
+    code: string
+    name: string
+    paymentType?: string
+  },
+  storeId?: number | string | null,
+): Promise<ApiResponse<CartWithCalculation>> {
+  const normalizedCode = String(input.code || '').trim().toUpperCase()
+  const normalizedName = String(input.name || '').trim().toLowerCase()
+
+  if (!normalizedCode) {
+    return { success: false, error: 'Forma de pagamento inválida' }
+  }
+
+  const base = resolveBackendBase()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  const cookieHeader = await buildAdminCartCookieHeader()
+  const methodsResponse = await fetch(`${base}/payment-methods`, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(cookieHeader ? { cookie: cookieHeader } : {}),
+    },
+    cache: 'no-store',
+  })
+
+  if (!methodsResponse.ok) {
+    const errorText = await methodsResponse.text().catch(() => '')
+    return { success: false, error: errorText || 'Erro ao buscar métodos de pagamento' }
+  }
+
+  const methods = (await methodsResponse.json()) as Array<{
+    id: number | string
+    name?: string
+    method_type?: string
+    type?: string
+  }>
+
+  const normalizedMethods = methods
+    .map((method) => ({
+      id: Number(method.id),
+      name: String(method.name || '').trim(),
+      methodType: String(method.method_type || method.type || '').trim(),
+    }))
+    .filter((method) => Number.isFinite(method.id) && method.id > 0)
+
+  const resolvedMethod =
+    normalizedMethods.find((method) => method.methodType.toUpperCase() === normalizedCode) ||
+    normalizedMethods.find((method) => method.name.toLowerCase() === normalizedName)
+
+  if (!resolvedMethod || !Number.isFinite(resolvedMethod.id) || resolvedMethod.id <= 0) {
+    return {
+      success: false,
+      error: 'Metodo de pagamento aceito na configuracao nao esta cadastrado no backend. Cadastre em Configuracoes > Metodos de Pagamento.',
+    }
+  }
+
+  return updateCartPaymentAction(
+    {
+      methodId: resolvedMethod.id,
+      code: normalizedCode,
+      name: input.name,
+      paymentType: input.paymentType || normalizedCode,
+    },
+    storeId,
+  )
+}
+
 export async function updateCartNotesAction(
   input: UpdateCartNotesInput,
   storeId?: number | string | null,
 ): Promise<ApiResponse<CartWithCalculation>> {
+  const normalizedAssistedCustomerId =
+    input.assistedCustomerId === undefined
+      ? undefined
+      : input.assistedCustomerId === null || String(input.assistedCustomerId).trim() === ''
+        ? null
+        : Number.isFinite(Number(input.assistedCustomerId))
+          ? Math.trunc(Number(input.assistedCustomerId))
+          : null
+
+  const normalizedAssistedCustomerName =
+    input.assistedCustomerName === undefined
+      ? undefined
+      : input.assistedCustomerName?.trim() || null
+
   const response = await fetchCartEndpoint('/cart/notes', {
     method: 'POST',
     body: JSON.stringify({
       notes: input.notes?.trim() || null,
+      assisted_customer_id_set: normalizedAssistedCustomerId !== undefined,
+      assisted_customer_name_set: normalizedAssistedCustomerName !== undefined,
+      ...(normalizedAssistedCustomerId !== undefined
+        ? { assisted_customer_id: normalizedAssistedCustomerId }
+        : {}),
+      ...(normalizedAssistedCustomerName !== undefined
+        ? { assisted_customer_name: normalizedAssistedCustomerName }
+        : {}),
     }),
   }, storeId)
 
@@ -1232,6 +1775,50 @@ export async function updateCartNotesAction(
 
   const payload = (await response.json()) as BackendCart
 
+  revalidatePath('/checkout')
+
+  return { success: true, data: mapBackendCartToFrontend(payload) }
+}
+
+export async function updateCartManualDiscountAction(
+  input: {
+    manualDiscount: number
+    manualDiscountBps?: number | null
+  },
+  storeId?: number | string | null,
+): Promise<ApiResponse<CartWithCalculation>> {
+  const MAX_MANUAL_DISCOUNT_CENTS = 2_147_483_647
+  const MAX_MANUAL_DISCOUNT_BPS = 10_000
+  const normalizedDiscount = Number.isFinite(input.manualDiscount)
+    ? Math.max(0, input.manualDiscount)
+    : 0
+  const normalizedCents = Math.min(
+    MAX_MANUAL_DISCOUNT_CENTS,
+    Math.max(0, Math.round(normalizedDiscount * 100)),
+  )
+  const normalizedBps = Number.isFinite(input.manualDiscountBps)
+    ? Math.max(0, Math.min(MAX_MANUAL_DISCOUNT_BPS, Math.round(Number(input.manualDiscountBps))))
+    : null
+
+  const response = await fetchCartEndpoint('/cart/manual-discount', {
+    method: 'POST',
+    body: JSON.stringify({
+      manual_discount_cents: normalizedCents,
+      manual_discount_bps: normalizedBps,
+    }),
+  }, storeId)
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '')
+    return {
+      success: false,
+      error: errorText || 'Erro ao atualizar desconto manual no carrinho',
+    }
+  }
+
+  const payload = (await response.json()) as BackendCart
+
+  revalidatePath('/cart')
   revalidatePath('/checkout')
 
   return { success: true, data: mapBackendCartToFrontend(payload) }
@@ -1306,7 +1893,7 @@ export async function clearCartAction(
 
   revalidatePath('/cart')
   revalidatePath('/checkout')
-  
+
   return { success: true }
 }
 

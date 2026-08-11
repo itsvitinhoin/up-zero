@@ -39,15 +39,9 @@ export function DomainTab({ locale = "en", settings, setSettings, isSaving, onSa
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-semibold">{tAdmin(locale, "admin.domain.title", "Custom Domain")}</h2>
-          <p className="text-muted-foreground">{tAdmin(locale, "admin.domain.subtitle", "Configure your store custom domain")}</p>
-        </div>
-        <Button onClick={onSave} disabled={isSaving}>
-          <Save className="mr-2 h-4 w-4" />
-          {isSaving ? tAdmin(locale, "admin.common.saving", "Saving...") : tAdmin(locale, "admin.domain.save", "Save Domain")}
-        </Button>
+      <div>
+        <h2 className="text-xl font-semibold">{tAdmin(locale, "admin.domain.title", "Custom Domain")}</h2>
+        <p className="text-muted-foreground">{tAdmin(locale, "admin.domain.subtitle", "Configure your store custom domain")}</p>
       </div>
 
       <div className="grid gap-6">
@@ -132,33 +126,6 @@ export function DomainTab({ locale = "en", settings, setSettings, isSaving, onSa
                 </p>
               </div>
 
-              {/* CNAME Record */}
-              <div className="space-y-3">
-                <h4 className="font-medium">{tAdmin(locale, "admin.domain.dns.cnameTitle", "CNAME Record (Recommended)")}</h4>
-                <p className="text-sm text-muted-foreground">{tAdmin(locale, "admin.domain.dns.cnameDescription", "Use this record if your domain starts with www or is a subdomain")}</p>
-                <div className="grid grid-cols-3 gap-4 p-4 bg-muted/40 border border-border/20 rounded-xl font-mono text-sm">
-                  <div><p className="text-xs text-muted-foreground mb-1">{tAdmin(locale, "admin.domain.dns.type", "Type")}</p><p className="font-medium">CNAME</p></div>
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-1">{tAdmin(locale, "admin.domain.dns.host", "Name/Host")}</p>
-                    <div className="flex items-center gap-2">
-                      <p className="font-medium">{settings.domainSettings.customDomain?.startsWith("www.") ? "www" : settings.domainSettings.customDomain?.split(".")[0] || "@"}</p>
-                      <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => copyToClipboard(settings.domainSettings?.customDomain?.startsWith("www.") ? "www" : settings.domainSettings?.customDomain?.split(".")[0] || "@")}>
-                        <Copy className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-1">{tAdmin(locale, "admin.domain.dns.valueTarget", "Value/Target")}</p>
-                    <div className="flex items-center gap-2">
-                      <p className="font-medium">cname.vercel-dns.com</p>
-                      <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => copyToClipboard("cname.vercel-dns.com")}>
-                        <Copy className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
               {/* A Record */}
               <div className="space-y-3">
                 <h4 className="font-medium">{tAdmin(locale, "admin.domain.dns.aTitle", "A Record (Root domain)")}</h4>
@@ -175,15 +142,42 @@ export function DomainTab({ locale = "en", settings, setSettings, isSaving, onSa
                   <div>
                     <p className="text-xs text-muted-foreground mb-1">{tAdmin(locale, "admin.domain.dns.valueIp", "Value/IP")}</p>
                     <div className="flex items-center gap-2">
-                      <p className="font-medium">76.76.21.21</p>
-                      <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => copyToClipboard("76.76.21.21")}><Copy className="h-3 w-3" /></Button>
+                      <p className="font-medium">34.149.49.61</p>
+                      <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => copyToClipboard("34.149.49.61")}><Copy className="h-3 w-3" /></Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+               {/* CNAME Record */}
+              <div className="space-y-3">
+                <h4 className="font-medium">{tAdmin(locale, "admin.domain.dns.cnameTitle", "WWW Record (Recommended)")}</h4>
+                <p className="text-sm text-muted-foreground">{tAdmin(locale, "admin.domain.dns.cnameDescription", "Use this record if your domain starts with www or is a subdomain")}</p>
+                <div className="grid grid-cols-3 gap-4 p-4 bg-muted/40 border border-border/20 rounded-xl font-mono text-sm">
+                  <div><p className="text-xs text-muted-foreground mb-1">{tAdmin(locale, "admin.domain.dns.type", "Type")}</p><p className="font-medium">A</p></div>
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">{tAdmin(locale, "admin.domain.dns.host", "Name/Host")}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="font-medium">{settings.domainSettings.customDomain?.startsWith("www.") ? "www" : settings.domainSettings.customDomain?.split(".")[0] || "@"}</p>
+                      <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => copyToClipboard(settings.domainSettings?.customDomain?.startsWith("www.") ? "www" : settings.domainSettings?.customDomain?.split(".")[0] || "@")}>
+                        <Copy className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">{tAdmin(locale, "admin.domain.dns.valueTarget", "Value/Target")}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="font-medium">34.149.49.61</p>
+                      <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => copyToClipboard("34.149.49.61")}>
+                        <Copy className="h-3 w-3" />
+                      </Button>
                     </div>
                   </div>
                 </div>
               </div>
 
               {/* TXT Verification */}
-              {settings.domainSettings?.domainVerificationToken && (
+              {/* {settings.domainSettings?.domainVerificationToken && (
                 <div className="space-y-3">
                   <h4 className="font-medium">{tAdmin(locale, "admin.domain.dns.txtTitle", "TXT Record (Verification)")}</h4>
                   <p className="text-sm text-muted-foreground">{tAdmin(locale, "admin.domain.dns.txtDescription", "Add this record to verify domain ownership")}</p>
@@ -205,7 +199,7 @@ export function DomainTab({ locale = "en", settings, setSettings, isSaving, onSa
                     </div>
                   </div>
                 </div>
-              )}
+              )} */}
             </CardContent>
           </Card>
         )}
@@ -245,6 +239,17 @@ export function DomainTab({ locale = "en", settings, setSettings, isSaving, onSa
           </CardContent>
         </Card>
       </div>
+
+      <Button
+        onClick={onSave}
+        disabled={isSaving}
+        className="fixed sm:bottom-6 bottom-20 right-6 z-50 h-12 rounded-full px-4 shadow-lg"
+        aria-label="Salvar"
+        title="Salvar"
+      >
+        <Save className="mr-2 h-5 w-5" />
+        Salvar
+      </Button>
     </div>
   );
 }

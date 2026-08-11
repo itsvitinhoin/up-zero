@@ -76,8 +76,6 @@ import type { Branch, BranchStatus, CreateBranchInput, UpdateBranchInput } from 
 import type { AdminUserOption } from '@/lib/actions/branches'
 import { toast } from 'sonner'
 
-// ── Slug helpers ──────────────────────────────────────────────────────────────
-
 function toSlug(value: string): string {
   return value
     .normalize('NFD')
@@ -98,8 +96,6 @@ function getStorefrontBaseUrl(): string {
   }
   return ''
 }
-
-// ── Form state ────────────────────────────────────────────────────────────────
 
 interface BranchFormState {
   name: string
@@ -157,8 +153,6 @@ function formToCreateInput(form: BranchFormState): CreateBranchInput {
   }
 }
 
-// ── Duplicate dialog ──────────────────────────────────────────────────────────
-
 interface DuplicateDialogProps {
   open: boolean
   sourceBranch: Branch | null
@@ -194,7 +188,7 @@ function DuplicateDialog({ open, sourceBranch, existingSlugs, onClose, onConfirm
   }
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
+    <Dialog open={open} onOpenChange={(openState) => { if (!openState) onClose() }}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Duplicar Filial</DialogTitle>
@@ -207,9 +201,9 @@ function DuplicateDialog({ open, sourceBranch, existingSlugs, onClose, onConfirm
             <Label>Nome</Label>
             <Input
               value={name}
-              onChange={(e) => {
-                setName(e.target.value)
-                if (!slugManual) setSlug(toSlug(e.target.value))
+              onChange={(event) => {
+                setName(event.target.value)
+                if (!slugManual) setSlug(toSlug(event.target.value))
               }}
               placeholder="Ex: São Paulo Cópia"
             />
@@ -218,8 +212,8 @@ function DuplicateDialog({ open, sourceBranch, existingSlugs, onClose, onConfirm
             <Label>Slug</Label>
             <Input
               value={slug}
-              onChange={(e) => {
-                setSlug(toSlug(e.target.value))
+              onChange={(event) => {
+                setSlug(toSlug(event.target.value))
                 setSlugManual(true)
               }}
               placeholder="ex: saopaulo-copia"
@@ -233,7 +227,7 @@ function DuplicateDialog({ open, sourceBranch, existingSlugs, onClose, onConfirm
             {slug && !isValidSlug(slug) && (
               <p className="text-xs text-destructive flex items-center gap-1">
                 <AlertCircle className="h-3 w-3" />
-                Slug inválido — use apenas letras, números e hífens
+                Slug inválido - use apenas letras, números e hífens
               </p>
             )}
           </div>
@@ -249,8 +243,6 @@ function DuplicateDialog({ open, sourceBranch, existingSlugs, onClose, onConfirm
   )
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
-
 interface AdminBranchesPageClientProps {
   initialBranches: Branch[]
   adminUsers: AdminUserOption[]
@@ -262,29 +254,23 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
   const [search, setSearch] = useState('')
   const [isSaving, setIsSaving] = useState(false)
 
-  // Create/Edit dialog
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingBranch, setEditingBranch] = useState<Branch | null>(null)
   const [form, setForm] = useState<BranchFormState>(EMPTY_FORM)
   const [slugManual, setSlugManual] = useState(false)
 
-  // Delete dialog
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [branchToDelete, setBranchToDelete] = useState<Branch | null>(null)
 
-  // Duplicate dialog
   const [duplicateDialogOpen, setDuplicateDialogOpen] = useState(false)
   const [branchToDuplicate, setBranchToDuplicate] = useState<Branch | null>(null)
-
 
   useEffect(() => {
     setBranches(initialBranches)
   }, [initialBranches])
 
   const storefrontBase = getStorefrontBaseUrl()
-  const existingSlugs = branches.map((b) => b.slug)
-
-  // ── Form validation ────────────────────────────────────────────────────────
+  const existingSlugs = branches.map((branch) => branch.slug)
 
   const slugConflict = (() => {
     if (!form.slug) return false
@@ -306,13 +292,10 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
   }
   const formValid = !formErrors.name && !formErrors.slug
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
-
   function openCreate() {
     setEditingBranch(null)
     setForm(EMPTY_FORM)
     setSlugManual(false)
-
     setDialogOpen(true)
   }
 
@@ -320,7 +303,6 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
     setEditingBranch(branch)
     setForm(branchToForm(branch))
     setSlugManual(true)
-
     setDialogOpen(true)
   }
 
@@ -330,16 +312,14 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
   }
 
   const updateForm = useCallback(<K extends keyof BranchFormState>(key: K, value: BranchFormState[K]) => {
-    setForm((prev) => {
-      const next = { ...prev, [key]: value }
+    setForm((previous) => {
+      const next = { ...previous, [key]: value }
       if (key === 'name' && !slugManual) {
         next.slug = toSlug(String(value))
       }
       return next
     })
   }, [slugManual])
-
-  // ── Save branch ────────────────────────────────────────────────────────────
 
   async function handleSave() {
     if (!formValid || isSaving) return
@@ -367,16 +347,14 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
     router.refresh()
 
     if (result.data) {
-      setBranches((prev) => {
+      setBranches((previous) => {
         if (editingBranch) {
-          return prev.map((b) => b.id === editingBranch.id ? result.data! : b)
+          return previous.map((branch) => branch.id === editingBranch.id ? result.data! : branch)
         }
-        return [...prev, result.data!]
+        return [...previous, result.data!]
       })
     }
   }
-
-  // ── Toggle status ──────────────────────────────────────────────────────────
 
   async function handleToggleStatus(branch: Branch) {
     const newStatus: BranchStatus = branch.status === 'active' ? 'inactive' : 'active'
@@ -387,12 +365,10 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
       toast.error(result.error ?? 'Erro ao alterar status')
       return
     }
-    setBranches((prev) => prev.map((b) => b.id === branch.id ? { ...b, status: newStatus } : b))
+    setBranches((previous) => previous.map((current) => current.id === branch.id ? { ...current, status: newStatus } : current))
     toast.success(newStatus === 'active' ? 'Filial ativada' : 'Filial desativada')
     router.refresh()
   }
-
-  // ── Set default ────────────────────────────────────────────────────────────
 
   async function handleSetDefault(branch: Branch) {
     if (branch.isDefault) return
@@ -403,12 +379,10 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
       toast.error(result.error ?? 'Erro ao definir padrão')
       return
     }
-    setBranches((prev) => prev.map((b) => ({ ...b, isDefault: b.id === branch.id })))
-    toast.success(`"${branch.name}" definida como filial padrão`)
+    setBranches((previous) => previous.map((current) => ({ ...current, isDefault: current.id === branch.id })))
+    toast.success(`\"${branch.name}\" definida como filial padrão`)
     router.refresh()
   }
-
-  // ── Delete ─────────────────────────────────────────────────────────────────
 
   async function handleDelete() {
     if (!branchToDelete) return
@@ -419,14 +393,12 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
       toast.error(result.error ?? 'Erro ao remover filial')
       return
     }
-    setBranches((prev) => prev.filter((b) => b.id !== branchToDelete.id))
+    setBranches((previous) => previous.filter((branch) => branch.id !== branchToDelete.id))
     toast.success('Filial removida')
     setDeleteDialogOpen(false)
     setBranchToDelete(null)
     router.refresh()
   }
-
-  // ── Duplicate ──────────────────────────────────────────────────────────────
 
   async function handleDuplicate(name: string, slug: string) {
     if (!branchToDuplicate) return
@@ -436,7 +408,7 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
       return
     }
     if (result.data) {
-      setBranches((prev) => [...prev, result.data!])
+      setBranches((previous) => [...previous, result.data!])
     }
     toast.success('Filial duplicada')
     setDuplicateDialogOpen(false)
@@ -444,29 +416,23 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
     router.refresh()
   }
 
-  // ── Filtering ──────────────────────────────────────────────────────────────
-
-  const filtered = branches.filter((b) => {
-    const q = search.toLowerCase()
-    if (!q) return true
+  const filtered = branches.filter((branch) => {
+    const query = search.toLowerCase()
+    if (!query) return true
     return (
-      b.name.toLowerCase().includes(q) ||
-      b.slug.toLowerCase().includes(q) ||
-      (b.city ?? '').toLowerCase().includes(q) ||
-      (b.state ?? '').toLowerCase().includes(q) ||
-      (b.responsibleName ?? '').toLowerCase().includes(q)
+      branch.name.toLowerCase().includes(query) ||
+      branch.slug.toLowerCase().includes(query) ||
+      (branch.city ?? '').toLowerCase().includes(query) ||
+      (branch.state ?? '').toLowerCase().includes(query) ||
+      (branch.responsibleName ?? '').toLowerCase().includes(query)
     )
   })
 
-  const activeCount = branches.filter((b) => b.status === 'active').length
-  const inactiveCount = branches.filter((b) => b.status === 'inactive').length
-
-  // ── Render ─────────────────────────────────────────────────────────────────
+  const activeCount = branches.filter((branch) => branch.status === 'active').length
+  const inactiveCount = branches.filter((branch) => branch.status === 'inactive').length
 
   return (
     <div className="flex flex-col gap-6 p-4 md:p-6 max-w-6xl mx-auto">
-
-      {/* Page header */}
       <div className="flex flex-col gap-1">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -476,7 +442,7 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
             <div>
               <h1 className="text-xl font-semibold tracking-tight">Filiais</h1>
               <p className="text-xs text-muted-foreground">
-                URLs segmentadas da loja — ex: brand.com/saopaulo
+                URLs segmentadas da loja - ex: brand.com/saopaulo
               </p>
             </div>
           </div>
@@ -487,7 +453,6 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
         </div>
       </div>
 
-      {/* Stats row */}
       <div className="grid grid-cols-3 gap-3">
         {[
           { label: 'Total', value: branches.length, icon: GitBranch, color: 'text-foreground' },
@@ -504,20 +469,18 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
         ))}
       </div>
 
-      {/* Toolbar */}
       <div className="flex items-center gap-3">
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(event) => setSearch(event.target.value)}
             placeholder="Buscar filiais..."
             className="pl-9 rounded-2xl"
           />
         </div>
       </div>
 
-      {/* Table */}
       <div className="rounded-2xl border border-border/60 bg-card overflow-hidden">
         {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
@@ -539,7 +502,6 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
           </div>
         ) : (
           <>
-            {/* Desktop table */}
             <div className="hidden md:block">
               <Table>
                 <TableHeader>
@@ -563,15 +525,14 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
                       onEdit={openEdit}
                       onToggleStatus={handleToggleStatus}
                       onSetDefault={handleSetDefault}
-                      onDuplicate={(b) => { setBranchToDuplicate(b); setDuplicateDialogOpen(true) }}
-                      onDelete={(b) => { setBranchToDelete(b); setDeleteDialogOpen(true) }}
+                      onDuplicate={(current) => { setBranchToDuplicate(current); setDuplicateDialogOpen(true) }}
+                      onDelete={(current) => { setBranchToDelete(current); setDeleteDialogOpen(true) }}
                     />
                   ))}
                 </TableBody>
               </Table>
             </div>
 
-            {/* Mobile card list */}
             <div className="md:hidden divide-y divide-border/40">
               {filtered.map((branch) => (
                 <BranchCard
@@ -582,8 +543,8 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
                   onEdit={openEdit}
                   onToggleStatus={handleToggleStatus}
                   onSetDefault={handleSetDefault}
-                  onDuplicate={(b) => { setBranchToDuplicate(b); setDuplicateDialogOpen(true) }}
-                  onDelete={(b) => { setBranchToDelete(b); setDeleteDialogOpen(true) }}
+                  onDuplicate={(current) => { setBranchToDuplicate(current); setDuplicateDialogOpen(true) }}
+                  onDelete={(current) => { setBranchToDelete(current); setDeleteDialogOpen(true) }}
                 />
               ))}
             </div>
@@ -591,8 +552,7 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
         )}
       </div>
 
-      {/* ── Create / Edit dialog ─────────────────────────────────────────────── */}
-      <Dialog open={dialogOpen} onOpenChange={(open) => { if (!open) closeDialog() }}>
+      <Dialog open={dialogOpen} onOpenChange={(openState) => { if (!openState) closeDialog() }}>
         <DialogContent className="sm:max-w-xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingBranch ? 'Editar Filial' : 'Nova Filial'}</DialogTitle>
@@ -604,7 +564,6 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
           </DialogHeader>
 
           <div className="space-y-5 py-2">
-            {/* URL preview */}
             {form.slug && (
               <div className="flex items-center gap-2 rounded-xl border border-border/60 bg-muted/30 px-3 py-2.5">
                 <ExternalLink className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
@@ -614,13 +573,12 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
               </div>
             )}
 
-            {/* Main data */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5 sm:col-span-2">
                 <Label>Nome <span className="text-destructive">*</span></Label>
                 <Input
                   value={form.name}
-                  onChange={(e) => updateForm('name', e.target.value)}
+                  onChange={(event) => updateForm('name', event.target.value)}
                   placeholder="Ex: São Paulo"
                 />
                 {form.name.trim().length === 0 && isSaving && (
@@ -635,8 +593,8 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
                 </Label>
                 <Input
                   value={form.slug}
-                  onChange={(e) => {
-                    updateForm('slug', toSlug(e.target.value))
+                  onChange={(event) => {
+                    updateForm('slug', toSlug(event.target.value))
                     setSlugManual(true)
                   }}
                   placeholder="ex: saopaulo"
@@ -653,7 +611,7 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
                 <Label>Status</Label>
                 <Select
                   value={form.status}
-                  onValueChange={(v) => updateForm('status', v as BranchStatus)}
+                  onValueChange={(value) => updateForm('status', value as BranchStatus)}
                 >
                   <SelectTrigger className="rounded-xl">
                     <SelectValue />
@@ -669,7 +627,7 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
                 <Label>Cidade</Label>
                 <Input
                   value={form.city}
-                  onChange={(e) => updateForm('city', e.target.value)}
+                  onChange={(event) => updateForm('city', event.target.value)}
                   placeholder="São Paulo"
                 />
               </div>
@@ -678,7 +636,7 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
                 <Label>Estado</Label>
                 <Input
                   value={form.state}
-                  onChange={(e) => updateForm('state', e.target.value)}
+                  onChange={(event) => updateForm('state', event.target.value)}
                   placeholder="SP"
                   maxLength={2}
                 />
@@ -688,7 +646,7 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
                 <Label>Descrição</Label>
                 <Textarea
                   value={form.description}
-                  onChange={(e) => updateForm('description', e.target.value)}
+                  onChange={(event) => updateForm('description', event.target.value)}
                   placeholder="Descrição opcional da filial"
                   rows={2}
                   className="resize-none"
@@ -704,12 +662,11 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
                 </div>
                 <Switch
                   checked={form.isDefault}
-                  onCheckedChange={(v) => updateForm('isDefault', v)}
+                  onCheckedChange={(value) => updateForm('isDefault', value)}
                 />
               </div>
             </div>
 
-            {/* Contact section */}
             <div className="space-y-3">
               <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Contato</p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -718,7 +675,7 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
                   {adminUsers.length > 0 ? (
                     <Select
                       value={form.responsibleName || '__none__'}
-                      onValueChange={(v) => updateForm('responsibleName', v === '__none__' ? '' : v)}
+                      onValueChange={(value) => updateForm('responsibleName', value === '__none__' ? '' : value)}
                     >
                       <SelectTrigger className="rounded-xl">
                         <SelectValue placeholder="Selecionar responsável..." />
@@ -737,7 +694,7 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
                   ) : (
                     <Input
                       value={form.responsibleName}
-                      onChange={(e) => updateForm('responsibleName', e.target.value)}
+                      onChange={(event) => updateForm('responsibleName', event.target.value)}
                       placeholder="Nome do responsável"
                     />
                   )}
@@ -747,7 +704,7 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
                   <Input
                     type="email"
                     value={form.contactEmail}
-                    onChange={(e) => updateForm('contactEmail', e.target.value)}
+                    onChange={(event) => updateForm('contactEmail', event.target.value)}
                     placeholder="contato@empresa.com"
                   />
                 </div>
@@ -755,13 +712,12 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
                   <Label>WhatsApp</Label>
                   <Input
                     value={form.contactWhatsapp}
-                    onChange={(e) => updateForm('contactWhatsapp', e.target.value)}
+                    onChange={(event) => updateForm('contactWhatsapp', event.target.value)}
                     placeholder="+55 11 99999-9999"
                   />
                 </div>
               </div>
             </div>
-
           </div>
 
           <DialogFooter>
@@ -775,15 +731,14 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
         </DialogContent>
       </Dialog>
 
-      {/* ── Delete confirmation ───────────────────────────────────────────────── */}
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Remover filial</AlertDialogTitle>
             <AlertDialogDescription>
               Tem certeza que deseja remover{' '}
-              <span className="font-semibold">"{branchToDelete?.name}"</span>?{' '}
-              Dados históricos (pedidos, clientes) com este branch_id são preservados.
+              <span className="font-semibold">\"{branchToDelete?.name}\"</span>{' '}
+              ? Dados históricos (pedidos, clientes) com este branch_id são preservados.
               Esta ação não pode ser desfeita.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -796,7 +751,6 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* ── Duplicate dialog ──────────────────────────────────────────────────── */}
       <DuplicateDialog
         open={duplicateDialogOpen}
         sourceBranch={branchToDuplicate}
@@ -808,17 +762,15 @@ export default function AdminBranchesPageClient({ initialBranches, adminUsers }:
   )
 }
 
-// ── Branch table row ──────────────────────────────────────────────────────────
-
 interface BranchRowProps {
   branch: Branch
   storefrontBase: string
   isSaving: boolean
-  onEdit: (b: Branch) => void
-  onToggleStatus: (b: Branch) => void
-  onSetDefault: (b: Branch) => void
-  onDuplicate: (b: Branch) => void
-  onDelete: (b: Branch) => void
+  onEdit: (branch: Branch) => void
+  onToggleStatus: (branch: Branch) => void
+  onSetDefault: (branch: Branch) => void
+  onDuplicate: (branch: Branch) => void
+  onDelete: (branch: Branch) => void
 }
 
 function BranchRow({
@@ -879,12 +831,12 @@ function BranchRow({
           ? <span className="text-sm">{branch.city}, {branch.state}</span>
           : branch.city || branch.state
             ? <span className="text-sm">{branch.city || branch.state}</span>
-            : <span className="text-muted-foreground/40 text-xs">—</span>}
+            : <span className="text-muted-foreground/40 text-xs">-</span>}
       </TableCell>
       <TableCell>
         {branch.responsibleName
           ? <span className="text-sm">{branch.responsibleName}</span>
-          : <span className="text-muted-foreground/40 text-xs">—</span>}
+          : <span className="text-muted-foreground/40 text-xs">-</span>}
       </TableCell>
       <TableCell>
         <span className="text-xs text-muted-foreground">
@@ -931,8 +883,6 @@ function BranchRow({
     </TableRow>
   )
 }
-
-// ── Branch mobile card ────────────────────────────────────────────────────────
 
 function BranchCard({
   branch,

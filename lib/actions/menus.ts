@@ -3,8 +3,18 @@
 import { buildAdminCookieHeader } from './auth'
 import { getAdminStoreIdFromToken } from '@/lib/auth'
 import { resolveStorefrontApiKeyFromRequest, withStorefrontScopeHeaders } from '@/lib/actions/storefront-scope'
+import { checkUserPermission } from '@/lib/actions/permissions'
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_RUST_URL || 'http://localhost:8080'
+
+async function hasPagePermission(permissionCode: string): Promise<boolean> {
+  try {
+    const result = await checkUserPermission(permissionCode)
+    return result?.has_permission === true
+  } catch {
+    return false
+  }
+}
 
 export type MenuType = 'retail' | 'wholesale' | 'footer_retail' | 'footer_wholesale'
 
@@ -12,6 +22,7 @@ export interface Menu {
   id: number
   store_id: number
   name: string
+  code?: string | null
   type: MenuType
   is_active: boolean
   created_at: string
@@ -41,6 +52,7 @@ export interface MenuItem {
 export interface CreateMenuData {
   store_id?: number
   name: string
+  code?: string | null
   type: MenuType
   is_active?: boolean
   created_by?: number
@@ -48,6 +60,7 @@ export interface CreateMenuData {
 
 export interface UpdateMenuData {
   name?: string
+  code?: string | null
   type?: MenuType
   is_active?: boolean
   updated_by?: number
@@ -88,23 +101,42 @@ export interface BulkMenuItemData {
   is_active: boolean
 }
 
+function normalizeStoreId(value: unknown): number | null {
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
+}
+
+async function resolveAdminMenuScope(preferredStoreId?: number | string | null) {
+  const cookieHeader = await buildAdminCookieHeader()
+  const adminStoreId = await getAdminStoreIdFromToken()
+  const explicitStoreId = normalizeStoreId(preferredStoreId)
+  const resolvedStoreId = adminStoreId ?? explicitStoreId
+  const storefrontApiKey = await resolveStorefrontApiKeyFromRequest(resolvedStoreId)
+
+  return {
+    cookieHeader,
+    resolvedStoreId,
+    storefrontApiKey,
+  }
+}
+
 // Listar menus
 export async function getMenusAction(storeId?: number, menuType?: string) {
   try {
-    const cookieHeader = await buildAdminCookieHeader()
+    const { cookieHeader, resolvedStoreId, storefrontApiKey } = await resolveAdminMenuScope(storeId)
     const params = new URLSearchParams()
-    
-    if (storeId) params.append('store_id', storeId.toString())
+
+    if (resolvedStoreId) params.append('store_id', String(resolvedStoreId))
     if (menuType) params.append('type', menuType)
 
     const url = `${BACKEND_URL}/menus${params.toString() ? `?${params}` : ''}`
-    
+
     const response = await fetch(url, {
       method: 'GET',
-      headers: {
+      headers: withStorefrontScopeHeaders({
         'Content-Type': 'application/json',
         Cookie: cookieHeader || '',
-      },
+      }, storefrontApiKey),
       cache: 'no-store',
     })
 
@@ -117,8 +149,8 @@ export async function getMenusAction(storeId?: number, menuType?: string) {
     return { success: true, menus }
   } catch (error) {
     console.error('Erro ao buscar menus:', error)
-    return { 
-      success: false, 
+    return {
+      success: false,
       error: error instanceof Error ? error.message : 'Erro desconhecido',
       menus: []
     }
@@ -126,16 +158,21 @@ export async function getMenusAction(storeId?: number, menuType?: string) {
 }
 
 // Buscar menu por ID
-export async function getMenuAction(menuId: number) {
+export async function getMenuAction(menuId: number, storeId?: number) {
   try {
-    const cookieHeader = await buildAdminCookieHeader()
-    
-    const response = await fetch(`${BACKEND_URL}/menus/${menuId}`, {
+    const { cookieHeader, resolvedStoreId, storefrontApiKey } = await resolveAdminMenuScope(storeId)
+    const scopedUrl = new URL(`${BACKEND_URL}/menus/${menuId}`)
+
+    if (resolvedStoreId) {
+      scopedUrl.searchParams.set('store_id', String(resolvedStoreId))
+    }
+
+    const response = await fetch(scopedUrl, {
       method: 'GET',
-      headers: {
+      headers: withStorefrontScopeHeaders({
         'Content-Type': 'application/json',
         Cookie: cookieHeader || '',
-      },
+      }, storefrontApiKey),
       cache: 'no-store',
     })
 
@@ -148,8 +185,8 @@ export async function getMenuAction(menuId: number) {
     return { success: true, menu }
   } catch (error) {
     console.error('Erro ao buscar menu:', error)
-    return { 
-      success: false, 
+    return {
+      success: false,
       error: error instanceof Error ? error.message : 'Erro desconhecido',
       menu: null
     }
@@ -158,13 +195,12 @@ export async function getMenuAction(menuId: number) {
 
 // Criar menu
 export async function createMenuAction(data: CreateMenuData) {
+  if (!(await hasPagePermission('pages.create'))) {
+    return { success: false, error: 'Você não tem permissão para criar páginas', menu: null }
+  }
+
   try {
-    const cookieHeader = await buildAdminCookieHeader()
-    const adminStoreId = await getAdminStoreIdFromToken()
-    const explicitStoreId = Number.isInteger(Number(data.store_id)) && Number(data.store_id) > 0
-      ? Number(data.store_id)
-      : null
-    const resolvedStoreId = adminStoreId ?? explicitStoreId
+    const { cookieHeader, resolvedStoreId, storefrontApiKey } = await resolveAdminMenuScope(data.store_id)
 
     if (!resolvedStoreId) {
       return {
@@ -173,13 +209,13 @@ export async function createMenuAction(data: CreateMenuData) {
         menu: null,
       }
     }
-    
+
     const response = await fetch(`${BACKEND_URL}/menus`, {
       method: 'POST',
-      headers: {
+      headers: withStorefrontScopeHeaders({
         'Content-Type': 'application/json',
         Cookie: cookieHeader || '',
-      },
+      }, storefrontApiKey),
       body: JSON.stringify({
         ...data,
         store_id: resolvedStoreId,
@@ -195,8 +231,8 @@ export async function createMenuAction(data: CreateMenuData) {
     return { success: true, menu }
   } catch (error) {
     console.error('Erro ao criar menu:', error)
-    return { 
-      success: false, 
+    return {
+      success: false,
       error: error instanceof Error ? error.message : 'Erro desconhecido',
       menu: null
     }
@@ -205,15 +241,24 @@ export async function createMenuAction(data: CreateMenuData) {
 
 // Atualizar menu
 export async function updateMenuAction(menuId: number, data: UpdateMenuData) {
+  if (!(await hasPagePermission('pages.edit'))) {
+    return { success: false, error: 'Você não tem permissão para editar páginas', menu: null }
+  }
+
   try {
-    const cookieHeader = await buildAdminCookieHeader()
-    
-    const response = await fetch(`${BACKEND_URL}/menus/${menuId}`, {
+    const { cookieHeader, resolvedStoreId, storefrontApiKey } = await resolveAdminMenuScope()
+    const scopedUrl = new URL(`${BACKEND_URL}/menus/${menuId}`)
+
+    if (resolvedStoreId) {
+      scopedUrl.searchParams.set('store_id', String(resolvedStoreId))
+    }
+
+    const response = await fetch(scopedUrl, {
       method: 'PUT',
-      headers: {
+      headers: withStorefrontScopeHeaders({
         'Content-Type': 'application/json',
         Cookie: cookieHeader || '',
-      },
+      }, storefrontApiKey),
       body: JSON.stringify(data),
     })
 
@@ -226,8 +271,8 @@ export async function updateMenuAction(menuId: number, data: UpdateMenuData) {
     return { success: true, menu }
   } catch (error) {
     console.error('Erro ao atualizar menu:', error)
-    return { 
-      success: false, 
+    return {
+      success: false,
       error: error instanceof Error ? error.message : 'Erro desconhecido',
       menu: null
     }
@@ -236,14 +281,23 @@ export async function updateMenuAction(menuId: number, data: UpdateMenuData) {
 
 // Deletar menu
 export async function deleteMenuAction(menuId: number) {
+  if (!(await hasPagePermission('pages.delete'))) {
+    return { success: false, error: 'Você não tem permissão para excluir páginas' }
+  }
+
   try {
-    const cookieHeader = await buildAdminCookieHeader()
-    
-    const response = await fetch(`${BACKEND_URL}/menus/${menuId}`, {
+    const { cookieHeader, resolvedStoreId, storefrontApiKey } = await resolveAdminMenuScope()
+    const scopedUrl = new URL(`${BACKEND_URL}/menus/${menuId}`)
+
+    if (resolvedStoreId) {
+      scopedUrl.searchParams.set('store_id', String(resolvedStoreId))
+    }
+
+    const response = await fetch(scopedUrl, {
       method: 'DELETE',
-      headers: {
+      headers: withStorefrontScopeHeaders({
         Cookie: cookieHeader || '',
-      },
+      }, storefrontApiKey),
     })
 
     if (!response.ok) {
@@ -254,8 +308,8 @@ export async function deleteMenuAction(menuId: number) {
     return { success: true }
   } catch (error) {
     console.error('Erro ao deletar menu:', error)
-    return { 
-      success: false, 
+    return {
+      success: false,
       error: error instanceof Error ? error.message : 'Erro desconhecido'
     }
   }
@@ -264,15 +318,13 @@ export async function deleteMenuAction(menuId: number) {
 // Listar itens de menu
 export async function getMenuItemsAction(menuId: number) {
   try {
-    const cookieHeader = await buildAdminCookieHeader()
-    const adminStoreId = await getAdminStoreIdFromToken()
-    const storefrontApiKey = await resolveStorefrontApiKeyFromRequest(adminStoreId)
+    const { cookieHeader, resolvedStoreId, storefrontApiKey } = await resolveAdminMenuScope()
     const scopedUrl = new URL(`${BACKEND_URL}/menus/${menuId}/items`)
 
-    if (adminStoreId) {
-      scopedUrl.searchParams.set('store_id', String(adminStoreId))
+    if (resolvedStoreId) {
+      scopedUrl.searchParams.set('store_id', String(resolvedStoreId))
     }
-    
+
     const response = await fetch(scopedUrl, {
       method: 'GET',
       headers: withStorefrontScopeHeaders({
@@ -291,8 +343,8 @@ export async function getMenuItemsAction(menuId: number) {
     return { success: true, items }
   } catch (error) {
     console.error('Erro ao buscar itens do menu:', error)
-    return { 
-      success: false, 
+    return {
+      success: false,
       error: error instanceof Error ? error.message : 'Erro desconhecido',
       items: []
     }
@@ -372,8 +424,8 @@ export async function getStoreMenuItemsAction(storeId: number, type: 'retail' | 
     return { success: true, items }
   } catch (error) {
     console.error('Erro ao buscar itens do menu da loja:', error)
-    return { 
-      success: false, 
+    return {
+      success: false,
       error: error instanceof Error ? error.message : 'Erro desconhecido',
       items: []
     }
@@ -382,15 +434,24 @@ export async function getStoreMenuItemsAction(storeId: number, type: 'retail' | 
 
 // Criar item de menu
 export async function createMenuItemAction(data: CreateMenuItemData) {
+  if (!(await hasPagePermission('pages.create'))) {
+    return { success: false, error: 'Você não tem permissão para criar páginas', item: null }
+  }
+
   try {
-    const cookieHeader = await buildAdminCookieHeader()
-    
-    const response = await fetch(`${BACKEND_URL}/menu-items`, {
+    const { cookieHeader, resolvedStoreId, storefrontApiKey } = await resolveAdminMenuScope()
+    const scopedUrl = new URL(`${BACKEND_URL}/menu-items`)
+
+    if (resolvedStoreId) {
+      scopedUrl.searchParams.set('store_id', String(resolvedStoreId))
+    }
+
+    const response = await fetch(scopedUrl, {
       method: 'POST',
-      headers: {
+      headers: withStorefrontScopeHeaders({
         'Content-Type': 'application/json',
         Cookie: cookieHeader || '',
-      },
+      }, storefrontApiKey),
       body: JSON.stringify(data),
     })
 
@@ -403,8 +464,8 @@ export async function createMenuItemAction(data: CreateMenuItemData) {
     return { success: true, item }
   } catch (error) {
     console.error('Erro ao criar item:', error)
-    return { 
-      success: false, 
+    return {
+      success: false,
       error: error instanceof Error ? error.message : 'Erro desconhecido',
       item: null
     }
@@ -413,15 +474,24 @@ export async function createMenuItemAction(data: CreateMenuItemData) {
 
 // Atualizar item de menu
 export async function updateMenuItemAction(itemId: number, data: UpdateMenuItemData) {
+  if (!(await hasPagePermission('pages.edit'))) {
+    return { success: false, error: 'Você não tem permissão para editar páginas', item: null }
+  }
+
   try {
-    const cookieHeader = await buildAdminCookieHeader()
-    
-    const response = await fetch(`${BACKEND_URL}/menu-items/${itemId}`, {
+    const { cookieHeader, resolvedStoreId, storefrontApiKey } = await resolveAdminMenuScope()
+    const scopedUrl = new URL(`${BACKEND_URL}/menu-items/${itemId}`)
+
+    if (resolvedStoreId) {
+      scopedUrl.searchParams.set('store_id', String(resolvedStoreId))
+    }
+
+    const response = await fetch(scopedUrl, {
       method: 'PUT',
-      headers: {
+      headers: withStorefrontScopeHeaders({
         'Content-Type': 'application/json',
         Cookie: cookieHeader || '',
-      },
+      }, storefrontApiKey),
       body: JSON.stringify(data),
     })
 
@@ -434,8 +504,8 @@ export async function updateMenuItemAction(itemId: number, data: UpdateMenuItemD
     return { success: true, item }
   } catch (error) {
     console.error('Erro ao atualizar item:', error)
-    return { 
-      success: false, 
+    return {
+      success: false,
       error: error instanceof Error ? error.message : 'Erro desconhecido',
       item: null
     }
@@ -444,14 +514,23 @@ export async function updateMenuItemAction(itemId: number, data: UpdateMenuItemD
 
 // Deletar item de menu
 export async function deleteMenuItemAction(itemId: number) {
+  if (!(await hasPagePermission('pages.delete'))) {
+    return { success: false, error: 'Você não tem permissão para excluir páginas' }
+  }
+
   try {
-    const cookieHeader = await buildAdminCookieHeader()
-    
-    const response = await fetch(`${BACKEND_URL}/menu-items/${itemId}`, {
+    const { cookieHeader, resolvedStoreId, storefrontApiKey } = await resolveAdminMenuScope()
+    const scopedUrl = new URL(`${BACKEND_URL}/menu-items/${itemId}`)
+
+    if (resolvedStoreId) {
+      scopedUrl.searchParams.set('store_id', String(resolvedStoreId))
+    }
+
+    const response = await fetch(scopedUrl, {
       method: 'DELETE',
-      headers: {
+      headers: withStorefrontScopeHeaders({
         Cookie: cookieHeader || '',
-      },
+      }, storefrontApiKey),
     })
 
     if (!response.ok) {
@@ -462,8 +541,8 @@ export async function deleteMenuItemAction(itemId: number) {
     return { success: true }
   } catch (error) {
     console.error('Erro ao deletar item:', error)
-    return { 
-      success: false, 
+    return {
+      success: false,
       error: error instanceof Error ? error.message : 'Erro desconhecido'
     }
   }
@@ -471,15 +550,24 @@ export async function deleteMenuItemAction(itemId: number) {
 
 // Atualização em lote de itens (remove antigos e recria)
 export async function bulkUpdateMenuItemsAction(menuId: number, items: BulkMenuItemData[]) {
+  if (!(await hasPagePermission('pages.edit'))) {
+    return { success: false, error: 'Você não tem permissão para editar páginas', items: [] }
+  }
+
   try {
-    const cookieHeader = await buildAdminCookieHeader()
-    
-    const response = await fetch(`${BACKEND_URL}/menus/${menuId}/items/bulk`, {
+    const { cookieHeader, resolvedStoreId, storefrontApiKey } = await resolveAdminMenuScope()
+    const scopedUrl = new URL(`${BACKEND_URL}/menus/${menuId}/items/bulk`)
+
+    if (resolvedStoreId) {
+      scopedUrl.searchParams.set('store_id', String(resolvedStoreId))
+    }
+
+    const response = await fetch(scopedUrl, {
       method: 'PUT',
-      headers: {
+      headers: withStorefrontScopeHeaders({
         'Content-Type': 'application/json',
         Cookie: cookieHeader || '',
-      },
+      }, storefrontApiKey),
       body: JSON.stringify({ items }),
     })
 
@@ -492,8 +580,8 @@ export async function bulkUpdateMenuItemsAction(menuId: number, items: BulkMenuI
     return { success: true, items: updatedItems }
   } catch (error) {
     console.error('Erro ao atualizar itens:', error)
-    return { 
-      success: false, 
+    return {
+      success: false,
       error: error instanceof Error ? error.message : 'Erro desconhecido',
       items: []
     }
@@ -504,17 +592,26 @@ export async function bulkUpdateMenuItemsAction(menuId: number, items: BulkMenuI
 export async function updateMenuItemsOrderAction(
   updates: Array<{ id: string; sortOrder: number; parentId: string | null }>
 ) {
+  if (!(await hasPagePermission('pages.edit'))) {
+    return { success: false, error: 'Você não tem permissão para editar páginas' }
+  }
+
   try {
-    const cookieHeader = await buildAdminCookieHeader()
+    const { cookieHeader, resolvedStoreId, storefrontApiKey } = await resolveAdminMenuScope()
 
     await Promise.all(
       updates.map(async (update) => {
-        const response = await fetch(`${BACKEND_URL}/menu-items/${update.id}`, {
+        const scopedUrl = new URL(`${BACKEND_URL}/menu-items/${update.id}`)
+        if (resolvedStoreId) {
+          scopedUrl.searchParams.set('store_id', String(resolvedStoreId))
+        }
+
+        const response = await fetch(scopedUrl, {
           method: 'PUT',
-          headers: {
+          headers: withStorefrontScopeHeaders({
             'Content-Type': 'application/json',
             Cookie: cookieHeader || '',
-          },
+          }, storefrontApiKey),
           body: JSON.stringify({
             sort_order: update.sortOrder,
             parent_id: update.parentId ? Number(update.parentId) : null,

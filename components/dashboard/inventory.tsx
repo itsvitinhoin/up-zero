@@ -7,8 +7,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge-2'
 import { KpiCard, SectionHeader, CurveBadge, currencyTooltipFormatter } from '@/components/dashboard/shared'
-import { fmt, fmtN, type DCurve } from '@/lib/dashboard-mock-data'
-import { useDashboardData } from '@/contexts/dashboard-data'
+import { DASHBOARD_PRODUCTS, fmt, fmtN, type DCurve } from '@/lib/dashboard-mock-data'
 
 const CURVE_COLORS_HEX: Record<DCurve, string> = { A: '#10b981', B: '#f59e0b', C: '#94a3b8' }
 
@@ -20,7 +19,6 @@ function AlertBadge({ daysLeft }: { daysLeft: number }) {
 }
 
 export default function DashboardInventory() {
-  const { products: DASHBOARD_PRODUCTS } = useDashboardData()
   const critical = DASHBOARD_PRODUCTS.filter(p => p.daysLeft <= 7)
   const lowStock = DASHBOARD_PRODUCTS.filter(p => p.daysLeft > 7 && p.daysLeft <= 20)
   const excess = DASHBOARD_PRODUCTS.filter(p => p.daysLeft > 60)
@@ -153,7 +151,7 @@ export default function DashboardInventory() {
                   <span className="text-sm font-semibold text-foreground">{curvePct(curve).toFixed(1)}% da receita</span>
                 </div>
                 <p className="text-xs text-muted-foreground">{curveGroups[curve].length} produto(s) — {fmt(curveRevenue(curve), true)}</p>
-                <ul className="space-y-1 max-h-48 overflow-y-auto pr-1">
+                <ul className="space-y-1">
                   {curveGroups[curve].map(p => (
                     <li key={p.id} className="text-xs flex items-center justify-between gap-2 py-1 border-b border-border/50 last:border-0">
                       <span className="text-foreground truncate">{p.name}</span>

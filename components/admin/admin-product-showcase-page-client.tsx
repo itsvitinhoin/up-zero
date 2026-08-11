@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import Image from 'next/image'
-import { GripVertical, Loader2, Save, RefreshCw } from 'lucide-react'
+import { ArrowDown, ArrowUp, GripVertical, Loader2, Minus, Save, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Select,
@@ -13,13 +13,33 @@ import {
 } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { toast } from 'sonner'
 import type { Category } from '@/lib/types'
 import {
   getProductSortItemsAction,
+  rebuildProductSortOrderAction,
   saveProductSortOrderAction,
   type ProductSortItem,
 } from '@/lib/actions/product-sort-orders'
+import {
+  getProductShowcaseMetricsAction,
+  type ProductShowcaseMetricItem,
+  type ShowcaseMetricPeriodDays,
+} from '@/lib/actions/product-showcase-metrics'
+import { CloudflareImage } from '@/components/ui/cloudflare-image'
 
 interface AdminProductShowcasePageClientProps {
   categories: Category[]
@@ -38,12 +58,57 @@ type SortTypeOption = {
   label: string
 }
 
+type ResetSortType = 'auto_created_desc' | 'auto_sku_desc'
+
 const SORT_TYPE_OPTIONS: SortTypeOption[] = [
   { value: 'manual_default', label: 'Manual Padrão' },
 ]
 
+const RESET_SORT_TYPE_OPTIONS: Array<{ value: ResetSortType; label: string }> = [
+  { value: 'auto_created_desc', label: 'Data Mais Recente' },
+  { value: 'auto_sku_desc', label: 'SKU Mais Recente' },
+]
+
 const ITEMS_BATCH_SIZE = 40
 const SEARCH_DEBOUNCE_MS = 350
+
+const PERIOD_OPTIONS: Array<{ value: ShowcaseMetricPeriodDays; label: string }> = [
+  { value: 7, label: '7 dias' },
+  { value: 14, label: '14 dias' },
+  { value: 30, label: '30 dias' },
+]
+
+function formatCompactCount(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0'
+  if (value < 1000) return String(Math.round(value))
+  if (value < 10000) return `${(value / 1000).toFixed(1).replace('.', ',')}k`
+  return `${Math.round(value / 1000)}k`
+}
+
+function formatConversionRate(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0%'
+  const pct = value * 100
+  if (pct < 0.1) return '<0,1%'
+  if (pct < 10) return `${pct.toFixed(1).replace('.', ',')}%`
+  return `${Math.round(pct)}%`
+}
+
+function TrendIcon({ trend }: { trend: ProductShowcaseMetricItem['trend'] }) {
+  if (trend === 'up') return <ArrowUp className="h-3 w-3 text-emerald-600" />
+  if (trend === 'down') return <ArrowDown className="h-3 w-3 text-rose-600" />
+  if (trend === 'flat') return <Minus className="h-3 w-3 text-muted-foreground" />
+  return <Minus className="h-3 w-3 text-muted-foreground/50" />
+}
+
+function buildMetricsTooltipLines(metrics: ProductShowcaseMetricItem, periodDays: number): string[] {
+  return [
+    `${periodDays}d: ${metrics.views} views · ${metrics.unitsSold} vendas · ${formatConversionRate(metrics.conversionRate)} conv`,
+    `listagem: ${formatCompactCount(metrics.impressions)} imp · ${formatCompactCount(metrics.clicks)} clicks · CTR ${formatConversionRate(metrics.ctr)}`,
+    `carrinho: ${formatCompactCount(metrics.addToCarts)} add carrinho · ${formatCompactCount(metrics.removes)} remove`,
+    `estoque agora (${metrics.stockMode}): ${metrics.variantsInStock}/${metrics.variantsTotal} variantes · total ${metrics.stockTotal} · ${metrics.stockHealth}`,
+    `período anterior: ${metrics.previous.views} views · ${metrics.previous.unitsSold} vendas · ${formatConversionRate(metrics.previous.conversionRate)} conv`,
+  ]
+}
 
 export default function AdminProductShowcasePageClient({
   categories,
@@ -69,6 +134,9 @@ export default function AdminProductShowcasePageClient({
   const [isLoading, setIsLoading] = useState(false)
   const [isLoadingMore, setIsLoadingMore] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [isRebuilding, setIsRebuilding] = useState(false)
+  const [isResetDialogOpen, setIsResetDialogOpen] = useState(false)
+  const [resetSortType, setResetSortType] = useState<ResetSortType>('auto_created_desc')
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [draggingSource, setDraggingSource] = useState<DragSource | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
@@ -78,9 +146,13 @@ export default function AdminProductShowcasePageClient({
   const [page, setPage] = useState(initialPage)
   const [total, setTotal] = useState(initialTotal)
   const [totalPages, setTotalPages] = useState(initialTotalPages)
+  const [periodDays, setPeriodDays] = useState<ShowcaseMetricPeriodDays>(14)
+  const [metricsByProductId, setMetricsByProductId] = useState<Record<string, ProductShowcaseMetricItem>>({})
+  const [isLoadingMetrics, setIsLoadingMetrics] = useState(false)
   const loadMoreRef = useRef<HTMLDivElement | null>(null)
   // Pula o primeiro useEffect de load quando há dados SSR
   const skipNextLoad = useRef(initialItems !== undefined)
+  const metricsRequestId = useRef(0)
 
   const resolvedContext = useMemo(() => {
     if (scopeType === 'store') {
@@ -183,8 +255,49 @@ export default function AdminProductShowcasePageClient({
 
   const hasMoreItems = page < totalPages
 
+  const visibleProductIdsKey = useMemo(() => {
+    const ids = new Set<string>()
+    for (const item of items) ids.add(item.productId)
+    for (const item of bufferItems) ids.add(item.productId)
+    return Array.from(ids).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).join(',')
+  }, [items, bufferItems])
+
   useEffect(() => {
-    if (!hasMoreItems || !loadMoreRef.current || isLoading || isLoadingMore || hasChanges) return
+    if (!resolvedContext || !visibleProductIdsKey) {
+      setMetricsByProductId({})
+      setIsLoadingMetrics(false)
+      return
+    }
+
+    const productIds = visibleProductIdsKey.split(',')
+    const requestId = ++metricsRequestId.current
+    setIsLoadingMetrics(true)
+
+    void getProductShowcaseMetricsAction({
+      days: periodDays,
+      productIds,
+      categoryId: resolvedContext.contextType === 'category' ? resolvedContext.contextId : null,
+    }).then((result) => {
+      if (requestId !== metricsRequestId.current) return
+
+      if (!result.success) {
+        toast.error(result.error || 'Erro ao carregar métricas da vitrine')
+        setMetricsByProductId({})
+        setIsLoadingMetrics(false)
+        return
+      }
+
+      const nextMap: Record<string, ProductShowcaseMetricItem> = {}
+      for (const item of result.items) {
+        if (item.productId) nextMap[item.productId] = item
+      }
+      setMetricsByProductId(nextMap)
+      setIsLoadingMetrics(false)
+    })
+  }, [periodDays, resolvedContext, visibleProductIdsKey])
+
+  useEffect(() => {
+    if (!hasMoreItems || !loadMoreRef.current || isLoading || isLoadingMore) return
 
     const observer = new IntersectionObserver(
       (entries) => {
@@ -197,7 +310,7 @@ export default function AdminProductShowcasePageClient({
     observer.observe(loadMoreRef.current)
     return () => observer.disconnect()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasMoreItems, page, isLoading, isLoadingMore, hasChanges, searchTerm, sortType, resolvedContext?.contextId])
+  }, [hasMoreItems, page, isLoading, isLoadingMore, searchTerm, sortType, resolvedContext?.contextId])
 
   function reorderItems(sourceId: string, targetId: string) {
     if (sourceId === targetId) return
@@ -307,15 +420,69 @@ export default function AdminProductShowcasePageClient({
     setBufferHover(false)
   }
 
+  function getSortTypeLabel(value: ResetSortType): string {
+    return value === 'auto_created_desc' ? 'Data Mais Recente' : 'SKU Mais Recente'
+  }
+
+  async function ensureAllItemsLoaded(): Promise<ProductSortItem[] | null> {
+    if (!resolvedContext) return null
+
+    let currentItems = items
+    let currentPage = page
+    let currentTotalPages = totalPages
+
+    while (currentPage < currentTotalPages) {
+      const nextPage = currentPage + 1
+      const result = await getProductSortItemsAction({
+        contextType: resolvedContext.contextType,
+        contextId: resolvedContext.contextId,
+        sortType,
+        search: searchTerm || undefined,
+        page: nextPage,
+        pageSize: ITEMS_BATCH_SIZE,
+      })
+
+      if (!result.success) {
+        toast.error(result.error || 'Erro ao carregar todos os produtos antes de salvar')
+        return null
+      }
+
+      const seen = new Set(currentItems.map((item) => item.productId))
+      const merged = [...currentItems]
+      for (const item of result.items) {
+        if (!seen.has(item.productId)) {
+          seen.add(item.productId)
+          merged.push(item)
+        }
+      }
+
+      currentItems = merged
+      currentPage = result.page
+      currentTotalPages = result.totalPages
+      setItems(merged)
+      setPage(result.page)
+      setTotal(result.total)
+      setTotalPages(result.totalPages)
+    }
+
+    return currentItems
+  }
+
   async function handleSave() {
-    if (!resolvedContext || !hasChanges) return
+    if (!resolvedContext || !hasChanges || searchTerm) return
 
     setIsSaving(true)
+    const allItems = await ensureAllItemsLoaded()
+    if (!allItems) {
+      setIsSaving(false)
+      return
+    }
+
     const result = await saveProductSortOrderAction({
       contextType: resolvedContext.contextType,
       contextId: resolvedContext.contextId,
       sortType,
-      productIds: items.map((item) => item.productId),
+      productIds: allItems.map((item) => item.productId),
     })
 
     if (!result.success) {
@@ -324,9 +491,44 @@ export default function AdminProductShowcasePageClient({
       return
     }
 
-    toast.success(`Ordenação salva (${result.updated ?? items.length} itens).`)
+    toast.success(`Ordenação salva (${result.updated ?? allItems.length} itens).`)
     setHasChanges(false)
     setIsSaving(false)
+  }
+
+  function openResetSortDialog() {
+    if (sortType === 'auto_created_desc' || sortType === 'auto_sku_desc') {
+      setResetSortType(sortType)
+    }
+    setIsResetDialogOpen(true)
+  }
+
+  async function handleRebuildSortType(targetSortType: ResetSortType) {
+    if (!resolvedContext) return
+
+    const sortTypeLabel = getSortTypeLabel(targetSortType)
+
+    setIsRebuilding(true)
+    setIsResetDialogOpen(false)
+    const result = await rebuildProductSortOrderAction({
+      contextType: resolvedContext.contextType,
+      contextId: resolvedContext.contextId,
+      sortType,
+      resetSortType: targetSortType,
+    })
+
+    if (!result.success) {
+      toast.error(result.error || 'Erro ao resetar ordenação')
+      setIsRebuilding(false)
+      return
+    }
+
+    setBufferItems([])
+    setHasChanges(false)
+    await loadItems({ append: false, targetPage: 1 })
+
+    toast.success(`Ordenação resetada para ${sortTypeLabel} (${result.updated ?? items.length} itens).`)
+    setIsRebuilding(false)
   }
 
   return (
@@ -334,7 +536,7 @@ export default function AdminProductShowcasePageClient({
       <div>
         <h1 className="text-2xl font-semibold">Vitrine</h1>
         <p className="text-sm text-muted-foreground">
-          Ordene produtos por escopo e ordenação (drag and drop).
+          Ordene produtos por escopo e ordenação (drag and drop). Mostra apenas ativos com preço e estoque, igual à loja.
         </p>
       </div>
 
@@ -386,6 +588,28 @@ export default function AdminProductShowcasePageClient({
           </Select>
         </div>
 
+        <div className="space-y-1 lg:w-40 lg:shrink-0">
+          <label className="text-xs font-medium text-muted-foreground">Período analytics</label>
+          <Select
+            value={String(periodDays)}
+            onValueChange={(value) => {
+              const next = Number(value)
+              if (next === 7 || next === 14 || next === 30) setPeriodDays(next)
+            }}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Selecione" />
+            </SelectTrigger>
+            <SelectContent>
+              {PERIOD_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={String(option.value)}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
         <div className="space-y-1 lg:min-w-0 lg:flex-1">
           <label className="text-xs font-medium text-muted-foreground">Buscar</label>
           <Input
@@ -413,14 +637,40 @@ export default function AdminProductShowcasePageClient({
           <Badge variant="secondary">{items.length + bufferItems.length}/{total} produtos</Badge>
           {bufferItems.length > 0 && <Badge variant="outline">Intermediária: {bufferItems.length}</Badge>}
           {hasChanges && <Badge variant="default">Alterações pendentes</Badge>}
+          {isLoadingMetrics && (
+            <Badge variant="outline" className="gap-1">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Métricas
+            </Badge>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => void loadItems({ append: false, targetPage: 1 })} disabled={isLoading || isLoadingMore || isSaving || !resolvedContext}>
+          <Button
+            variant="outline"
+            onClick={openResetSortDialog}
+            disabled={isLoading || isLoadingMore || isSaving || isRebuilding || !resolvedContext}
+          >
+            {isRebuilding ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+            Resetar Ordenação
+          </Button>
+          <Button variant="outline" onClick={() => void loadItems({ append: false, targetPage: 1 })} disabled={isLoading || isLoadingMore || isSaving || isRebuilding || !resolvedContext}>
             {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
             Recarregar
           </Button>
-          <Button onClick={() => void handleSave()} disabled={!hasChanges || bufferItems.length > 0 || isSaving || isLoading || isLoadingMore || !resolvedContext}>
+          <Button
+            onClick={() => void handleSave()}
+            disabled={
+              !hasChanges
+              || bufferItems.length > 0
+              || Boolean(searchTerm)
+              || isSaving
+              || isRebuilding
+              || isLoading
+              || isLoadingMore
+              || !resolvedContext
+            }
+          >
             {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
             Salvar Ordem
           </Button>
@@ -430,6 +680,12 @@ export default function AdminProductShowcasePageClient({
       {bufferItems.length > 0 && (
         <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-700">
           Existem {bufferItems.length} produto(s) na área intermediária. Arraste-os de volta para a grade antes de salvar.
+        </div>
+      )}
+
+      {Boolean(searchTerm) && hasChanges && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-700">
+          Limpe a busca antes de salvar a ordenação.
         </div>
       )}
 
@@ -445,7 +701,7 @@ export default function AdminProductShowcasePageClient({
               Nenhum produto encontrado para este contexto.
             </div>
           ) : (
-            <ul className="grid grid-cols-2 gap-3 p-3 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-5">
+            <ul className="grid grid-cols-2 gap-3 p-3 md:grid-cols-4">
               {items.map((item, index) => (
                 <li
                   key={item.productId}
@@ -473,7 +729,7 @@ export default function AdminProductShowcasePageClient({
                     draggingId === item.productId ? 'border border-transparent' : 'border'
                   }`}>
                     {item.imageUrl ? (
-                      <Image src={item.imageUrl} alt={item.productName} fill className="object-cover" sizes="(max-width: 1024px) 50vw, 20vw" />
+                      <CloudflareImage src={item.imageUrl} cloudflare={{ width: 480, fit: 'cover', dpr: 2 }} alt={item.productName} fill className="object-cover" sizes="(max-width: 1024px) 50vw, 20vw" />
                     ) : (
                       <div className="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground">Sem img</div>
                     )}
@@ -481,6 +737,39 @@ export default function AdminProductShowcasePageClient({
                   <div className="space-y-0.5">
                     <div className="line-clamp-2 text-sm font-medium">{item.productName}</div>
                     <div className="truncate text-xs text-muted-foreground">{item.productCode || `ID ${item.productId}`}</div>
+                    {(() => {
+                      const metrics = metricsByProductId[item.productId]
+                      if (!metrics) {
+                        return (
+                          <div className="pt-1 text-[11px] text-muted-foreground/70">
+                            {isLoadingMetrics ? '…' : 'sem dados'}
+                          </div>
+                        )
+                      }
+                      const tooltipLines = buildMetricsTooltipLines(metrics, periodDays)
+                      return (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div className="flex items-center gap-1 pt-1 text-[11px] text-muted-foreground">
+                              <TrendIcon trend={metrics.trend} />
+                              <span className="truncate">
+                                {formatCompactCount(metrics.views)} views · {formatCompactCount(metrics.unitsSold)} vend · {formatConversionRate(metrics.conversionRate)}
+                              </span>
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent
+                            side="top"
+                            align="start"
+                            sideOffset={6}
+                            className="max-w-xs space-y-1 px-3 py-2 text-left text-[11px] leading-snug whitespace-normal"
+                          >
+                            {tooltipLines.map((line) => (
+                              <div key={line}>{line}</div>
+                            ))}
+                          </TooltipContent>
+                        </Tooltip>
+                      )
+                    })()}
                   </div>
                 </li>
               ))}
@@ -495,7 +784,7 @@ export default function AdminProductShowcasePageClient({
           )}
         </div>
 
-        <aside className="xl:sticky xl:top-4 xl:w-72 xl:shrink-0 xl:self-start">
+        <aside className="xl:sticky xl:top-4 xl:w-96 xl:shrink-0 xl:self-start">
           <div
             className={`rounded-lg border bg-card p-3 transition-colors xl:max-h-[calc(100vh-2rem)] xl:overflow-y-auto ${
               bufferHover ? 'border-sky-400 bg-sky-50/50' : ''
@@ -555,7 +844,7 @@ export default function AdminProductShowcasePageClient({
                   >
                     <div className="relative h-12 w-10 shrink-0 overflow-hidden rounded border bg-muted">
                       {item.imageUrl ? (
-                        <Image src={item.imageUrl} alt={item.productName} fill className="object-cover" sizes="40px" />
+                        <CloudflareImage src={item.imageUrl} cloudflare={{ width: 40, height: 48, fit: 'cover', dpr: 2 }} alt={item.productName} fill className="object-cover" sizes="40px" />
                       ) : (
                         <div className="flex h-full w-full items-center justify-center text-[9px] text-muted-foreground">Sem</div>
                       )}
@@ -571,6 +860,56 @@ export default function AdminProductShowcasePageClient({
           </div>
         </aside>
       </div>
+
+      <Dialog open={isResetDialogOpen} onOpenChange={setIsResetDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Resetar Ordenação</DialogTitle>
+            <DialogDescription>
+              Escolha o tipo de ordenação automática para reconstruir no escopo selecionado. A ordem atual
+              desse tipo será sobrescrita.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Tipo para resetar</label>
+            <Select
+              value={resetSortType}
+              onValueChange={(value) => setResetSortType(value as ResetSortType)}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Selecione" />
+              </SelectTrigger>
+              <SelectContent>
+                {RESET_SORT_TYPE_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsResetDialogOpen(false)}
+              disabled={isRebuilding}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void handleRebuildSortType(resetSortType)}
+              disabled={isRebuilding || !resolvedContext}
+            >
+              {isRebuilding ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Confirmar Reset
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

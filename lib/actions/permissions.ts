@@ -35,7 +35,35 @@ async function getCurrentAdminId(): Promise<number> {
   return Number(admin.id)
 }
 
+async function hasAnyPermission(permissionCodes: string[]): Promise<boolean> {
+  for (const code of permissionCodes) {
+    try {
+      const result = await checkUserPermission(code)
+      if (result?.has_permission === true) return true
+    } catch {
+      // keep checking remaining permissions
+    }
+  }
+
+  return false
+}
+
+async function ensureAnyPermission(permissionCodes: string[]): Promise<void> {
+  const allowed = await hasAnyPermission(permissionCodes)
+  if (!allowed) throw new Error('Não autorizado')
+}
+
+async function ensureRoleManagementPermission(): Promise<void> {
+  await ensureAnyPermission(['settings.manage_roles'])
+}
+
+async function ensurePermissionsReadPermission(): Promise<void> {
+  await ensureAnyPermission(['settings.manage_roles', 'settings.manage_team'])
+}
+
 export async function listPermissions(): Promise<Permission[]> {
+  await ensurePermissionsReadPermission()
+
   const API_BASE = resolveBackendBaseUrl()
   const headers = await getAuthHeaders()
 
@@ -49,6 +77,8 @@ export async function listPermissions(): Promise<Permission[]> {
 }
 
 export async function listRoleGroups(): Promise<RoleGroup[]> {
+  await ensurePermissionsReadPermission()
+
   const API_BASE = resolveBackendBaseUrl()
   const headers = await getAuthHeaders()
 
@@ -66,6 +96,8 @@ export async function createRoleGroup(data: {
   description?: string
   color?: string
 }): Promise<RoleGroup> {
+  await ensureRoleManagementPermission()
+
   const API_BASE = resolveBackendBaseUrl()
   const headers = await getAuthHeaders(true)
 
@@ -109,6 +141,8 @@ export async function getRoleWithPermissions(roleId: number): Promise<{
   permissions: Permission[]
   permission_count: number
 }> {
+  await ensurePermissionsReadPermission()
+
   const API_BASE = resolveBackendBaseUrl()
   const headers = await getAuthHeaders()
 
@@ -126,6 +160,8 @@ export async function updateRoleGroup(roleId: number, data: {
   description?: string
   color?: string
 }): Promise<RoleGroup> {
+  await ensureRoleManagementPermission()
+
   const API_BASE = resolveBackendBaseUrl()
   const headers = await getAuthHeaders(true)
 
@@ -142,7 +178,26 @@ export async function updateRoleGroup(roleId: number, data: {
   return response.json()
 }
 
+export async function deleteRoleGroup(roleId: number): Promise<void> {
+  await ensureRoleManagementPermission()
+
+  const API_BASE = resolveBackendBaseUrl()
+  const headers = await getAuthHeaders()
+
+  const response = await fetch(`${API_BASE}/permissions/groups/${roleId}`, {
+    method: 'DELETE',
+    headers,
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '')
+    throw new Error(errorText || 'Failed to delete role group')
+  }
+}
+
 export async function assignPermissionToRole(roleId: number, permissionId: number): Promise<void> {
+  await ensureRoleManagementPermission()
+
   const API_BASE = resolveBackendBaseUrl()
   const headers = await getAuthHeaders(true)
 
@@ -156,6 +211,8 @@ export async function assignPermissionToRole(roleId: number, permissionId: numbe
 }
 
 export async function removePermissionFromRole(roleId: number, permissionId: number): Promise<void> {
+  await ensureRoleManagementPermission()
+
   const API_BASE = resolveBackendBaseUrl()
   const headers = await getAuthHeaders()
 
@@ -171,6 +228,10 @@ export async function removePermissionFromRole(roleId: number, permissionId: num
 }
 
 export async function getUserPermissions(userId?: number): Promise<UserPermissionSummary> {
+  if (typeof userId === 'number') {
+    await ensurePermissionsReadPermission()
+  }
+
   const API_BASE = resolveBackendBaseUrl()
   const headers = await getAuthHeaders()
   const resolvedUserId = userId ?? (await getCurrentAdminId())
@@ -190,6 +251,8 @@ export async function setUserPermissionOverride(
   granted: boolean,
   reason?: string
 ): Promise<void> {
+  await ensureAnyPermission(['settings.manage_team', 'settings.manage_roles'])
+
   const API_BASE = resolveBackendBaseUrl()
   const headers = await getAuthHeaders(true)
 
@@ -209,6 +272,8 @@ export async function removeUserPermissionOverride(
   userId: number,
   permissionId: number
 ): Promise<void> {
+  await ensureAnyPermission(['settings.manage_team', 'settings.manage_roles'])
+
   const API_BASE = resolveBackendBaseUrl()
   const headers = await getAuthHeaders()
 

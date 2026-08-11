@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { tAdmin } from '@/lib/i18n/admin'
 
 type ViaCEPResponse = {
   cep: string
@@ -35,18 +36,19 @@ type AddressFields = {
 }
 
 type Props = {
+  locale?: string
   values: AddressFields
   onChange: (field: keyof AddressFields, value: string) => void
   onBulkChange?: (fields: Partial<AddressFields>) => void
   errors?: Partial<Record<keyof AddressFields, string>>
 }
 
-const AddressInput = ({ values, onChange, onBulkChange, errors = {} }: Props) => {
+const AddressInput = ({ locale = 'pt-BR', values, onChange, onBulkChange, errors = {} }: Props) => {
   const [loading, setLoading] = useState(false)
 
   const fetchAddressByCEP = async (cep: string) => {
     const cleanCEP = cep.replace(/[^\d]/g, '')
-    
+
     if (cleanCEP.length !== 8) return
 
     setLoading(true)
@@ -92,7 +94,7 @@ const AddressInput = ({ values, onChange, onBulkChange, errors = {} }: Props) =>
 
   const handleCEPChange = (value: string) => {
     onChange('zip_code', value)
-    
+
     // Search for address when ZIP code is complete
     const cleanCEP = value.replace(/[^\d]/g, '')
     if (cleanCEP.length === 8) {
@@ -104,7 +106,7 @@ const AddressInput = ({ values, onChange, onBulkChange, errors = {} }: Props) =>
     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-12 gap-4">
       {/* CEP */}
       <div className="md:col-span-4 space-y-2">
-        <Label htmlFor="zip_code">CEP</Label>
+        <Label htmlFor="zip_code">{tAdmin(locale, 'admin.general.address.fields.zipCode', 'ZIP Code')}</Label>
         <div className="relative">
           <PatternFormat
             value={values.zip_code ?? ''}
@@ -113,7 +115,7 @@ const AddressInput = ({ values, onChange, onBulkChange, errors = {} }: Props) =>
             allowEmptyFormatting={false}
             customInput={Input}
             onValueChange={(vals: any) => handleCEPChange(vals.value)}
-            placeholder='_____-___'
+            placeholder={tAdmin(locale, 'admin.general.address.placeholder.zipCode', '_____-___')}
             id="zip_code"
             className={errors.zip_code ? 'border-destructive' : ''}
           />
@@ -130,12 +132,12 @@ const AddressInput = ({ values, onChange, onBulkChange, errors = {} }: Props) =>
 
       {/* Street Name */}
       <div className="md:col-span-8 space-y-2">
-        <Label htmlFor="street_name">Rua</Label>
+        <Label htmlFor="street_name">{tAdmin(locale, 'admin.general.address.fields.street', 'Street')}</Label>
         <Input
           id="street_name"
           value={values.street_name ?? ''}
           onChange={(e) => onChange('street_name', e.target.value)}
-          placeholder='Rua, Avenida, etc.'
+          placeholder={tAdmin(locale, 'admin.general.address.placeholder.street', 'Street, Avenue, etc.')}
           className={errors.street_name ? 'border-destructive' : ''}
         />
         {errors.street_name && (
@@ -145,12 +147,12 @@ const AddressInput = ({ values, onChange, onBulkChange, errors = {} }: Props) =>
 
       {/* House Number */}
       <div className="md:col-span-3 space-y-2">
-        <Label htmlFor="house_number">Número</Label>
+        <Label htmlFor="house_number">{tAdmin(locale, 'admin.general.address.fields.number', 'Number')}</Label>
         <Input
           id="house_number"
           value={values.house_number ?? ''}
           onChange={(e) => onChange('house_number', e.target.value)}
-          placeholder='123'
+          placeholder={tAdmin(locale, 'admin.general.address.placeholder.number', '123')}
           className={errors.house_number ? 'border-destructive' : ''}
         />
         {errors.house_number && (
@@ -160,12 +162,12 @@ const AddressInput = ({ values, onChange, onBulkChange, errors = {} }: Props) =>
 
       {/* Complement */}
       <div className="md:col-span-9 space-y-2">
-        <Label htmlFor="address_complement">Complemento</Label>
+        <Label htmlFor="address_complement">{tAdmin(locale, 'admin.general.address.fields.complement', 'Complement')}</Label>
         <Input
           id="address_complement"
           value={values.address_complement ?? ''}
           onChange={(e) => onChange('address_complement', e.target.value)}
-          placeholder='Apt, Bloco, etc.'
+          placeholder={tAdmin(locale, 'admin.general.address.placeholder.complement', 'Apt, Block, etc.')}
           className={errors.address_complement ? 'border-destructive' : ''}
         />
         {errors.address_complement && (
@@ -175,12 +177,12 @@ const AddressInput = ({ values, onChange, onBulkChange, errors = {} }: Props) =>
 
       {/* Neighborhood */}
       <div className="md:col-span-4 space-y-2">
-        <Label htmlFor="neighborhood">Bairro</Label>
+        <Label htmlFor="neighborhood">{tAdmin(locale, 'admin.general.address.fields.neighborhood', 'Neighborhood')}</Label>
         <Input
           id="neighborhood"
           value={values.neighborhood ?? ''}
           onChange={(e) => onChange('neighborhood', e.target.value)}
-          placeholder='Bairro'
+          placeholder={tAdmin(locale, 'admin.general.address.placeholder.neighborhood', 'Neighborhood')}
           className={errors.neighborhood ? 'border-destructive' : ''}
         />
         {errors.neighborhood && (
@@ -190,12 +192,12 @@ const AddressInput = ({ values, onChange, onBulkChange, errors = {} }: Props) =>
 
       {/* City */}
       <div className="md:col-span-5 space-y-2">
-        <Label htmlFor="city">Cidade</Label>
+        <Label htmlFor="city">{tAdmin(locale, 'admin.general.address.fields.city', 'City')}</Label>
         <Input
           id="city"
           value={values.city ?? ''}
           onChange={(e) => onChange('city', e.target.value)}
-          placeholder='Cidade'
+          placeholder={tAdmin(locale, 'admin.general.address.placeholder.city', 'City')}
           className={errors.city ? 'border-destructive' : ''}
         />
         {errors.city && (
@@ -205,12 +207,12 @@ const AddressInput = ({ values, onChange, onBulkChange, errors = {} }: Props) =>
 
       {/* State */}
       <div className="md:col-span-3 space-y-2">
-        <Label htmlFor="state">Estado</Label>
+        <Label htmlFor="state">{tAdmin(locale, 'admin.general.address.fields.state', 'State')}</Label>
         <Input
           id="state"
           value={values.state ?? ''}
           onChange={(e) => onChange('state', e.target.value.toUpperCase())}
-          placeholder='SP'
+          placeholder={tAdmin(locale, 'admin.general.address.placeholder.state', 'CA')}
           maxLength={2}
           className={errors.state ? 'border-destructive uppercase' : 'uppercase'}
         />

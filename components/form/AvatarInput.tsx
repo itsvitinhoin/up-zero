@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
-import Cropper, { Area } from 'react-easy-crop'
+import Cropper from 'react-easy-crop'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Slider } from '@/components/ui/slider'
@@ -22,6 +22,13 @@ type Props = {
 
 const DEFAULT_MAX_MB = 5
 
+type CropArea = {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 const readFileAsDataURL = (file: File) =>
   new Promise<string>((resolve, reject) => {
     const reader = new FileReader()
@@ -30,7 +37,7 @@ const readFileAsDataURL = (file: File) =>
     reader.readAsDataURL(file)
   })
 
-const createCroppedBlob = async (imageSrc: string, crop: Area): Promise<Blob> => {
+const createCroppedBlob = async (imageSrc: string, crop: CropArea): Promise<Blob> => {
   const image = await new Promise<HTMLImageElement>((resolve, reject) => {
     const img = new Image()
     img.onload = () => resolve(img)
@@ -75,10 +82,12 @@ const createCroppedBlob = async (imageSrc: string, crop: Area): Promise<Blob> =>
 
 const AvatarInput = ({ label = 'Avatar', value, onChange, name, maxFileSizeMb = DEFAULT_MAX_MB, accept = 'image/*' }: Props) => {
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [errorDialogOpen, setErrorDialogOpen] = useState(false)
+  const [errorDialogMessage, setErrorDialogMessage] = useState('')
   const [imageSrc, setImageSrc] = useState<string | null>(null)
   const [crop, setCrop] = useState({ x: 0, y: 0 })
   const [zoom, setZoom] = useState(1)
-  const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null)
+  const [croppedAreaPixels, setCroppedAreaPixels] = useState<CropArea | null>(null)
   const [uploading, setUploading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -89,7 +98,8 @@ const AvatarInput = ({ label = 'Avatar', value, onChange, name, maxFileSizeMb = 
     if (!file) return
 
     if (file.size > maxFileSizeMb * 1024 * 1024) {
-      alert(`O arquivo deve ter no máximo ${maxFileSizeMb}MB`)
+      setErrorDialogMessage(`O arquivo deve ter no máximo ${maxFileSizeMb}MB`)
+      setErrorDialogOpen(true)
       return
     }
 
@@ -100,7 +110,7 @@ const AvatarInput = ({ label = 'Avatar', value, onChange, name, maxFileSizeMb = 
     setZoom(1)
   }
 
-  const onCropComplete = useCallback((_: Area, croppedPixels: Area) => {
+  const onCropComplete = useCallback((_: CropArea, croppedPixels: CropArea) => {
     setCroppedAreaPixels(croppedPixels)
   }, [])
 
@@ -134,7 +144,8 @@ const AvatarInput = ({ label = 'Avatar', value, onChange, name, maxFileSizeMb = 
       setDialogOpen(false)
     } catch (error) {
       console.error('Avatar upload error', error)
-      alert(error instanceof Error ? error.message : 'Falha ao enviar avatar')
+      setErrorDialogMessage(error instanceof Error ? error.message : 'Falha ao enviar avatar')
+      setErrorDialogOpen(true)
     } finally {
       setUploading(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
@@ -229,6 +240,18 @@ const AvatarInput = ({ label = 'Avatar', value, onChange, name, maxFileSizeMb = 
             {uploading ? 'Enviando...' : 'Salvar'}
           </Button>
         </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={errorDialogOpen} onOpenChange={setErrorDialogOpen}>
+        <DialogContent className='max-w-md'>
+          <DialogHeader>
+            <DialogTitle>Erro</DialogTitle>
+          </DialogHeader>
+          <p className='text-sm text-muted-foreground'>{errorDialogMessage}</p>
+          <DialogFooter>
+            <Button type='button' onClick={() => setErrorDialogOpen(false)}>Fechar</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

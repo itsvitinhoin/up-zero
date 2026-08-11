@@ -133,12 +133,13 @@ export type UserPermissionSummary = {
   user_id: number
   role_id?: number
   role_name?: string
+  is_system_role?: boolean
   permissions_from_role: Permission[]
   permission_overrides: Array<[Permission, boolean]>
   total_permissions: number
 }
 
-export type PermissionSource = 'role' | 'override' | 'denied'
+export type PermissionSource = 'role' | 'override' | 'override_grant' | 'override_deny' | 'system_role' | 'denied'
 
 export type PermissionCheckResult = {
   has_permission: boolean
@@ -152,12 +153,14 @@ export const PERMISSION_GROUPS = {
   PRODUCTS: 'products',
   ORDERS: 'orders',
   CUSTOMERS: 'customers',
+  OFFLINE: 'offline',
   REPORTS: 'reports',
   SETTINGS: 'settings',
   INVENTORY: 'inventory',
   CUSTOM_LINKS: 'custom_links',
   MESSAGING: 'messaging',
   ASSETS: 'assets',
+  USERS: 'users',
   PRICES: 'prices',
   PAGES: 'pages',
 }
@@ -260,6 +263,7 @@ export function getGroupColor(group: string): string {
     custom_links: 'bg-cyan-100 text-cyan-800',
     messaging: 'bg-indigo-100 text-indigo-800',
     assets: 'bg-emerald-100 text-emerald-800',
+    users: 'bg-slate-100 text-slate-800',
     prices: 'bg-rose-100 text-rose-800',
     pages: 'bg-teal-100 text-teal-800',
   }

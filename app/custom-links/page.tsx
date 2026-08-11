@@ -1,15 +1,25 @@
-import Link from 'next/link'
+import { Suspense } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import { Plus, Share2, MousePointerClick, TrendingUp } from 'lucide-react'
-import { CustomLinksListClient } from '@/components/admin/custom-links-list-client'
+import { Share2, MousePointerClick, TrendingUp } from 'lucide-react'
+import { CustomLinksCreateButton, CustomLinksListClient } from '@/components/admin/custom-links-list-client'
 import { listCustomLinksAction } from '@/lib/actions/custom-links'
+import Loading from './loading'
 
 export const metadata = {
   title: 'Links Personalizados | Admin',
 }
 
-export default async function CustomLinksPage() {
+export const instant = false
+
+export default function CustomLinksPage() {
+  return (
+    <Suspense fallback={<Loading />}>
+      <CustomLinksPageContent />
+    </Suspense>
+  )
+}
+
+async function CustomLinksPageContent() {
   const linksResult = await listCustomLinksAction()
   const links = linksResult.success && linksResult.data ? linksResult.data : []
   const metrics = {
@@ -26,12 +36,7 @@ export default async function CustomLinksPage() {
           <h1 className="text-2xl sm:text-3xl font-bold">Links Personalizados</h1>
           <p className="text-muted-foreground text-sm mt-1">Crie e gerencie links com produtos selecionados</p>
         </div>
-        <Link href="/custom-links/new">
-          <Button className="gap-2 w-full sm:w-auto">
-            <Plus className="h-4 w-4" />
-            Novo Link
-          </Button>
-        </Link>
+        <CustomLinksCreateButton />
       </div>
 
       {/* Metrics Cards */}

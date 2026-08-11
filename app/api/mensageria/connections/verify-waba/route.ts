@@ -26,8 +26,8 @@
  */
 
 import type { WaOnboardingType } from '@/lib/whatsapp/types'
-import { maskId, META_REVIEW_SCOPES } from '@/lib/whatsapp/meta'
 import { NextRequest, NextResponse } from 'next/server'
+import { checkUserPermission } from '@/lib/actions/permissions'
 
 const GRAPH = 'https://graph.facebook.com/v19.0'
 
@@ -141,13 +141,9 @@ export interface WabaVerifyResult {
 // ─── Graph helpers ────────────────────────────────────────────────────────────
 
 async function graphGet<T>(path: string, token: string): Promise<{ data: T; url: string }> {
-  const url = `${GRAPH}${path}`
-  const res = await fetch(url, {
-    cache: 'no-store',
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  })
+  const sep = path.includes('?') ? '&' : '?'
+  const url = `${GRAPH}${path}${sep}access_token=${token}`
+  const res = await fetch(url, { cache: 'no-store' })
   const raw = await res.json() as T & { error?: GraphError }
   return { data: raw, url }
 }
@@ -165,12 +161,7 @@ async function exchangeCodeForToken(
     code,
     redirect_uri: '',
   })
-  const res = await fetch(`${GRAPH}/oauth/access_token`, {
-    method: 'POST',
-    cache: 'no-store',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: params,
-  })
+  const res = await fetch(`${GRAPH}/oauth/access_token?${params.toString()}`, { cache: 'no-store' })
   const data = await res.json() as { access_token?: string; error_description?: string; error?: { message: string } }
   if (data.error) return { error: data.error.message }
   if (data.error_description) return { error: data.error_description }
@@ -193,6 +184,16 @@ function classifyOnboarding(
 // ─── Route ────────────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest): Promise<NextResponse<WabaVerifyResult>> {
+  const permission = await checkUserPermission('messaging.manage_settings').catch(() => null)
+  if (permission?.has_permission !== true) {
+    return NextResponse.json({
+      ok: false,
+      failureReason: 'forbidden',
+      error: 'Você não tem permissão para gerenciar configurações de mensageria',
+      steps: [],
+    }, { status: 403 })
+  }
+
   const body = await req.json() as {
     code?: string
     phone_number_id?: string
@@ -205,13 +206,19 @@ export async function POST(req: NextRequest): Promise<NextResponse<WabaVerifyRes
   const systemUserToken = process.env.FACEBOOK_SYSTEM_USER_TOKEN ?? ''
 
   const steps: WabaVerifyResult['steps'] = []
-  const requiredScopes = [...META_REVIEW_SCOPES]
+  const requiredScopes = [
+    'public_profile',
+    'email',
+    'business_management',
+    'whatsapp_business_management',
+    'whatsapp_business_messaging',
+  ]
 
   console.log('[verify-waba] incoming request:', {
     has_code: !!body.code,
-    phone_number_id: maskId(body.phone_number_id),
-    waba_id: maskId(body.waba_id),
-    business_id: maskId(body.business_id),
+    phone_number_id: body.phone_number_id,
+    waba_id: body.waba_id,
+    business_id: body.business_id,
     has_app_secret: !!appSecret,
     has_system_token: !!systemUserToken,
   })
@@ -355,7 +362,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<WabaVerifyRes
         steps.push({
           step: 'Token inválido — continuando com Embedded Signup payload',
           ok: false,
-          detail: `Token inválido mas waba_id "${maskId(body.waba_id)}" presente no payload. Onboarding continua via Embedded Signup.`,
+          detail: `Token inválido mas waba_id "${body.waba_id}" presente no payload. Onboarding continua via Embedded Signup.`,
         })
       }
 
@@ -431,7 +438,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<WabaVerifyRes
   }
 
   const wabaPath = `/${businessId}/client_whatsapp_business_accounts?fields=id,name,currency,owner_business_info&limit=20`
-  console.log('[verify-waba] GET client_whatsapp_business_accounts:', { businessId: maskId(businessId) })
+  console.log('[verify-waba] GET client_whatsapp_business_accounts:', { businessId })
 
   let matchedWaba: WabaRecord | undefined
   let allWabaIds: string[] = []
@@ -459,11 +466,11 @@ export async function POST(req: NextRequest): Promise<NextResponse<WabaVerifyRes
         hint = 'Advanced Access não aprovado para whatsapp_business_management — aviso apenas, onboarding continua via Embedded Signup payload.'
       } else if (err.code === 803 || err.code === 100) {
         failureReason = 'wrong_business_id'
-        hint = `business_id "${maskId(businessId)}" não acessível com este System User Token.`
+        hint = `business_id "${businessId}" não acessível com este System User Token.`
       }
 
       steps.push({
-        step: `GET /${maskId(businessId)}/client_whatsapp_business_accounts`,
+        step: `GET /${businessId}/client_whatsapp_business_accounts`,
         ok: false,
         detail: `Erro ${err.code}${err.error_subcode ? `/${err.error_subcode}` : ''}: ${err.message}${hint ? ` → ${hint}` : ''}${err.fbtrace_id ? ` [trace: ${err.fbtrace_id}]` : ''}`,
       })
@@ -477,15 +484,15 @@ export async function POST(req: NextRequest): Promise<NextResponse<WabaVerifyRes
       steps.push({
         step: 'WABA do Embedded Signup — fallback',
         ok: true,
-        detail: `API retornou erro (${isAdvancedAccessIssue ? 'Advanced Access não aprovado' : `código ${err.code}`}) mas waba_id "${maskId(body.waba_id)}" presente no Embedded Signup. Onboarding continua.`,
+        detail: `API retornou erro (${isAdvancedAccessIssue ? 'Advanced Access não aprovado' : `código ${err.code}`}) mas waba_id "${body.waba_id}" presente no Embedded Signup. Onboarding continua.`,
       })
       matchedWaba = { id: body.waba_id }
     } else {
       allWabaIds = (wabaRes.data ?? []).map((w) => w.id)
       steps.push({
-        step: `GET /${maskId(businessId)}/client_whatsapp_business_accounts`,
+        step: `GET /${businessId}/client_whatsapp_business_accounts`,
         ok: true,
-        detail: `${allWabaIds.length} WABA(s): ${allWabaIds.map(maskId).join(', ') || '(nenhuma)'}`,
+        detail: `${allWabaIds.length} WABA(s): ${allWabaIds.join(', ') || '(nenhuma)'}`,
       })
 
       if (allWabaIds.length === 0) {
@@ -499,7 +506,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<WabaVerifyRes
         if (!body.waba_id) {
           return NextResponse.json({
             ok: false, failureReason: 'advanced_access_missing',
-            error: `Nenhuma WABA para business_id "${maskId(businessId)}" e waba_id não presente no payload do Embedded Signup.`,
+            error: `Nenhuma WABA para business_id "${businessId}" e waba_id não presente no payload do Embedded Signup.`,
             tokenDiag, allWabaIds: [], steps,
           })
         }
@@ -508,7 +515,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<WabaVerifyRes
         steps.push({
           step: 'WABA do Embedded Signup — fallback',
           ok: true,
-          detail: `Usando waba_id "${maskId(body.waba_id)}" do Embedded Signup (API retornou 0 WABAs — Advanced Access pode não estar aprovado).`,
+          detail: `Usando waba_id "${body.waba_id}" do Embedded Signup (API retornou 0 WABAs — Advanced Access pode não estar aprovado).`,
         })
       } else {
         if (tokenDiag) tokenDiag.hasAdvancedAccess = true
@@ -523,21 +530,21 @@ export async function POST(req: NextRequest): Promise<NextResponse<WabaVerifyRes
           steps.push({
             step: 'Correspondência waba_id — aviso',
             ok: false,
-            detail: `waba_id "${maskId(targetWabaId)}" não encontrado na API (disponíveis: ${allWabaIds.map(maskId).join(', ')}) — usando waba_id do Embedded Signup como fonte de verdade.`,
+            detail: `waba_id "${targetWabaId}" não encontrado na API (disponíveis: ${allWabaIds.join(', ')}) — usando waba_id do Embedded Signup como fonte de verdade.`,
           })
           matchedWaba = { id: targetWabaId }
         } else {
           steps.push({
             step: 'Correspondência waba_id',
             ok: true,
-            detail: `WABA "${maskId(matchedWaba?.id)}" confirmada: ${matchedWaba?.name ?? '(sem nome)'}`,
+            detail: `WABA "${matchedWaba?.id}" confirmada: ${matchedWaba?.name ?? '(sem nome)'}`,
           })
         }
       }
     }
   } catch (e) {
     console.error('[verify-waba] client_whatsapp_business_accounts error:', e)
-    steps.push({ step: `GET /${maskId(businessId)}/client_whatsapp_business_accounts`, ok: false, detail: `Erro de rede: ${String(e)}` })
+    steps.push({ step: `GET /${businessId}/client_whatsapp_business_accounts`, ok: false, detail: `Erro de rede: ${String(e)}` })
     if (!body.waba_id) {
       return NextResponse.json({ ok: false, failureReason: 'api_error', error: `Erro de rede: ${String(e)}`, tokenDiag, steps })
     }
@@ -545,7 +552,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<WabaVerifyRes
     steps.push({
       step: 'WABA do Embedded Signup — fallback',
       ok: true,
-      detail: `Erro de rede mas waba_id "${maskId(body.waba_id)}" presente no Embedded Signup. Onboarding continua.`,
+      detail: `Erro de rede mas waba_id "${body.waba_id}" presente no Embedded Signup. Onboarding continua.`,
     })
   }
 
@@ -566,13 +573,13 @@ export async function POST(req: NextRequest): Promise<NextResponse<WabaVerifyRes
   const phoneNumberId = body.phone_number_id
   if (phoneNumberId) {
     const phonePath = `/${phoneNumberId}?fields=id,display_phone_number,verified_name,code_verification_status,quality_rating,platform_type,account_mode,status`
-    console.log('[verify-waba] GET phone number details:', maskId(phoneNumberId))
+    console.log('[verify-waba] GET phone number details:', phoneNumberId)
 
     try {
       const { data: phoneData } = await graphGet<PhoneNumberData>(phonePath, systemUserToken)
 
       console.log('[verify-waba] phone number data:', {
-        id: maskId(phoneData.id),
+        id: phoneData.id,
         display_phone_number: phoneData.display_phone_number,
         platform_type: phoneData.platform_type,
         code_verification_status: phoneData.code_verification_status,
@@ -587,7 +594,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<WabaVerifyRes
         console.warn('[verify-waba] phone lookup error (possible migration required):', err)
 
         steps.push({
-          step: `GET /${maskId(phoneNumberId)} (phone details)`,
+          step: `GET /${phoneNumberId} (phone details)`,
           ok: false,
           detail: `Erro ${err.code}${err.error_subcode ? `/${err.error_subcode}` : ''}: ${err.message}. O número pode estar vinculado a outro provedor BSP.`,
         })
@@ -613,9 +620,9 @@ export async function POST(req: NextRequest): Promise<NextResponse<WabaVerifyRes
         onboardingType = classifyOnboarding(platformType, true)
 
         steps.push({
-          step: `GET /${maskId(phoneNumberId)} (phone details)`,
+          step: `GET /${phoneNumberId} (phone details)`,
           ok: true,
-          detail: `Número: ${phoneData.display_phone_number ?? '?'} | Phone ID: ${maskId(phoneNumberId)} | Plataforma: ${platformType || '(não definido)'} | Status: ${phoneData.status ?? '?'} | Qualidade: ${phoneData.quality_rating ?? '?'}`,
+          detail: `Número: ${phoneData.display_phone_number ?? '?'} | Plataforma: ${platformType || '(não definido)'} | Status: ${phoneData.status ?? '?'} | Qualidade: ${phoneData.quality_rating ?? '?'}`,
         })
         steps.push({
           step: 'Classificação do onboarding',
@@ -633,7 +640,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<WabaVerifyRes
       }
     } catch (e) {
       console.error('[verify-waba] phone lookup network error:', e)
-      steps.push({ step: `GET /${maskId(phoneNumberId)} (phone details)`, ok: false, detail: `Erro de rede: ${String(e)}` })
+      steps.push({ step: `GET /${phoneNumberId} (phone details)`, ok: false, detail: `Erro de rede: ${String(e)}` })
       // Assume new_number if we can't reach the phone endpoint
       onboardingType = 'new_number'
     }
@@ -655,8 +662,8 @@ export async function POST(req: NextRequest): Promise<NextResponse<WabaVerifyRes
 
   console.log('[verify-waba] final result:', {
     onboardingType,
-    waba: maskId(matchedWaba.id),
-    phone: phoneDetails?.displayPhone ? 'display_phone_number returned' : maskId(phoneNumberId),
+    waba: matchedWaba.id,
+    phone: phoneDetails?.displayPhone ?? phoneNumberId,
     phoneNumberPending,
   })
 

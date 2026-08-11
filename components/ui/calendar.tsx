@@ -6,10 +6,37 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
 } from 'lucide-react'
-import { DayButton, DayPicker, getDefaultClassNames } from 'react-day-picker'
+import {
+  DayButton,
+  DayPicker,
+  getDefaultClassNames,
+  type DateRange,
+} from 'react-day-picker'
 
 import { cn } from '@/lib/utils'
 import { Button, buttonVariants } from '@/components/ui/button'
+
+function isSameDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear()
+    && a.getMonth() === b.getMonth()
+    && a.getDate() === b.getDate()
+  )
+}
+
+function normalizeRangeSelect(
+  current: DateRange | undefined,
+  next: DateRange | undefined,
+): DateRange | undefined {
+  if (!next) return undefined
+
+  if (current?.from && current?.to && next.from && next.to) {
+    const clicked = isSameDay(next.from, current.from) ? next.to : next.from
+    return { from: clicked, to: undefined }
+  }
+
+  return next
+}
 
 function Calendar({
   className,
@@ -19,11 +46,26 @@ function Calendar({
   buttonVariant = 'ghost',
   formatters,
   components,
+  mode,
+  selected,
+  onSelect,
   ...props
 }: React.ComponentProps<typeof DayPicker> & {
   buttonVariant?: React.ComponentProps<typeof Button>['variant']
 }) {
   const defaultClassNames = getDefaultClassNames()
+
+  const handleSelect = React.useCallback(
+    (range: DateRange | undefined) => {
+      if (mode === 'range') {
+        onSelect?.(normalizeRangeSelect(selected as DateRange | undefined, range))
+        return
+      }
+
+      onSelect?.(range as never)
+    },
+    [mode, onSelect, selected],
+  )
 
   return (
     <DayPicker
@@ -167,6 +209,9 @@ function Calendar({
         },
         ...components,
       }}
+      mode={mode}
+      selected={selected}
+      onSelect={handleSelect}
       {...props}
     />
   )

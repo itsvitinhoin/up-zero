@@ -3,15 +3,16 @@
 import { useState, useMemo } from 'react'
 import { Card, CardContent, CardHeader, CardTitle, CardToolbar, CardFooter } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge-2'
+import AdminPaginationControls from '@/components/admin/admin-pagination-controls'
 import { KpiCard, SectionHeader, RfmBadge, StatsRow, EmptyState } from '@/components/dashboard/shared'
-import { fmt, fmtPct, type DRFMSegment } from '@/lib/dashboard-mock-data'
-import { useDashboardData } from '@/contexts/dashboard-data'
+import {
+  DASHBOARD_CUSTOMERS, TOTALS, fmt, fmtPct, type DRFMSegment,
+} from '@/lib/dashboard-mock-data'
 
 const PAGE_SIZE = 10
 const RFM_SEGMENTS: DRFMSegment[] = ['Champions', 'Loyal', 'Promising', 'At Risk', 'Lost']
 
 export default function DashboardCustomers() {
-  const { customers: DASHBOARD_CUSTOMERS, totals: TOTALS } = useDashboardData()
   const [search, setSearch] = useState('')
   const [rfmFilter, setRfmFilter] = useState<'ALL' | DRFMSegment>('ALL')
   const [page, setPage] = useState(1)
@@ -84,29 +85,23 @@ export default function DashboardCustomers() {
             <CardTitle>Valor do Cliente</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
-            {(() => {
-              const topRevenue = [...DASHBOARD_CUSTOMERS].sort((a,b) => b.totalRevenue - a.totalRevenue)[0]
-              const topFreq = DASHBOARD_CUSTOMERS.filter(c => c.frequency > 0).sort((a,b) => a.frequency - b.frequency)[0]
-              return (<>
-                {topRevenue && <StatsRow label="Maior receita" value={topRevenue.name} sub={fmt(topRevenue.totalRevenue)} />}
-                <StatsRow label="Ticket médio geral" value={fmt(TOTALS.avgTicket)} />
-                {topFreq && <StatsRow label="Maior frequência" value={topFreq.name} sub={`${topFreq.frequency}d entre pedidos`} />}
-              </>)
-            })()}
+            <StatsRow label="Maior receita" value="Ipê Boutique" sub="R$ 29.360" />
+            <StatsRow label="Ticket médio geral" value={fmt(TOTALS.avgTicket)} />
+            <StatsRow label="Maior frequência" value="Arte & Moda" sub="30 dias" />
           </CardContent>
         </Card>
 
         {/* Card 3 */}
         <Card>
           <CardHeader>
-            <CardTitle>Status da Base</CardTitle>
+            <CardTitle>Segmentação</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
-            <StatsRow label="Total cadastros" value={String(total)} />
-            <StatsRow label="Ativos (≤ 90 dias)" value={String(ativos)} />
-            <StatsRow label="Em risco (91–180 dias)" value={String(emRisco)} />
-            <StatsRow label="Inativos (> 180 dias)" value={String(inativos)} />
-            <StatsRow label="Com recompra (2x+)" value={String(DASHBOARD_CUSTOMERS.filter(c => c.totalOrders >= 2).length)} />
+            <StatsRow label="Moda feminina" value="8 clientes" />
+            <StatsRow label="Casual feminino" value="6 clientes" />
+            <StatsRow label="Resortwear" value="3 clientes" />
+            <StatsRow label="Alto padrão" value="3 clientes" />
+            <StatsRow label="Multimarcas" value="2 clientes" />
           </CardContent>
         </Card>
       </div>
@@ -119,7 +114,7 @@ export default function DashboardCustomers() {
             <input
               value={search}
               onChange={e => handleSearch(e.target.value)}
-              placeholder="Buscar por nome ou estado…"
+              placeholder="Buscar por nome, estado ou segmento…"
               className="text-sm border border-border rounded-lg px-3 py-1.5 bg-background outline-none focus:ring-2 focus:ring-ring w-64"
             />
           </CardToolbar>
@@ -192,27 +187,17 @@ export default function DashboardCustomers() {
           )}
         </div>
 
-        <CardFooter className="justify-between">
-          <span className="text-sm text-muted-foreground">
-            Mostrando {Math.min((page - 1) * PAGE_SIZE + 1, filtered.length)}–{Math.min(page * PAGE_SIZE, filtered.length)} de {filtered.length} clientes
-          </span>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setPage(p => Math.max(1, p - 1))}
-              disabled={page === 1}
-              className="text-sm px-3 py-1.5 rounded-lg border border-border bg-background hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              Anterior
-            </button>
-            <span className="text-sm text-muted-foreground">{page} / {Math.max(1, totalPages)}</span>
-            <button
-              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-              disabled={page >= totalPages}
-              className="text-sm px-3 py-1.5 rounded-lg border border-border bg-background hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              Próximo
-            </button>
-          </div>
+        <CardFooter>
+          <AdminPaginationControls
+            currentPage={page}
+            totalPages={totalPages}
+            onPageChange={setPage}
+            showing={{
+              start: Math.min((page - 1) * PAGE_SIZE + 1, filtered.length),
+              end: Math.min(page * PAGE_SIZE, filtered.length),
+              total: filtered.length,
+            }}
+          />
         </CardFooter>
       </Card>
     </div>

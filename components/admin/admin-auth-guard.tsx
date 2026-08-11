@@ -8,17 +8,17 @@ type AdminAuthGuardProps = {
   children: React.ReactNode
 }
 
-const PUBLIC_ROUTES = ['/login', '/privacy', '/politica-de-privacidade']
-
 export default function AdminAuthGuard({ isLoggedIn, children }: AdminAuthGuardProps) {
   const pathname = usePathname()
   const router = useRouter()
 
+  const isPublicRoute = pathname === '/login' || pathname === '/privacy'
+
   useEffect(() => {
-    if (!isLoggedIn && !PUBLIC_ROUTES.includes(pathname)) {
+    if (!isLoggedIn && !isPublicRoute) {
       router.replace('/login')
     }
-  }, [isLoggedIn, pathname, router])
+  }, [isLoggedIn, isPublicRoute, router])
 
   return <>{children}</>
 }

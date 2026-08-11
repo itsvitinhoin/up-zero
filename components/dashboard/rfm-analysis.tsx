@@ -5,14 +5,12 @@ import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recha
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge-2'
 import { SectionHeader, RfmBadge, EmptyState } from '@/components/dashboard/shared'
-import { fmt, type DRFMSegment } from '@/lib/dashboard-mock-data'
-import { useDashboardData } from '@/contexts/dashboard-data'
+import { RFM_DATA, DASHBOARD_CUSTOMERS, fmt, type DRFMSegment } from '@/lib/dashboard-mock-data'
 
 const ALL = 'ALL'
 
 export default function DashboardRFM() {
   const [selectedSegment, setSelectedSegment] = useState<DRFMSegment | 'ALL'>(ALL)
-  const { rfmData: RFM_DATA, customers: DASHBOARD_CUSTOMERS } = useDashboardData()
 
   const pieData = RFM_DATA.map(r => ({ name: r.segment, value: r.count, fill: r.color }))
 
@@ -30,62 +28,6 @@ export default function DashboardRFM() {
         title="Análise RFM"
         description="Segmentação de clientes por Recência, Frequência e Valor Monetário"
       />
-
-      {/* RFM Logic Explanation */}
-      <Card className="bg-muted/30">
-        <CardContent className="pt-5">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-            {[
-              {
-                letter: 'R', label: 'Recência', color: '#6366f1', bg: '#eef2ff',
-                desc: 'Há quantos dias o cliente fez o último pedido.',
-                scores: 'Score 5 = ≤ 30 dias · 4 = 31–60 · 3 = 61–90 · 2 = 91–180 · 1 = > 180 dias',
-              },
-              {
-                letter: 'F', label: 'Frequência', color: '#10b981', bg: '#d1fae5',
-                desc: 'Quantos pedidos o cliente já realizou no total.',
-                scores: 'Score 5 = 5+ pedidos · 4 = 4 · 3 = 3 · 2 = 2 · 1 = apenas 1 pedido',
-              },
-              {
-                letter: 'M', label: 'Monetário', color: '#f59e0b', bg: '#fef3c7',
-                desc: 'Ticket médio dos pedidos realizados pelo cliente.',
-                scores: 'Score 5 = R$ 5.000+ · 4 = R$ 3.500+ · 3 = R$ 2.500+ · 2 = R$ 1.500+ · 1 = abaixo',
-              },
-            ].map(dim => (
-              <div key={dim.letter} className="flex gap-3">
-                <div className="size-9 rounded-xl flex items-center justify-center font-bold text-lg shrink-0" style={{ backgroundColor: dim.bg, color: dim.color }}>
-                  {dim.letter}
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-foreground">{dim.label}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">{dim.desc}</p>
-                  <p className="text-[11px] text-muted-foreground/70 mt-1 leading-relaxed">{dim.scores}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="mt-4 pt-4 border-t border-border/60">
-            <p className="text-xs font-semibold text-foreground mb-2">Como os segmentos são definidos</p>
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-              {[
-                { seg: 'Champions', rule: 'R ≥ 4, F ≥ 4 e M ≥ 4' },
-                { seg: 'Loyal',     rule: 'F ≥ 3 e R ≥ 3' },
-                { seg: 'Promising', rule: 'R ≥ 3 e F ≤ 2' },
-                { seg: 'At Risk',   rule: 'R ≤ 2 e F ≥ 3' },
-                { seg: 'Lost',      rule: 'Demais casos' },
-              ].map(s => (
-                <div key={s.seg} className="bg-background rounded-lg p-2 border border-border/50">
-                  <p className="text-[11px] font-semibold text-foreground">{s.seg}</p>
-                  <p className="text-[11px] text-muted-foreground">{s.rule}</p>
-                </div>
-              ))}
-            </div>
-            <p className="text-[11px] text-muted-foreground mt-3 leading-relaxed">
-              <span className="font-semibold text-foreground">Exemplo:</span> cliente com último pedido há 20 dias (R=5), 3 pedidos no total (F=3) e ticket médio de R$&nbsp;2.800,00 (M=3) → classificado como <span className="font-semibold text-indigo-600">Loyal</span>, pois F ≥ 3 e R ≥ 3.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
 
       {/* Segment cards grid + Pie chart */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

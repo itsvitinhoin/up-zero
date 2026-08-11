@@ -1,14 +1,29 @@
 import React from "react"
+import { Suspense } from 'react'
 import AdminPriceTablesPageClient from "@/components/admin/admin-price-tables-page-client"
 import { getPriceTablesAction } from "@/lib/actions/settings"
 import type { PriceTable } from "@/lib/types"
+import { connection } from "next/server"
+import Loading from './loading'
 
 export const metadata = {
   title: 'Regras de Preço | Admin',
   description: 'Configure preços diferenciados para clientes B2B',
 }
 
-export default async function AdminPriceTablesPage() {
+export const instant = false
+
+export default function AdminPriceTablesPage() {
+  return (
+    <Suspense fallback={<Loading />}>
+      <AdminPriceTablesPageContent />
+    </Suspense>
+  )
+}
+
+async function AdminPriceTablesPageContent() {
+  await connection()
+
   let priceTables: PriceTable[] = []
 
   try {

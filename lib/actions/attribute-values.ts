@@ -2,6 +2,7 @@
 
 import { cookies } from 'next/headers'
 import { getAttributesWithValuesByStore } from './attributes'
+import { assertManualAttributeCreationAllowed } from '@/lib/actions/erp-integration'
 
 export interface CreateAttributePayload {
   store_id: number
@@ -22,6 +23,9 @@ export interface CreateAttributeValuePayload {
 }
 
 export interface UpdateAttributeValuePayload {
+  code?: string
+  name?: string
+  sort_order?: number
   meta?: {
     rgb?: string
     imageUrl?: string | null
@@ -63,6 +67,11 @@ async function getOrCreateAttribute(
     }
 
     console.log('Attribute does not exist, creating new one for code:', code)
+
+    const erpGuard = await assertManualAttributeCreationAllowed()
+    if (!erpGuard.allowed) {
+      return { success: false, data: null, error: erpGuard.error }
+    }
 
     // Criar novo atributo
     const name = code === 'color' ? 'Cores' : 'Tamanhos'
@@ -107,6 +116,11 @@ export async function createColorValue(
   meta?: { rgb?: string; imageUrl?: string; [key: string]: any }
 ) {
   try {
+    const erpGuard = await assertManualAttributeCreationAllowed()
+    if (!erpGuard.allowed) {
+      return { success: false, data: null, error: erpGuard.error }
+    }
+
     const base = process.env.NEXT_PUBLIC_RUST_URL
     if (!base) throw new Error('NEXT_PUBLIC_RUST_URL not set')
 
@@ -167,6 +181,11 @@ export async function createSizeValue(
   meta?: { rgb?: string; imageUrl?: string; [key: string]: any }
 ) {
   try {
+    const erpGuard = await assertManualAttributeCreationAllowed()
+    if (!erpGuard.allowed) {
+      return { success: false, data: null, error: erpGuard.error }
+    }
+
     const base = process.env.NEXT_PUBLIC_RUST_URL
     if (!base) throw new Error('NEXT_PUBLIC_RUST_URL not set')
 
@@ -231,6 +250,11 @@ export async function createAttributeValue(
   }
 ) {
   try {
+    const erpGuard = await assertManualAttributeCreationAllowed()
+    if (!erpGuard.allowed) {
+      return { success: false, data: null, error: erpGuard.error }
+    }
+
     const base = process.env.NEXT_PUBLIC_RUST_URL
     if (!base) throw new Error('NEXT_PUBLIC_RUST_URL not set')
 
@@ -289,6 +313,40 @@ export async function updateAttributeValueMeta(
     const payload: UpdateAttributeValuePayload = {
       meta,
     }
+
+    const res = await fetch(new URL(`/product-attribute-values/${valueId}`, base), {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminToken && { cookie: `adminAuthToken=${adminToken}` }),
+      },
+      body: JSON.stringify(payload),
+    })
+
+    const responseText = await res.text()
+
+    if (!res.ok) {
+      throw new Error(`Failed to update attribute value: ${responseText}`)
+    }
+
+    const value = JSON.parse(responseText)
+    return { success: true, data: value, error: null }
+  } catch (err) {
+    console.error('Error updating attribute value:', err)
+    return { success: false, data: null, error: String(err) }
+  }
+}
+
+export async function updateAttributeValue(
+  valueId: number,
+  payload: UpdateAttributeValuePayload
+) {
+  try {
+    const base = process.env.NEXT_PUBLIC_RUST_URL
+    if (!base) throw new Error('NEXT_PUBLIC_RUST_URL not set')
+
+    const cookieStore = await cookies()
+    const adminToken = cookieStore.get('adminAuthToken')?.value
 
     const res = await fetch(new URL(`/product-attribute-values/${valueId}`, base), {
       method: 'PUT',

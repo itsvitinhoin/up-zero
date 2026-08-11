@@ -48,6 +48,7 @@ export async function createCategoryAction(formData: FormData): Promise<ApiRespo
       name: name.trim(),
       slug: slug.trim(),
       status: isActive,
+      store_id: adminStoreId,
       parent_id: Number.isInteger(parentId) && (parentId as number) > 0 ? parentId : null,
       is_featured: isFeatured,
       sort_order: sortOrder,

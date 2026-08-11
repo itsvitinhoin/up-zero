@@ -1,71 +1,106 @@
 import type { Metadata } from 'next'
-import Link from 'next/link'
+import { FileText, Mail, ShieldCheck, Trash2 } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 
 export const metadata: Metadata = {
-  title: 'Privacy Policy | Up Zero',
-  description: 'Privacy Policy for Up Zero WhatsApp Business messaging integration.',
+  title: 'Privacy Policy | Up Zero Mensageria',
+  description: 'Privacy policy for Meta and WhatsApp Business messaging data processed by Up Zero.',
 }
 
-export default function PrivacyPage() {
+const sections = [
+  {
+    title: 'Meta data',
+    text: 'We use Meta Login only to let an authenticated business user connect their own Meta Business assets. We may process the user profile, email, Business Manager, WhatsApp Business Account, phone number metadata and granted permission status needed to operate the messaging workflow.',
+  },
+  {
+    title: 'WhatsApp data',
+    text: 'We process WhatsApp Business Account data, phone number metadata, message template metadata, outbound message status and inbound customer replies received through Meta webhooks.',
+  },
+  {
+    title: 'Templates',
+    text: 'Message templates are used to create, review, select and send approved WhatsApp Business templates. Pending or rejected templates are not used for outbound sends until they are approved by Meta.',
+  },
+  {
+    title: 'Contacts and campaigns',
+    text: 'Contacts, opt-in status, tags, lists and campaign settings are used to segment audiences and prevent sending WhatsApp campaigns to contacts without opt-in.',
+  },
+  {
+    title: 'Messages and webhooks',
+    text: 'Messages sent by the app and replies received through WhatsApp webhooks are stored so the business can audit delivery, view the inbox and respond within the applicable customer service window.',
+  },
+  {
+    title: 'Logs and retention',
+    text: 'Operational logs store timestamps, event types, safe payloads, sanitized errors and recommended actions. We do not intentionally store access tokens, app secrets, client secrets or bearer tokens in logs.',
+  },
+  {
+    title: 'Deletion',
+    text: 'A business user may request deletion of integration records, contacts, lists, campaigns, messages and logs. Deletion requests are handled by support after identity and account ownership are confirmed.',
+  },
+]
+
+export default function PrivacyHubPage() {
   return (
-    <main className="min-h-screen bg-background px-4 py-10 text-foreground">
-      <div className="mx-auto max-w-3xl space-y-8">
-        <div className="space-y-2">
-          <p className="text-sm font-semibold text-muted-foreground">Up Zero</p>
-          <h1 className="text-3xl font-semibold tracking-tight">Privacy Policy</h1>
-          <p className="text-sm text-muted-foreground">Last updated: May 6, 2026</p>
+    <main className="min-h-screen bg-[linear-gradient(180deg,hsl(var(--background))_0%,hsl(var(--muted)/0.35)_100%)] text-foreground">
+      <div className="mx-auto max-w-4xl space-y-5 px-4 py-8">
+        <div className="flex flex-col gap-4 rounded-lg border border-border/60 bg-card/95 p-5 shadow-sm sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-3">
+            <Badge variant="outline" className="w-fit gap-2">
+              <ShieldCheck className="h-3.5 w-3.5" />
+              Public policy
+            </Badge>
+            <div>
+              <h1 className="text-2xl font-semibold tracking-tight">Privacy Policy</h1>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                Up Zero Mensageria helps a business connect Meta Business and WhatsApp Business assets, manage templates,
+                send approved WhatsApp messages, create campaigns, receive replies and audit logs.
+              </p>
+            </div>
+          </div>
         </div>
 
-        <section className="space-y-3 text-sm leading-7">
-          <h2 className="text-lg font-semibold">Overview</h2>
-          <p>
-            Up Zero provides a business messaging dashboard that helps authorized business users connect their Meta Business account and WhatsApp Business Account, manage WhatsApp message templates, send WhatsApp messages using approved templates, and receive customer replies through WhatsApp webhooks.
-          </p>
-        </section>
-
-        <section className="space-y-3 text-sm leading-7">
-          <h2 className="text-lg font-semibold">Meta and WhatsApp Data We Use</h2>
-          <p>
-            When a business user connects with Meta, we may process the user&apos;s public profile information, email address, Business Manager name and ID, WhatsApp Business Account name and ID, WhatsApp phone number display information, approved message template metadata, message IDs returned by Meta, webhook delivery statuses, and customer reply content received through WhatsApp webhooks.
-          </p>
-          <p>
-            We do not display access tokens, app secrets, client secrets, bearer tokens, or full credential values in the application interface.
-          </p>
-        </section>
-
-        <section className="space-y-3 text-sm leading-7">
-          <h2 className="text-lg font-semibold">How We Use This Data</h2>
-          <p>
-            We use this data only to connect the business user&apos;s WhatsApp Business assets, list and manage message templates, send WhatsApp messages using approved templates, receive customer replies, show inbox and webhook logs, and help the business audit its own messaging workflow.
-          </p>
-        </section>
-
-        <section className="space-y-3 text-sm leading-7">
-          <h2 className="text-lg font-semibold">Retention and Deletion</h2>
-          <p>
-            Connection metadata, selected business assets, template metadata, message logs, and webhook events are retained only as long as needed to operate the messaging integration and support business audit needs. A business user may request deletion of connection metadata, message logs, and webhook events at any time.
-          </p>
-        </section>
-
-        <section className="space-y-3 text-sm leading-7">
-          <h2 className="text-lg font-semibold">Support and Data Removal</h2>
-          <p>
-            To request support, data export, or removal of Meta and WhatsApp integration data, contact us at{' '}
-            <a className="underline underline-offset-4" href="mailto:suporte@upzero.com.br">suporte@upzero.com.br</a>.
-          </p>
-        </section>
-
-        <section className="space-y-3 text-sm leading-7">
-          <h2 className="text-lg font-semibold">Security</h2>
-          <p>
-            We restrict Meta and WhatsApp data to authorized administrative users and use server-side API calls for sensitive WhatsApp Cloud API operations whenever possible. Secrets must be stored in server environment variables and must not be exposed through public client-side variables.
-          </p>
-        </section>
-
-        <div className="border-t border-border pt-6 text-sm">
-          <Link href="/login" className="underline underline-offset-4">Return to login</Link>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <PolicyFact icon={FileText} label="App" value="Up Zero Mensageria" />
+          <PolicyFact icon={Mail} label="Support" value="support@upzero.app" />
+          <PolicyFact icon={FileText} label="Route" value="/privacy" />
         </div>
+
+        <div className="grid gap-4">
+          {sections.map((section) => (
+            <article key={section.title} className="rounded-lg border border-border/60 bg-card/95 p-5 shadow-sm">
+              <h2 className="text-base font-semibold">{section.title}</h2>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">{section.text}</p>
+            </article>
+          ))}
+        </div>
+
+        <article className="rounded-lg border border-border/60 bg-card/95 p-5 shadow-sm">
+          <div className="flex items-start gap-3 text-sm text-muted-foreground">
+            <Trash2 className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <p>
+              To request access, correction or deletion, contact support at <strong className="text-foreground">support@upzero.app</strong>.
+              We will verify the business account before making changes to Meta or WhatsApp related records.
+            </p>
+          </div>
+        </article>
       </div>
     </main>
+  )
+}
+
+function PolicyFact({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: typeof FileText
+  label: string
+  value: string
+}) {
+  return (
+    <div className="rounded-lg border border-border/60 bg-muted/30 p-3">
+      <Icon className="h-4 w-4 text-primary" />
+      <p className="mt-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">{label}</p>
+      <p className="mt-1 text-sm font-medium">{value}</p>
+    </div>
   )
 }

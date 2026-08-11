@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Upload, X, ImageIcon, Loader2, GripVertical } from "lucide-react"
 import Image from "next/image"
 import { IMAGE_DIMENSIONS } from "./image-upload"
+import { CloudflareImage } from "@/components/ui/cloudflare-image"
 
 interface MultiImageUploadProps {
   value: string[]
@@ -18,9 +19,9 @@ interface MultiImageUploadProps {
   showHeaderInfo?: boolean
 }
 
-export function MultiImageUpload({ 
-  value = [], 
-  onChange, 
+export function MultiImageUpload({
+  value = [],
+  onChange,
   maxImages = 10,
   folder = 'products',
   disabled = false,
@@ -31,7 +32,7 @@ export function MultiImageUpload({
   const [error, setError] = useState<string | null>(null)
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  
+
   const dimensions = IMAGE_DIMENSIONS.productImage
 
   async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
@@ -83,7 +84,7 @@ export function MultiImageUpload({
 
   async function handleRemove(index: number) {
     const url = value[index]
-    
+
     try {
       await fetch('/api/upload', {
         method: 'DELETE',
@@ -142,16 +143,17 @@ export function MultiImageUpload({
             className={`relative group rounded-lg border overflow-hidden bg-muted cursor-move ${
               draggedIndex === index ? 'opacity-50 ring-2 ring-primary' : ''
             }`}
-            style={{ aspectRatio: '640/840' }}
+            style={{ aspectRatio: '683/1024' }}
           >
-            <Image
+            <CloudflareImage
               src={url || "/placeholder.svg"}
+              cloudflare={{ width: dimensions.width, height: dimensions.height, fit: "cover", dpr: 2 }}
               alt={`Imagem ${index + 1}`}
               fill
               className="object-cover"
               sizes="(max-width: 640px) 50vw, (max-width: 768px) 33vw, 25vw"
             />
-            
+
             {/* Overlay with actions */}
             <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
               <div className="absolute top-2 left-2 text-white/80">
@@ -182,7 +184,7 @@ export function MultiImageUpload({
             className={`border-2 border-dashed rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-primary/50 hover:bg-muted/50 transition-colors ${
               isUploading ? 'pointer-events-none' : ''
             }`}
-            style={{ aspectRatio: '640/840' }}
+            style={{ aspectRatio: '683/1024' }}
             onClick={() => !disabled && !isUploading && fileInputRef.current?.click()}
           >
             {isUploading ? (

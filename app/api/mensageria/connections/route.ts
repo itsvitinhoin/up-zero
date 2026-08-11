@@ -1,210 +1,211 @@
-import { cookies } from 'next/headers'
 import { NextRequest, NextResponse } from 'next/server'
-import {
-  deleteConnection,
-  getConnection,
-  getConnections,
-  upsertConnection,
-} from '@/lib/whatsapp/store'
-import { getProvider } from '@/lib/whatsapp/provider'
-import { maskId } from '@/lib/whatsapp/meta'
-import type { WaConnection } from '@/lib/whatsapp/types'
+import { META_REQUIRED_PERMISSIONS } from '@/lib/whatsapp/types'
+import { addLog, getState, maskId, updateIntegration, updateState } from '@/lib/whatsapp/store'
+import { listBusinesses, listPhoneNumbers, listTemplates, listWabas } from '@/lib/whatsapp/provider'
+import { checkUserPermission } from '@/lib/actions/permissions'
 
-export const dynamic = 'force-dynamic'
 
-// ─── Tenant resolution ────────────────────────────────────────────────────────
-// Decode the admin JWT locally (no network call) to get the storeId for the
-// current request. Falls back to env STORE_ID for single-tenant deployments.
-
-function decodeJwtStoreId(token: string): number | null {
-  try {
-    const b64 = token.split('.')[1]
-      .replace(/-/g, '+').replace(/_/g, '/')
-      .padEnd(Math.ceil(token.split('.')[1].length / 4) * 4, '=')
-    const payload = JSON.parse(Buffer.from(b64, 'base64').toString()) as Record<string, unknown>
-    const raw = payload.store_id ?? payload.storeId ?? payload.store ?? payload.storeID
-    const n = Number(raw)
-    return Number.isInteger(n) && n > 0 ? n : null
-  } catch {
-    return null
-  }
+function computeMissing(granted: string[]) {
+  return META_REQUIRED_PERMISSIONS.filter((permission) => !granted.includes(permission))
 }
-
-async function getRequestStoreId(): Promise<number | null> {
-  const cookieStore = await cookies()
-  const token = cookieStore.get('adminAuthToken')?.value
-  if (token) {
-    const fromJwt = decodeJwtStoreId(token)
-    if (fromJwt) return fromJwt
-  }
-  const fromEnv = Number(process.env.STORE_ID)
-  return Number.isInteger(fromEnv) && fromEnv > 0 ? fromEnv : null
-}
-
-function sanitizeConnection(conn: WaConnection): WaConnection {
-  return { ...conn, accessToken: '' }
-}
-
-// ─── GET — list connections for this tenant ───────────────────────────────────
 
 export async function GET() {
-  const storeId = await getRequestStoreId()
-  const list = getConnections(storeId ?? undefined)
+  const permission = await checkUserPermission('messaging.view').catch(() => null)
+  if (permission?.has_permission !== true) {
+    return NextResponse.json({ error: 'Você não tem permissão para visualizar mensageria' }, { status: 403 })
+  }
 
-  console.info(
-    `[connections/GET] storeId=${storeId ?? 'none'} returning ${list.length} connection(s).`,
-  )
-
-  return NextResponse.json(list.map(sanitizeConnection))
+  const state = getState()
+  return NextResponse.json({
+    integration: state.integration,
+    selectedBusiness: state.businesses.find((item) => item.id === state.integration.businessId),
+    selectedWaba: state.wabas.find((item) => item.id === state.integration.wabaId),
+    selectedPhoneNumber: state.phoneNumbers.find((item) => item.id === state.integration.phoneNumberId),
+  })
 }
-
-// ─── POST — create new connection ────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
-  const body = await req.json() as Partial<WaConnection>
-  const storeId = await getRequestStoreId()
+  const permission = await checkUserPermission('messaging.manage_settings').catch(() => null)
+  if (permission?.has_permission !== true) {
+    return NextResponse.json({ error: 'Você não tem permissão para gerenciar configurações de mensageria' }, { status: 403 })
+  }
 
-  console.log('[connections/POST] incoming payload:', {
-    name: body.name,
-    provider: body.provider,
-    phoneNumberId: maskId(body.phoneNumberId),
-    businessAccountId: maskId(body.businessAccountId),
-    businessId: maskId(body.businessId),
-    storeId,
-  })
+  const body = await req.json().catch(() => ({})) as {
+    metaUser?: { id?: string; name?: string; email?: string; grantedPermissions?: string[] }
+    grantedPermissions?: string[]
+    businessId?: string
+    wabaId?: string
+    phoneNumberId?: string
+    phoneNumber?: string
+    businessAccountId?: string
+  }
 
-  const id = `conn-${Date.now()}`
-  // Auto-mark CONNECTED when Embedded Signup provided a phone_number_id
-  const hasPhoneId = !!body.phoneNumberId?.trim()
+  const grantedPermissions = body.metaUser?.grantedPermissions ?? body.grantedPermissions ?? []
+  const missingPermissions = computeMissing(grantedPermissions)
 
-  const connection: WaConnection = {
-    id,
-    name: body.name ?? 'Nova Conexão',
-    provider: body.provider ?? 'MOCK',
-    phoneNumber: body.phoneNumber ?? '',
-    phoneNumberId: body.phoneNumberId ?? '',
-    accessToken: body.accessToken ?? '',
-    businessAccountId: body.businessAccountId ?? '',
+  updateIntegration({
+    oauthStatus: 'completed',
+    metaUser: {
+      id: body.metaUser?.id ?? 'meta-user',
+      name: body.metaUser?.name,
+      email: body.metaUser?.email,
+      grantedPermissions,
+      missingPermissions,
+    },
     businessId: body.businessId,
-    webhookVerifyToken: body.webhookVerifyToken ?? '',
-    storeId: storeId ?? undefined,
-    onboardingType: body.onboardingType,
-    platformType: body.platformType,
-    // migration_required means phone is still on another BSP — not yet CONNECTED
-    status: hasPhoneId && body.onboardingType !== 'migration_required' ? 'CONNECTED' : 'DISCONNECTED',
-    connectedAt: hasPhoneId && body.onboardingType !== 'migration_required' ? new Date() : null,
-    lastMessageAt: null,
-    messagesSentToday: 0,
-    messagesTotal: 0,
-  }
-
-  try {
-    upsertConnection(connection)
-  } catch (e) {
-    console.error('[connections/POST] failed to persist:', e)
-    return NextResponse.json({ error: String(e) }, { status: 500 })
-  }
-
-  console.log('[connections/POST] persisted:', {
-    id: connection.id,
-    status: connection.status,
-    storeId: connection.storeId,
+    wabaId: body.wabaId ?? body.businessAccountId,
+    phoneNumberId: body.phoneNumberId,
+    lastError: undefined,
   })
 
-  return NextResponse.json(sanitizeConnection(connection), { status: 201 })
-}
+  if (body.businessId) {
+    updateState((state) => {
+      if (!state.businesses.some((item) => item.id === body.businessId)) {
+        state.businesses.unshift({ id: body.businessId!, name: `Business ${maskId(body.businessId)}` })
+      }
+    })
+  }
 
-// ─── PATCH — update existing connection ──────────────────────────────────────
+  if (body.businessAccountId || body.wabaId) {
+    const wabaId = body.wabaId ?? body.businessAccountId!
+    updateState((state) => {
+      if (!state.wabas.some((item) => item.id === wabaId)) {
+        state.wabas.unshift({ id: wabaId, name: `WABA ${maskId(wabaId)}`, businessId: body.businessId })
+      }
+    })
+  }
+
+  if (body.phoneNumberId) {
+    updateState((state) => {
+      if (!state.phoneNumbers.some((item) => item.id === body.phoneNumberId)) {
+        state.phoneNumbers.unshift({
+          id: body.phoneNumberId!,
+          displayPhoneNumber: body.phoneNumber || `Phone ${maskId(body.phoneNumberId)}`,
+        })
+      }
+    })
+  }
+
+  addLog({
+    type: missingPermissions.length > 0 ? 'permission_missing' : 'oauth_completed',
+    status: missingPermissions.length > 0 ? 'needs_attention' : 'success',
+    description: missingPermissions.length > 0
+      ? `Failed: ${missingPermissions.join(', ')} permission was not granted.`
+      : 'Connected: Meta OAuth completed and required permissions were granted.',
+    safePayload: {
+      businessId: maskId(body.businessId),
+      wabaId: maskId(body.wabaId ?? body.businessAccountId),
+      phoneNumberId: maskId(body.phoneNumberId),
+      grantedPermissions,
+      missingPermissions,
+    },
+    recommendedAction: missingPermissions.length > 0
+      ? 'Reconnect with Meta and grant the required permissions.'
+      : 'Select Business, WABA, phone number and an approved template.',
+  })
+
+  return NextResponse.json(getState())
+}
 
 export async function PATCH(req: NextRequest) {
-  const body = await req.json() as { id: string } & Partial<WaConnection>
-  const storeId = await getRequestStoreId()
-
-  console.log('[connections/PATCH] incoming patch:', {
-    id: body.id,
-    phoneNumberId: maskId(body.phoneNumberId),
-    businessAccountId: maskId(body.businessAccountId),
-    businessId: maskId(body.businessId),
-    storeId,
-  })
-
-  const existing = getConnection(body.id)
-  if (!existing) {
-    console.error('[connections/PATCH] connection not found:', body.id)
-    return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  const permission = await checkUserPermission('messaging.manage_settings').catch(() => null)
+  if (permission?.has_permission !== true) {
+    return NextResponse.json({ error: 'Você não tem permissão para gerenciar configurações de mensageria' }, { status: 403 })
   }
 
-  // Tenant guard: reject if the connection belongs to a different store
-  if (storeId && existing.storeId && existing.storeId !== storeId) {
-    console.error('[connections/PATCH] tenant mismatch:', {
-      requestStoreId: storeId,
-      connectionStoreId: existing.storeId,
+  const body = await req.json().catch(() => ({})) as {
+    businessId?: string
+    wabaId?: string
+    phoneNumberId?: string
+    selectedTemplateId?: string
+  }
+
+  updateIntegration({
+    businessId: body.businessId,
+    wabaId: body.wabaId,
+    phoneNumberId: body.phoneNumberId,
+    selectedTemplateId: body.selectedTemplateId,
+    lastError: undefined,
+  })
+
+  if (body.phoneNumberId) {
+    addLog({
+      type: 'phone_selected',
+      status: 'success',
+      description: 'WhatsApp phone number selected for messaging.',
+      safePayload: { phoneNumberId: maskId(body.phoneNumberId) },
+      recommendedAction: 'Sync templates and select an approved template.',
     })
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
-  const updated: WaConnection = {
-    ...existing,
-    ...body,
-    accessToken: body.accessToken?.trim() ? body.accessToken : existing.accessToken,
-    // Preserve the storeId from the original connection (or set from session)
-    storeId: existing.storeId ?? storeId ?? undefined,
+  return NextResponse.json(getState())
+}
+
+export async function PUT() {
+  const permission = await checkUserPermission('messaging.manage_settings').catch(() => null)
+  if (permission?.has_permission !== true) {
+    return NextResponse.json({ error: 'Você não tem permissão para gerenciar configurações de mensageria' }, { status: 403 })
   }
 
-  // Auto-mark CONNECTED when phone_number_id is (re-)set via Embedded Signup
-  if (body.phoneNumberId?.trim() && !body.status) {
-    updated.status = 'CONNECTED'
-    updated.connectedAt = updated.connectedAt ?? new Date()
+  const state = getState()
+  const businessResult = await listBusinesses()
+
+  if (!businessResult.ok) {
+    updateIntegration({ lastError: businessResult.error, status: 'failed', connectionStatus: 'failed' })
+    addLog({
+      type: 'business_loaded',
+      status: 'failed',
+      description: 'Failed: Meta Business list could not be loaded.',
+      error: businessResult.error,
+      recommendedAction: businessResult.error?.action ?? 'Check Meta System User token and permissions.',
+    })
+    return NextResponse.json(getState(), { status: 200 })
   }
 
-  try {
-    upsertConnection(updated)
-  } catch (e) {
-    console.error('[connections/PATCH] failed to persist:', e)
-    return NextResponse.json({ error: String(e) }, { status: 500 })
-  }
-
-  console.log('[connections/PATCH] updated:', {
-    id: updated.id,
-    status: updated.status,
-    storeId: updated.storeId,
+  updateState((next) => {
+    next.businesses = businessResult.data ?? []
+  })
+  addLog({
+    type: 'business_loaded',
+    status: 'success',
+    description: 'Business Managers loaded from Meta.',
+    safePayload: { count: businessResult.data?.length ?? 0 },
   })
 
-  return NextResponse.json(sanitizeConnection(updated))
-}
-
-// ─── DELETE ───────────────────────────────────────────────────────────────────
-
-export async function DELETE(req: NextRequest) {
-  const { id } = await req.json() as { id: string }
-  const storeId = await getRequestStoreId()
-
-  const existing = getConnection(id)
-  if (existing && storeId && existing.storeId && existing.storeId !== storeId) {
-    console.error('[connections/DELETE] tenant mismatch:', { requestStoreId: storeId, connectionStoreId: existing.storeId })
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+  const selectedBusinessId = state.integration.businessId ?? businessResult.data?.[0]?.id
+  if (selectedBusinessId) {
+    const wabaResult = await listWabas(selectedBusinessId)
+    if (wabaResult.ok) {
+      updateState((next) => {
+        next.wabas = wabaResult.data ?? []
+      })
+      addLog({ type: 'waba_loaded', status: 'success', description: 'WABAs loaded from Meta.', safePayload: { count: wabaResult.data?.length ?? 0 } })
+    } else {
+      addLog({ type: 'waba_loaded', status: 'failed', description: 'Failed: WABAs could not be loaded.', error: wabaResult.error, recommendedAction: wabaResult.error?.action })
+    }
   }
 
-  deleteConnection(id)
-  console.log('[connections/DELETE] deleted:', id)
-  return NextResponse.json({ ok: true })
-}
+  const afterWaba = getState()
+  const selectedWabaId = afterWaba.integration.wabaId ?? afterWaba.wabas[0]?.id
+  if (selectedWabaId) {
+    const phoneResult = await listPhoneNumbers(selectedWabaId)
+    if (phoneResult.ok) {
+      updateState((next) => {
+        next.phoneNumbers = phoneResult.data ?? []
+      })
+      addLog({ type: 'phone_selected', status: 'info', description: 'WhatsApp phone numbers loaded from Meta.', safePayload: { count: phoneResult.data?.length ?? 0 } })
+    }
 
-// ─── PUT — test connection ────────────────────────────────────────────────────
-
-export async function PUT(req: NextRequest) {
-  const { id } = await req.json() as { id: string }
-  const connection = getConnection(id)
-  if (!connection) return NextResponse.json({ ok: false, error: 'Not found' }, { status: 404 })
-
-  const provider = getProvider(connection.provider)
-  const result = await provider.testConnection(connection)
-
-  if (result.ok) {
-    upsertConnection({ ...connection, status: 'CONNECTED', connectedAt: new Date() })
-  } else {
-    upsertConnection({ ...connection, status: 'ERROR' })
+    const templateResult = await listTemplates(selectedWabaId)
+    if (templateResult.ok) {
+      updateState((next) => {
+        const localDrafts = next.templates.filter((template) => template.source === 'local_draft')
+        next.templates = [...(templateResult.data ?? []), ...localDrafts]
+      })
+      addLog({ type: 'templates_synced', status: 'success', description: 'Templates synced from Meta.', safePayload: { count: templateResult.data?.length ?? 0 } })
+    }
   }
 
-  return NextResponse.json(result)
+  updateIntegration({ lastSyncAt: new Date().toISOString(), lastError: undefined })
+  return NextResponse.json(getState())
 }

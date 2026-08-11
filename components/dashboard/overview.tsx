@@ -10,43 +10,27 @@ import {
 } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { KpiCard, GapBar, SectionHeader, currencyTooltipFormatter } from '@/components/dashboard/shared'
-import { fmt, fmtN, fmtPct } from '@/lib/dashboard-mock-data'
-import { useDashboardData } from '@/contexts/dashboard-data'
+import { MONTHLY_REVENUE, TOTALS, fmt, fmtN, fmtPct } from '@/lib/dashboard-mock-data'
 
-const FUNNEL_LABELS = [
-  'Cadastros Aprovados', '1º Pedido', 'Pedido Atendido', '2ª Compra', '3ª Compra+',
+const last7 = MONTHLY_REVENUE.slice(-7)
+const last6 = MONTHLY_REVENUE.slice(-6)
+
+const FUNNEL = [
+  { label: 'Cadastros Aprovados', value: 25, pct: null,  color: '#10b981' },
+  { label: '1º Pedido',           value: 22, pct: '88%', color: '#22d3ee' },
+  { label: 'Pedido Atendido',     value: 19, pct: '76%', color: '#f59e0b' },
+  { label: '2ª Compra',           value: 14, pct: '56%', color: '#f97316' },
+  { label: '3ª Compra+',          value: 9,  pct: '36%', color: '#ef4444' },
 ]
 
+const fulfillRate = TOTALS.fulfillmentRate
+const rateColor = fulfillRate >= 85 ? 'success' : fulfillRate >= 70 ? 'warning' : 'destructive'
+const rateAccent = fulfillRate >= 85
+const gap = TOTALS.totalRequested - TOTALS.totalFulfilled
+
 export default function DashboardOverview() {
-  const { monthlyRevenue: MONTHLY_REVENUE, totals: TOTALS, funnelData, isLoading, error } = useDashboardData()
-
-  const last7 = MONTHLY_REVENUE.slice(-7)
-  const last6 = MONTHLY_REVENUE.slice(-6)
-
-  const FUNNEL = funnelData.map((f, i) => ({
-    label: FUNNEL_LABELS[i] ?? f.label,
-    value: f.value,
-    pct:   i === 0 ? null : `${f.pct}%`,
-    color: f.color,
-  }))
-
-  const fulfillRate = TOTALS.fulfillmentRate
-  const rateColor   = fulfillRate >= 85 ? 'success' : fulfillRate >= 70 ? 'warning' : 'destructive'
-  const rateAccent  = fulfillRate >= 85
-  const gap         = TOTALS.totalRequested - TOTALS.totalFulfilled
-
   return (
     <div className="space-y-6">
-      {error && (
-        <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          Erro ao carregar dados: {error}
-        </div>
-      )}
-      {isLoading && (
-        <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground animate-pulse">
-          Carregando dados da API…
-        </div>
-      )}
       <SectionHeader
         title="Visão Geral"
         description="Resumo executivo do período atual"

@@ -4,10 +4,13 @@ import { Target, TrendingUp, Share2, Users } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge-2'
 import { SectionHeader } from '@/components/dashboard/shared'
-import { fmt } from '@/lib/dashboard-mock-data'
-import { useDashboardData } from '@/contexts/dashboard-data'
+import { DASHBOARD_CUSTOMERS, fmt } from '@/lib/dashboard-mock-data'
 
-const PLACEHOLDER_CARDS_BASE = [
+const avgLTV =
+  DASHBOARD_CUSTOMERS.reduce((s, c) => s + c.totalRevenue, 0) /
+  DASHBOARD_CUSTOMERS.length
+
+const PLACEHOLDER_CARDS = [
   {
     id: 'cac',
     icon: Target,
@@ -40,7 +43,7 @@ const PLACEHOLDER_CARDS_BASE = [
     icon: Users,
     title: 'LTV',
     subtitle: 'Lifetime Value',
-    value: null as string | null,
+    value: fmt(avgLTV),
     description: 'Receita média por cliente ao longo do tempo',
     available: true,
   },
@@ -56,14 +59,6 @@ const INTEGRATION_ROWS = [
 ]
 
 export default function DashboardFutureMetrics() {
-  const { customers } = useDashboardData()
-  const avgLTV = customers.length > 0
-    ? customers.reduce((s, c) => s + c.totalRevenue, 0) / customers.length
-    : 0
-  const PLACEHOLDER_CARDS = PLACEHOLDER_CARDS_BASE.map(c =>
-    c.id === 'ltv' ? { ...c, value: fmt(avgLTV) } : c
-  )
-
   return (
     <div className="space-y-6">
       <SectionHeader

@@ -3,6 +3,7 @@
 import { cookies } from 'next/headers'
 import { revalidatePath } from 'next/cache'
 import { getAdminStoreIdFromToken } from '@/lib/auth'
+import { assertManualAttributeCreationAllowed } from '@/lib/actions/erp-integration'
 
 export interface AttributeValue {
   id: number
@@ -87,6 +88,11 @@ export async function createStoreAttribute(params: {
   sortOrder?: number
 }) {
   try {
+    const erpGuard = await assertManualAttributeCreationAllowed()
+    if (!erpGuard.allowed) {
+      return { success: false, data: null, error: erpGuard.error }
+    }
+
     const base = process.env.NEXT_PUBLIC_RUST_URL
     if (!base) throw new Error('NEXT_PUBLIC_RUST_URL not set')
 

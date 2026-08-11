@@ -3,7 +3,6 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSmartLists, upsertSmartList } from '@/lib/campaigns/store'
 import type { SmartList } from '@/lib/campaigns/types'
 
-export const dynamic = 'force-dynamic'
 
 function decodeJwtStoreId(token: string): number | null {
   try {

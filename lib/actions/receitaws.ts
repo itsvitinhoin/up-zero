@@ -57,7 +57,7 @@ export async function lookupReceitaWSCnpjAction(
   }
 
   try {
-    const response = await fetch(`${baseUrl}/b2b/receitaws/${normalizedCnpj}`, {
+    const response = await fetch(`${baseUrl}/customers/receitaws/${normalizedCnpj}`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
@@ -117,7 +117,7 @@ export async function updateCustomerWithReceitaWSAction(
     const cookieStore = await cookies()
     const adminToken = cookieStore.get('adminAuthToken')?.value
 
-    const response = await fetch(`${baseUrl}/b2b/${customerId}/receitaws`, {
+    const response = await fetch(`${baseUrl}/customers/${customerId}/receitaws`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
