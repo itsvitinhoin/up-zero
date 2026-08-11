@@ -244,9 +244,12 @@ async function resolveAdminAuthCookieOptions() {
 
   return {
     secure:
-      shouldUseCrossSiteCookie
-      || process.env.NODE_ENV === 'production'
-      || (process.env.APP_ENV || '').toLowerCase() === 'production',
+      !localhostRequest
+      && (
+        shouldUseCrossSiteCookie
+        || process.env.NODE_ENV === 'production'
+        || (process.env.APP_ENV || '').toLowerCase() === 'production'
+      ),
     sameSite: (shouldUseCrossSiteCookie ? 'none' : 'lax') as 'none' | 'lax',
     domain: shouldUseCrossSiteCookie ? cookieDomain : undefined,
     maxAge: expiresIn,
