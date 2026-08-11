@@ -312,9 +312,9 @@ export async function adminLoginAction(
 }
 
 export async function adminStoreLoginAction(
-  _prevState: ApiResponse<{ token: string }> | null,
+  _prevState: ApiResponse<{ authenticated: true }> | null,
   formData: FormData
-): Promise<ApiResponse<{ token: string }>> {
+): Promise<ApiResponse<{ authenticated: true }>> {
   const email = getActionFormValue(formData, 'email')
   const password = getActionFormValue(formData, 'password')
 
@@ -325,7 +325,12 @@ export async function adminStoreLoginAction(
 
   const base = process.env.NEXT_PUBLIC_RUST_URL
   if (!base) {
-    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+    const user = await authenticateUser(email, password)
+    if (!user) {
+      return { success: false, error: 'E-mail ou senha inválidos' }
+    }
+
+    return { success: true, data: { authenticated: true } }
   }
 
   const response = await fetch(new URL('/admin/login', base), {
@@ -356,8 +361,8 @@ export async function adminStoreLoginAction(
 
   await persistAdminAuthCookie(token)
 
-  // Retorna sucesso sem redirect, deixa o client fazer a navegação
-  return { success: true, data: { token } }
+  // O token permanece somente no cookie httpOnly; o client recebe apenas o estado de sucesso.
+  return { success: true, data: { authenticated: true } }
 }
 
 export async function sellerLoginAction(

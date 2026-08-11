@@ -2,6 +2,12 @@ import { cookies, headers } from 'next/headers'
 import { connection } from 'next/server'
 import type { SessionUser, UserRole } from './types'
 import { getCurrentB2bCustomerAction } from './actions/customers'
+import {
+  createLocalAdminToken,
+  isLocalAdminToken,
+  secureTextEqual,
+  verifyLocalAdminToken,
+} from './local-admin-session'
 
 const SESSION_COOKIE = 'b2b_session'
 const ADMIN_STORE_CACHE_TTL_MS = 5000
@@ -118,7 +124,17 @@ async function resolveAdminSessionFromToken(
   }
 
   const resolveSessionPromise = (async (): Promise<SessionUser | null> => {
-    const decodedPayload = decodeJwtPayload(adminToken)
+    const localAdminSecret = (
+      process.env.LOCAL_ADMIN_SESSION_SECRET
+      || process.env.LOCAL_ADMIN_PASSWORD
+      || ''
+    ).trim()
+    const verifiedLocalPayload = isLocalAdminToken(adminToken)
+      ? await verifyLocalAdminToken(adminToken, localAdminSecret)
+      : null
+    const decodedPayload: Record<string, unknown> | null = isLocalAdminToken(adminToken)
+      ? (verifiedLocalPayload ? { ...verifiedLocalPayload } : null)
+      : decodeJwtPayload(adminToken)
     if (!decodedPayload || await isJwtExpired(decodedPayload)) {
       return null
     }
@@ -227,7 +243,10 @@ async function resolveAdminAuthCookieOptions() {
   const shouldUseCrossSiteCookie = Boolean(cookieDomain) && !localhostRequest
 
   return {
-    secure: shouldUseCrossSiteCookie || (process.env.APP_ENV || '').toLowerCase() === 'production',
+    secure:
+      shouldUseCrossSiteCookie
+      || process.env.NODE_ENV === 'production'
+      || (process.env.APP_ENV || '').toLowerCase() === 'production',
     sameSite: (shouldUseCrossSiteCookie ? 'none' : 'lax') as 'none' | 'lax',
     domain: shouldUseCrossSiteCookie ? cookieDomain : undefined,
     maxAge: expiresIn,
@@ -503,7 +522,48 @@ export async function getSession(storeId?: number | string | null): Promise<Sess
 
 export async function authenticateUser(email: string, password: string): Promise<SessionUser | null> {
   const base = (process.env.NEXT_PUBLIC_RUST_URL ?? '').trim()
-  if (!base) return null
+  if (!base) {
+    const configuredEmail = (process.env.LOCAL_ADMIN_EMAIL ?? '').trim()
+    const configuredPassword = process.env.LOCAL_ADMIN_PASSWORD ?? ''
+    const signingSecret = (
+      process.env.LOCAL_ADMIN_SESSION_SECRET
+      || configuredPassword
+    ).trim()
+
+    if (!configuredEmail || !configuredPassword || !signingSecret) return null
+
+    const [emailMatches, passwordMatches] = await Promise.all([
+      secureTextEqual(email.trim().toLowerCase(), configuredEmail.toLowerCase()),
+      secureTextEqual(password, configuredPassword),
+    ])
+    if (!emailMatches || !passwordMatches) return null
+
+    const now = await requestNowSec()
+    const storeId = normalizeStoreId(
+      process.env.LOCAL_ADMIN_STORE_ID
+      ?? process.env.STORE_ID
+      ?? 1043,
+    ) ?? 1043
+    const token = await createLocalAdminToken({
+      sub: 'sandbox-admin',
+      id: 'sandbox-admin',
+      name: 'Admin Sandbox',
+      email: configuredEmail,
+      role: 'ADMIN',
+      store_id: storeId,
+      iat: now,
+      exp: now + (7 * 24 * 60 * 60),
+    }, signingSecret)
+
+    await persistAdminAuthCookie(token)
+
+    return {
+      id: 'sandbox-admin',
+      name: 'Admin Sandbox',
+      email: configuredEmail,
+      role: 'ADMIN' as UserRole,
+    }
+  }
 
   try {
     const response = await fetch(new URL('/admin/login', base), {

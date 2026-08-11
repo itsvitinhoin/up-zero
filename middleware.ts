@@ -1,5 +1,6 @@
 import type { NextRequest } from 'next/server'
 import { NextResponse } from 'next/server'
+import { isLocalAdminToken, verifyLocalAdminToken } from './lib/local-admin-session'
 
 const ADMIN_AUTH_COOKIE = 'adminAuthToken'
 const PUBLIC_PATHS = new Set(['/login', '/privacy', '/no-access'])
@@ -33,6 +34,23 @@ function isExpiredToken(token: string): boolean {
   return exp <= Math.floor(Date.now() / 1000)
 }
 
+async function hasValidAdminToken(token: string): Promise<boolean> {
+  if (!token) return false
+
+  if (isLocalAdminToken(token)) {
+    const secret = (
+      process.env.LOCAL_ADMIN_SESSION_SECRET
+      || process.env.LOCAL_ADMIN_PASSWORD
+      || ''
+    ).trim()
+    if (!secret) return false
+
+    return Boolean(await verifyLocalAdminToken(token, secret))
+  }
+
+  return !isExpiredToken(token)
+}
+
 function buildLoginRedirect(request: NextRequest, clearCookie: boolean): NextResponse {
   const loginUrl = new URL('/login', request.url)
   const redirectTo = `${request.nextUrl.pathname}${request.nextUrl.search}`
@@ -50,14 +68,14 @@ function buildLoginRedirect(request: NextRequest, clearCookie: boolean): NextRes
   return response
 }
 
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
   const isPublicPath = PUBLIC_PATHS.has(pathname)
   const adminToken = request.cookies.get(ADMIN_AUTH_COOKIE)?.value?.trim() || ''
-  const hasValidAdminToken = Boolean(adminToken) && !isExpiredToken(adminToken)
+  const validAdminToken = await hasValidAdminToken(adminToken)
 
   if (isPublicPath) {
-    if (pathname === '/login' && adminToken && !hasValidAdminToken) {
+    if (pathname === '/login' && adminToken && !validAdminToken) {
       const response = NextResponse.next()
       response.cookies.delete(ADMIN_AUTH_COOKIE)
       return response
@@ -70,7 +88,7 @@ export function middleware(request: NextRequest) {
     return buildLoginRedirect(request, false)
   }
 
-  if (!hasValidAdminToken) {
+  if (!validAdminToken) {
     return buildLoginRedirect(request, true)
   }
 
