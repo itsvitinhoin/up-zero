@@ -1,47 +1,96 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { deleteRule, getRule, getRules, upsertRule } from '@/lib/whatsapp/store'
-import type { WaAutomationRule } from '@/lib/whatsapp/types'
+import { ECOMMERCE_EVENT_DEFINITIONS } from '@/lib/whatsapp/ecommerce-events'
+import { addLog, createId, getState, nowIso, saveAutomation } from '@/lib/whatsapp/store'
+import { checkUserPermission } from '@/lib/actions/permissions'
+import type { AutomationRule, AutomationStatus, ECommerceEventType } from '@/lib/whatsapp/types'
 
-export const dynamic = 'force-dynamic'
 
 export async function GET() {
-  const list = getRules().sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-  return NextResponse.json(list)
+  const permission = await checkUserPermission('messaging.view').catch(() => null)
+  if (permission?.has_permission !== true) {
+    return NextResponse.json({ error: 'Você não tem permissão para visualizar mensageria' }, { status: 403 })
+  }
+
+  const state = getState()
+  return NextResponse.json({
+    automations: state.automations,
+    automationLogs: state.automationLogs,
+    events: ECOMMERCE_EVENT_DEFINITIONS,
+  })
 }
 
 export async function POST(req: NextRequest) {
-  const body = await req.json() as Partial<WaAutomationRule>
-  const id = `rule-${Date.now()}`
-  const rule: WaAutomationRule = {
-    id,
-    name: body.name ?? 'Nova Automação',
-    trigger: body.trigger ?? 'CUSTOMER_APPROVED',
-    conditions: body.conditions ?? [],
-    templateId: body.templateId ?? '',
-    connectionId: body.connectionId ?? '',
-    isActive: body.isActive ?? true,
-    cooldownMinutes: body.cooldownMinutes ?? 0,
-    dailyLimit: body.dailyLimit ?? 200,
-    allowedHoursStart: body.allowedHoursStart ?? 8,
-    allowedHoursEnd: body.allowedHoursEnd ?? 20,
-    createdAt: new Date(),
-    updatedAt: new Date(),
+  const permission = await checkUserPermission('messaging.manage_templates').catch(() => null)
+  if (permission?.has_permission !== true) {
+    return NextResponse.json({ error: 'Você não tem permissão para gerenciar templates de mensageria' }, { status: 403 })
   }
-  upsertRule(rule)
-  return NextResponse.json(rule, { status: 201 })
+
+  const body = await req.json().catch(() => ({})) as Partial<AutomationRule> & {
+    eventType?: ECommerceEventType
+    status?: AutomationStatus
+  }
+  const now = nowIso()
+
+  if (!body.name?.trim()) return NextResponse.json({ error: 'Automation name is required.' }, { status: 400 })
+  if (!body.eventType) return NextResponse.json({ error: 'E-commerce event is required.' }, { status: 400 })
+
+  const automation: AutomationRule = {
+    id: body.id ?? createId('automation'),
+    name: body.name.trim(),
+    eventType: body.eventType,
+    conditions: body.conditions ?? { onlyWithOptIn: true },
+    templateId: body.templateId || undefined,
+    variableMapping: body.variableMapping ?? {},
+    delayMinutes: Number(body.delayMinutes ?? 0),
+    allowedWindow: body.allowedWindow,
+    status: body.status ?? 'Draft',
+    totalRuns: 0,
+    successfulRuns: 0,
+    failedRuns: 0,
+    createdAt: now,
+    updatedAt: now,
+  }
+
+  saveAutomation(automation)
+  addLog({
+    type: 'automation_created',
+    status: automation.status === 'Active' ? 'success' : 'info',
+    description: `Automation created for ${automation.eventType}.`,
+    safePayload: { automation: automation.name, eventType: automation.eventType, status: automation.status },
+    recommendedAction: automation.templateId ? 'Keep monitoring automation logs.' : 'Select an APPROVED template before activating real sends.',
+  })
+
+  return NextResponse.json(getState())
 }
 
 export async function PATCH(req: NextRequest) {
-  const body = await req.json() as { id: string } & Partial<WaAutomationRule>
-  const existing = getRule(body.id)
-  if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  const updated: WaAutomationRule = { ...existing, ...body, updatedAt: new Date() }
-  upsertRule(updated)
-  return NextResponse.json(updated)
-}
+  const permission = await checkUserPermission('messaging.manage_templates').catch(() => null)
+  if (permission?.has_permission !== true) {
+    return NextResponse.json({ error: 'Você não tem permissão para gerenciar templates de mensageria' }, { status: 403 })
+  }
 
-export async function DELETE(req: NextRequest) {
-  const { id } = await req.json() as { id: string }
-  deleteRule(id)
-  return NextResponse.json({ ok: true })
+  const body = await req.json().catch(() => ({})) as Partial<AutomationRule> & { id?: string }
+  if (!body.id) return NextResponse.json({ error: 'Automation id is required.' }, { status: 400 })
+
+  const existing = getState().automations.find((automation) => automation.id === body.id)
+  if (!existing) return NextResponse.json({ error: 'Automation not found.' }, { status: 404 })
+
+  const next: AutomationRule = {
+    ...existing,
+    ...body,
+    conditions: { ...existing.conditions, ...(body.conditions ?? {}) },
+    variableMapping: { ...existing.variableMapping, ...(body.variableMapping ?? {}) },
+    updatedAt: nowIso(),
+  }
+
+  saveAutomation(next)
+  addLog({
+    type: next.status === 'Paused' ? 'automation_paused' : 'automation_updated',
+    status: next.status === 'Failed' ? 'failed' : next.status === 'Active' ? 'success' : 'info',
+    description: `Automation ${next.name} updated.`,
+    safePayload: { automation: next.name, eventType: next.eventType, status: next.status },
+    recommendedAction: next.status === 'Active' ? 'Watch automation logs after e-commerce events arrive.' : 'Activate only after template, conditions and opt-in rules are ready.',
+  })
+
+  return NextResponse.json(getState())
 }

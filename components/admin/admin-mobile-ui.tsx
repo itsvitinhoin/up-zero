@@ -80,7 +80,7 @@ export function AdminHero({
 }
 
 export function AdminStatGrid({ children }: { children: ReactNode }) {
-  return <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{children}</div>
+  return <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">{children}</div>
 }
 
 export function AdminStatCard({
@@ -105,19 +105,19 @@ export function AdminStatCard({
   }
 
   return (
-    <Card className="border-border/60 bg-card/95 shadow-sm">
-      <CardContent className="p-4">
+    <Card className="border-border/60 bg-card/95 shadow-sm py-0">
+      <CardContent className="p-3 sm:p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 space-y-1">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground sm:text-[11px] sm:tracking-[0.18em]">
               {label}
             </p>
-            <p className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">{value}</p>
+            <p className="text-lg font-semibold leading-none tracking-tight text-foreground sm:text-2xl">{value}</p>
             {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
           </div>
           {Icon ? (
-            <div className={cn("flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl", tones[tone])}>
-              <Icon className="h-5 w-5" />
+            <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl sm:h-11 sm:w-11", tones[tone])}>
+              <Icon className="h-4 w-4 sm:h-5 sm:w-5" />
             </div>
           ) : null}
         </div>
@@ -129,13 +129,15 @@ export function AdminStatCard({
 export function AdminToolbar({
   children,
   className,
+  contentClassName,
 }: {
   children: ReactNode
   className?: string
+  contentClassName?: string
 }) {
   return (
     <Card className={cn("border-border/60 bg-card/95 shadow-sm", className)}>
-      <CardContent className="p-3 sm:p-4">{children}</CardContent>
+      <CardContent className={cn("p-3 sm:p-4", contentClassName)}>{children}</CardContent>
     </Card>
   )
 }
@@ -146,17 +148,19 @@ export function AdminPanel({
   children,
   action,
   className,
+  headerClassName,
 }: {
   title?: string
   description?: string
   children: ReactNode
   action?: ReactNode
   className?: string
+  headerClassName?: string
 }) {
   return (
     <Card className={cn("border-border/60 bg-card/95 shadow-sm", className)}>
       {title || description || action ? (
-        <CardHeader className="space-y-2 p-4 sm:p-5">
+        <CardHeader className={cn("space-y-2 p-4 sm:p-5", headerClassName)}>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="space-y-1">
               {title ? <CardTitle className="text-base sm:text-lg">{title}</CardTitle> : null}

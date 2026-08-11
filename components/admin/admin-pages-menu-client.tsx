@@ -19,6 +19,7 @@ import { Plus, Trash2, FileText, FolderTree, Link as LinkIcon, ArrowLeft, Eye, L
 import { toast } from "sonner";
 import Link from "next/link";
 import { createMenuItemAction, deleteMenuItemAction, updateMenuItemAction, getMenuItemsAction, updateMenuItemsOrderAction } from "@/lib/actions/menus";
+import { useAdminStore } from "@/contexts/admin-store-context";
 import type { MenuItem, Category, InstitutionalPage } from "@/lib/types";
 
 interface MenuItemWithChildren extends MenuItem {
@@ -28,17 +29,18 @@ interface MenuItemWithChildren extends MenuItem {
 function getMenuScopeLabel(menuType: string) {
   if (menuType === "retail") return "de varejo"
   if (menuType === "wholesale") return "de atacado"
-  if (menuType === "footer_retail") return "de footer varejo"
-  if (menuType === "footer_wholesale") return "de footer atacado"
+  if (menuType === "footer_retail") return "de subfooter varejo"
+  if (menuType === "footer_wholesale") return "de subfooter atacado"
   return ""
 }
 
-type MenuFormType = MenuItem["type"] | "all-products";
+type MenuFormType = MenuItem["type"] | "all-products" | "promotion";
 
 interface AdminMenuPageProps {
   menuId: number;
   storeId: number;
   menuName: string;
+  menuCode?: string | null;
   menuType: "retail" | "wholesale";
   initialItems?: MenuItem[];
   initialCategories?: Category[];
@@ -49,11 +51,13 @@ export default function AdminMenuPage({
   menuId,
   storeId,
   menuName,
+  menuCode,
   menuType,
   initialItems = [],
   initialCategories = [],
   initialInstitutionalPages = [],
 }: AdminMenuPageProps) {
+  const { session } = useAdminStore();
   const [isLoading, setIsLoading] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
   const [isSavingOrder, setIsSavingOrder] = useState(false);
@@ -109,6 +113,12 @@ export default function AdminMenuPage({
   const [formIsActive, setFormIsActive] = useState(true);
   const [formParentId, setFormParentId] = useState<string | null>(null);
     const [formSale, setFormSale] = useState(false);
+  const permissionCodes = Array.isArray(session?.permissionCodes)
+    ? session.permissionCodes.map((code) => String(code || "").trim().toLowerCase()).filter(Boolean)
+    : null;
+  const canCreatePages = permissionCodes === null || permissionCodes.includes("pages.create");
+  const canEditPages = permissionCodes === null || permissionCodes.includes("pages.edit");
+  const canDeletePages = permissionCodes === null || permissionCodes.includes("pages.delete");
 
   async function refreshMenuItems() {
     const menuItemsResult = await getMenuItemsAction(menuId);
@@ -186,6 +196,11 @@ export default function AdminMenuPage({
   }
 
   function openAddDialog(parentId?: string) {
+    if (!canCreatePages) {
+      toast.error("Você não tem permissão para criar páginas");
+      return;
+    }
+
     resetForm();
     if (parentId) {
       setFormParentId(parentId);
@@ -194,11 +209,18 @@ export default function AdminMenuPage({
   }
 
   function openEditDialog(item: MenuItem) {
+    if (!canEditPages) {
+      toast.error("Você não tem permissão para editar páginas");
+      return;
+    }
+
     setEditingItem(item);
     setFormLabel(item.label);
     setFormType(
       item.type === "external" && (item.href === "/produtos" || item.href === "/produtos?sale=true")
         ? "all-products"
+        : item.type === "category" && item.href.includes("sale=true")
+          ? "promotion"
         : item.type
     );
     setFormHref(item.href);
@@ -212,13 +234,20 @@ export default function AdminMenuPage({
 
   function handleTypeChange(type: MenuFormType) {
     setFormType(type);
-    if (type === "category" && formCategoryId) {
+    if ((type === "category" || type === "promotion") && formCategoryId) {
       const category = categories.find(c => c.id === formCategoryId);
       if (category) {
         const base = `/produtos?category=${category.slug}`;
-        setFormHref(formSale ? `${base}&sale=true` : base);
+        const shouldSetSale = type === "promotion" ? true : formSale;
+        setFormHref(shouldSetSale ? `${base}&sale=true` : base);
         if (!formLabel) setFormLabel(category.name);
       }
+      if (type === "promotion") {
+        setFormSale(true);
+      }
+    } else if (type === "promotion") {
+      setFormSale(true);
+      setFormHref("/produtos?sale=true");
     } else if (type === "all-products") {
       setFormHref(formSale ? "/produtos?sale=true" : "/produtos");
       if (!formLabel) setFormLabel("Todos os produtos");
@@ -232,11 +261,20 @@ export default function AdminMenuPage({
   }
 
   function handleCategoryChange(categoryId: string) {
+    if (categoryId === "__none__") {
+      setFormCategoryId("");
+      if (formType === "promotion") {
+        setFormHref("/produtos?sale=true");
+      }
+      return;
+    }
+
     setFormCategoryId(categoryId);
     const category = categories.find(c => c.id === categoryId);
     if (category) {
         const base = `/produtos?category=${category.slug}`;
-        setFormHref(formSale ? `${base}&sale=true` : base);
+        const shouldSetSale = formType === "promotion" ? true : formSale;
+        setFormHref(shouldSetSale ? `${base}&sale=true` : base);
       if (!formLabel) setFormLabel(category.name);
     }
   }
@@ -268,19 +306,38 @@ export default function AdminMenuPage({
     }
 
   async function handleSaveItem() {
+    if (editingItem && !canEditPages) {
+      toast.error("Você não tem permissão para editar páginas");
+      return;
+    }
+    if (!editingItem && !canCreatePages) {
+      toast.error("Você não tem permissão para criar páginas");
+      return;
+    }
+
     if (!formLabel.trim() || !formHref.trim()) {
       toast.error("Preencha todos os campos obrigatórios");
       return;
     }
+
+    const isPromotionType = formType === "promotion";
+    const normalizedType = formType === "all-products"
+      ? "external"
+      : isPromotionType
+        ? "category"
+        : formType;
+    const normalizedHref = applySaleToHref(formHref.trim(), isPromotionType ? true : formSale);
 
     setIsBusy(true);
 
     if (editingItem) {
       const result = await updateMenuItemAction(Number(editingItem.id), {
         label: formLabel.trim(),
-        type: formType === "all-products" ? "external" : formType,
-        href: formHref.trim(),
-        category_id: formType === "category" && formCategoryId ? Number(formCategoryId) : undefined,
+        type: normalizedType,
+        href: normalizedHref,
+        category_id: (formType === "category" || formType === "promotion") && formCategoryId
+          ? Number(formCategoryId)
+          : undefined,
         page_slug: formType === "page" ? formPageId : undefined,
         is_active: formIsActive,
       });
@@ -298,9 +355,11 @@ export default function AdminMenuPage({
         menu_id: menuId,
         parent_id: formParentId ? Number(formParentId) : null,
         label: formLabel.trim(),
-        type: formType === "all-products" ? "external" : formType,
-        href: formHref.trim(),
-        category_id: formType === "category" && formCategoryId ? Number(formCategoryId) : undefined,
+        type: normalizedType,
+        href: normalizedHref,
+        category_id: (formType === "category" || formType === "promotion") && formCategoryId
+          ? Number(formCategoryId)
+          : undefined,
         page_slug: formType === "page" ? formPageId : undefined,
         sort_order: siblings.length + 1,
         is_active: formIsActive,
@@ -325,6 +384,11 @@ export default function AdminMenuPage({
   }
 
   async function handleRemoveItem(id: string) {
+    if (!canDeletePages) {
+      toast.error("Você não tem permissão para excluir páginas");
+      return;
+    }
+
     const hasChildren = menuItems.some(item => item.parentId === id);
     if (hasChildren) {
       toast.error("Remova os sub-itens antes de excluir este item.");
@@ -343,6 +407,11 @@ export default function AdminMenuPage({
   }
 
   async function handleToggleActive(id: string, currentActive: boolean) {
+    if (!canEditPages) {
+      toast.error("Você não tem permissão para editar páginas");
+      return;
+    }
+
     setIsBusy(true);
     const result = await updateMenuItemAction(Number(id), {
       is_active: !currentActive,
@@ -358,11 +427,13 @@ export default function AdminMenuPage({
 
   // Drag and drop handlers
   function handleDragStart(e: React.DragEvent, id: string) {
+    if (!canEditPages) return;
     setDraggedItem(id);
     e.dataTransfer.effectAllowed = "move";
   }
 
   function handleDragOver(e: React.DragEvent, id: string) {
+    if (!canEditPages) return;
     e.preventDefault();
     if (draggedItem && draggedItem !== id) {
       setDragOverItem(id);
@@ -374,6 +445,7 @@ export default function AdminMenuPage({
   }
 
   function handleDrop(e: React.DragEvent, targetId: string, targetParentId: string | null) {
+    if (!canEditPages) return;
     e.preventDefault();
     if (!draggedItem || draggedItem === targetId) {
       setDraggedItem(null);
@@ -412,6 +484,11 @@ export default function AdminMenuPage({
   }
 
   async function saveOrderChanges() {
+    if (!canEditPages) {
+      toast.error("Você não tem permissão para editar páginas");
+      return;
+    }
+
     setIsSavingOrder(true);
     const updates = menuItems.map((item) => ({
       id: item.id,
@@ -455,12 +532,12 @@ export default function AdminMenuPage({
     return (
       <div key={item.id}>
         <div
-          draggable
+          draggable={canEditPages}
           onDragStart={(e) => handleDragStart(e, item.id)}
           onDragOver={(e) => handleDragOver(e, item.id)}
           onDragLeave={handleDragLeave}
           onDrop={(e) => handleDrop(e, item.id, item.parentId ?? null)}
-          className={`flex items-center gap-2 p-3 rounded-lg border border-border/50 transition-all cursor-move ${
+          className={`flex items-center gap-2 p-3 rounded-lg border border-border/50 transition-all ${canEditPages ? "cursor-move" : "cursor-default"} ${
             isDragging ? "opacity-50 border-dashed" : ""
           } ${isDragOver ? "border-primary/70 bg-primary/5" : ""} ${
             item.isActive ? "bg-card hover:bg-muted/50" : "bg-muted/50 opacity-60"
@@ -505,11 +582,13 @@ export default function AdminMenuPage({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            <Switch
-              checked={item.isActive}
-              onCheckedChange={() => handleToggleActive(item.id, item.isActive)}
-              disabled={isBusy}
-            />
+            {canEditPages ? (
+              <Switch
+                checked={item.isActive}
+                onCheckedChange={() => handleToggleActive(item.id, item.isActive)}
+                disabled={isBusy}
+              />
+            ) : null}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon" className="h-8 w-8" disabled={isBusy}>
@@ -517,21 +596,27 @@ export default function AdminMenuPage({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => openEditDialog(item)}>
-                  <Pencil className="mr-2 h-4 w-4" />
-                  Editar
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => openAddDialog(item.id)}>
-                  <Plus className="mr-2 h-4 w-4" />
-                  Adicionar Sub-item
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => handleRemoveItem(item.id)}
-                  className="text-destructive"
-                >
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  Excluir
-                </DropdownMenuItem>
+                {canEditPages ? (
+                  <DropdownMenuItem onClick={() => openEditDialog(item)}>
+                    <Pencil className="mr-2 h-4 w-4" />
+                    Editar
+                  </DropdownMenuItem>
+                ) : null}
+                {canCreatePages ? (
+                  <DropdownMenuItem onClick={() => openAddDialog(item.id)}>
+                    <Plus className="mr-2 h-4 w-4" />
+                    Adicionar Sub-item
+                  </DropdownMenuItem>
+                ) : null}
+                {canDeletePages ? (
+                  <DropdownMenuItem
+                    onClick={() => handleRemoveItem(item.id)}
+                    className="text-destructive"
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    Excluir
+                  </DropdownMenuItem>
+                ) : null}
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -571,11 +656,16 @@ export default function AdminMenuPage({
             <p className="text-sm text-muted-foreground">
                 Itens do menu {getMenuScopeLabel(menuType)}
             </p>
+            {menuCode && (
+              <p className="text-xs text-muted-foreground mt-1">
+                Codigo: {menuCode}
+              </p>
+            )}
           </div>
         </div>
 
         <div className="flex items-center gap-2">
-          {hasOrderChanges && (
+          {hasOrderChanges && canEditPages && (
             <Button onClick={saveOrderChanges} disabled={isSavingOrder} className="h-10">
               {isSavingOrder ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -592,12 +682,14 @@ export default function AdminMenuPage({
             </Button>
           </Link>
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-            <DialogTrigger asChild>
-              <Button onClick={() => openAddDialog()} className="h-10" disabled={isBusy}>
-                <Plus className="mr-2 h-4 w-4" />
-                Adicionar Item
-              </Button>
-            </DialogTrigger>
+            {canCreatePages ? (
+              <DialogTrigger asChild>
+                <Button onClick={() => openAddDialog()} className="h-10" disabled={isBusy}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Adicionar Item
+                </Button>
+              </DialogTrigger>
+            ) : null}
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>
@@ -621,12 +713,13 @@ export default function AdminMenuPage({
                       <SelectItem value="all-products">Todos os produtos</SelectItem>
                       <SelectItem value="external">Link Externo/URL</SelectItem>
                       <SelectItem value="category">Categoria</SelectItem>
+                      <SelectItem value="promotion">Promoção</SelectItem>
                       <SelectItem value="page">Página Institucional</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
 
-                {formType === "category" && (
+                {(formType === "category" || formType === "promotion") && (
                   <div className="space-y-2">
                     <Label>Categoria</Label>
                     <Select value={formCategoryId} onValueChange={handleCategoryChange}>
@@ -634,9 +727,17 @@ export default function AdminMenuPage({
                         <SelectValue placeholder="Selecione uma categoria" />
                       </SelectTrigger>
                       <SelectContent>
+                        {formType === "promotion" && (
+                          <SelectItem value="__none__">Sem categoria (todas em promoção)</SelectItem>
+                        )}
                         {renderCategoryOptions(categoryTree as any)}
                       </SelectContent>
                     </Select>
+                    {formType === "promotion" && (
+                      <p className="text-xs text-muted-foreground">
+                        Esse tipo adiciona automaticamente <code>sale=true</code> na URL.
+                      </p>
+                    )}
                   </div>
                 )}
 
@@ -723,10 +824,12 @@ export default function AdminMenuPage({
         <div className="text-center py-12 border-2 border-dashed rounded-lg">
           <FileText className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
           <p className="text-muted-foreground mb-4">Nenhum item no menu</p>
-          <Button onClick={() => openAddDialog()}>
-            <Plus className="mr-2 h-4 w-4" />
-            Adicionar Primeiro Item
-          </Button>
+          {canCreatePages ? (
+            <Button onClick={() => openAddDialog()}>
+              <Plus className="mr-2 h-4 w-4" />
+              Adicionar Primeiro Item
+            </Button>
+          ) : null}
         </div>
       ) : (
         <Card>

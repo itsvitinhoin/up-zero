@@ -8,14 +8,12 @@ import {
 import { Card, CardContent, CardHeader, CardTitle, CardToolbar } from '@/components/ui/card'
 import { Button } from '@/components/ui/button-1'
 import { KpiCard, SectionHeader, CurveBadge, currencyTooltipFormatter } from '@/components/dashboard/shared'
-import { fmt, fmtN, type DCurve } from '@/lib/dashboard-mock-data'
-import { useDashboardData } from '@/contexts/dashboard-data'
+import { DASHBOARD_PRODUCTS, fmt, fmtN, type DCurve } from '@/lib/dashboard-mock-data'
 
 const CURVE_BAR_COLORS: Record<DCurve, string> = { A: '#10b981', B: '#f59e0b', C: '#94a3b8' }
 
 export default function DashboardProductAnalytics() {
   const [sort, setSort] = useState<'revenue' | 'units'>('revenue')
-  const { products: DASHBOARD_PRODUCTS } = useDashboardData()
 
   const totalRevenueRequested = DASHBOARD_PRODUCTS.reduce((s, p) => s + p.revenueRequested, 0)
   const totalRevenueFulfilled = DASHBOARD_PRODUCTS.reduce((s, p) => s + p.revenueFulfilled, 0)

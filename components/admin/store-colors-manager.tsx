@@ -1,15 +1,17 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Plus, Trash2, Upload, X, Loader2, Save, Palette, GripVertical } from "lucide-react";
-import { createAttributeValue, createColorValue, deleteAttributeValue, updateAttributeValueMeta, updateAttributeValueSortOrder } from "@/lib/actions/attribute-values";
+import { createAttributeValue, createColorValue, deleteAttributeValue, updateAttributeValue, updateAttributeValueSortOrder } from "@/lib/actions/attribute-values";
 import { toast } from "sonner";
 import type { AttributesContextType } from "@/components/admin/attributes-provider";
+import { CloudflareImage } from "@/components/ui/cloudflare-image";
+import { StoreAttributeNameField } from "@/components/admin/store-attribute-name-field";
 
 const COMMON_COLORS = [
   { name: "Preto", hex: "#000000" },
@@ -40,10 +42,21 @@ type FormColor = {
   attributeValueId?: number;
 };
 
+function normalizeAttributeValueCode(value: string): string {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9\-_]/g, "");
+}
+
 interface StoreColorsManagerProps {
   attributes?: AttributesContextType;
   storeId?: number | null;
   colorAttributeId?: number | null;
+  isErpIntegrated?: boolean;
   onRefreshAttributes?: () => Promise<void>;
 }
 
@@ -51,6 +64,7 @@ export function StoreColorsManager({
   attributes,
   storeId,
   colorAttributeId,
+  isErpIntegrated = false,
   onRefreshAttributes,
 }: StoreColorsManagerProps) {
   const [colors, setColors] = useState<FormColor[]>([]);
@@ -64,14 +78,40 @@ export function StoreColorsManager({
   const [draggedColorId, setDraggedColorId] = useState<string | null>(null);
   const [dragOverColorId, setDragOverColorId] = useState<string | null>(null);
   const [isSavingColorOrder, setIsSavingColorOrder] = useState(false);
+  const [colorSearch, setColorSearch] = useState("");
 
   const newColorFileInputRef = useRef<HTMLInputElement>(null);
   const colorFileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
-  function resolveHexFromStoreColor(name: string, rgb?: string) {
-    const rgbValue = rgb?.trim();
-    if (rgbValue && rgbValue.startsWith("#") && (rgbValue.length === 7 || rgbValue.length === 4)) {
-      return rgbValue;
+  function normalizeHex(value?: unknown) {
+    if (typeof value !== "string") return null;
+    const raw = value.trim();
+    if (!raw) return null;
+
+    const normalized = raw.startsWith("#") ? raw : `#${raw}`;
+    if (/^#[0-9a-fA-F]{3}$/.test(normalized) || /^#[0-9a-fA-F]{6}$/.test(normalized)) {
+      return normalized;
+    }
+
+    return null;
+  }
+
+  function resolveHexFromMeta(meta: unknown) {
+    if (!meta || typeof meta !== "object") return null;
+    const data = meta as Record<string, unknown>;
+
+    return (
+      normalizeHex(data.rgb) ||
+      normalizeHex(data.hex) ||
+      normalizeHex(data.color) ||
+      normalizeHex(data.hexa)
+    );
+  }
+
+  function resolveHexFromStoreColor(name: string, hexCandidate?: string | null) {
+    const normalized = normalizeHex(hexCandidate);
+    if (normalized) {
+      return normalized;
     }
 
     const common = COMMON_COLORS.find((c) => c.name.toLowerCase() === name.toLowerCase());
@@ -89,6 +129,19 @@ export function StoreColorsManager({
       return true;
     });
   }
+
+  const searchedAndSortedColors = useMemo(() => {
+    const search = colorSearch.trim().toLowerCase();
+
+    return [...colors]
+      .filter((color) => {
+        if (!search) return true;
+        const name = color.name.toLowerCase();
+        const hex = color.hex.toLowerCase();
+        return name.includes(search) || hex.includes(search);
+      })
+      .sort((a, b) => a.name.localeCompare(b.name, "pt-BR", { sensitivity: "base", numeric: true }));
+  }, [colors, colorSearch]);
 
   const targetColorAttribute = (() => {
     if (typeof colorAttributeId === "number") {
@@ -108,7 +161,7 @@ export function StoreColorsManager({
     const mapped = storeColors.map((value, idx) => ({
       id: `store-color-${value.id}-${idx}`,
       name: value.name,
-      hex: resolveHexFromStoreColor(value.name, value.meta?.rgb),
+      hex: resolveHexFromStoreColor(value.name, resolveHexFromMeta(value.meta)),
       images: value.meta?.imageUrl ? [value.meta.imageUrl] : [],
       attributeValueId: value.id,
     }));
@@ -208,8 +261,8 @@ export function StoreColorsManager({
 
     if (!value) return false;
 
-    const currentMeta = (value.meta as { rgb?: string; imageUrl?: string } | undefined) || {};
-    const nextRgb = color.hex || currentMeta.rgb;
+    const currentMeta = (value.meta as { rgb?: string; hex?: string; color?: string; imageUrl?: string } | undefined) || {};
+    const nextRgb = color.hex || currentMeta.rgb || currentMeta.hex || currentMeta.color;
     const nextImageUrl = imageUrl !== undefined
       ? imageUrl
       : (color.images[0] ?? currentMeta.imageUrl ?? null);
@@ -219,7 +272,11 @@ export function StoreColorsManager({
       imageUrl: nextImageUrl,
     };
 
-    const result = await updateAttributeValueMeta(value.id, meta);
+    const result = await updateAttributeValue(value.id, {
+      code: normalizeAttributeValueCode(color.name),
+      name: color.name,
+      meta,
+    });
     if (!result.success) {
       console.error("syncColorAttributeMeta: Erro ao atualizar meta:", result.error);
       return false;
@@ -233,8 +290,38 @@ export function StoreColorsManager({
     const color = colors.find((item) => item.id === colorId);
     if (!color) return;
 
+    const normalizedName = color.name.trim();
+    if (!normalizedName) {
+      toast.error("Nome obrigatorio", {
+        description: "Informe um nome para a cor.",
+      });
+      return;
+    }
+
+    const hasDuplicateName = colors.some((item) =>
+      item.id !== colorId && item.name.trim().toLowerCase() === normalizedName.toLowerCase()
+    );
+    if (hasDuplicateName) {
+      toast.warning("Cor já cadastrada", {
+        description: `"${normalizedName}" já existe na lista de cores da loja.`,
+      });
+      return;
+    }
+
     setSavingColorId(colorId);
-    const didUpdateAttribute = await syncColorAttributeMeta(color, color.images[0] ?? null);
+    const didUpdateAttribute = await syncColorAttributeMeta(
+      { ...color, name: normalizedName },
+      color.images[0] ?? null
+    );
+
+    if (didUpdateAttribute && normalizedName !== color.name) {
+      setColors((prev) => prev.map((item) =>
+        item.id === colorId
+          ? { ...item, name: normalizedName }
+          : item
+      ));
+    }
+
     if (didUpdateAttribute) {
       markColorDirty(colorId, false);
       toast("Cor salva", {
@@ -251,6 +338,11 @@ export function StoreColorsManager({
 
   function updateColorHex(colorId: string, hex: string) {
     setColors(colors.map((c) => c.id === colorId ? { ...c, hex } : c));
+    markColorDirty(colorId);
+  }
+
+  function updateColorName(colorId: string, name: string) {
+    setColors(colors.map((c) => c.id === colorId ? { ...c, name } : c));
     markColorDirty(colorId);
   }
 
@@ -321,6 +413,9 @@ export function StoreColorsManager({
     if (!newColorName.trim()) return;
 
     if (colors.some((c) => c.name.toLowerCase() === newColorName.toLowerCase())) {
+      toast.warning("Cor já cadastrada", {
+        description: `"${newColorName.trim()}" já existe na lista de cores da loja.`,
+      });
       return;
     }
 
@@ -374,6 +469,9 @@ export function StoreColorsManager({
 
   function addCommonColor(commonColor: { name: string; hex: string }) {
     if (colors.some((c) => c.name.toLowerCase() === commonColor.name.toLowerCase())) {
+      toast.warning("Cor já cadastrada", {
+        description: `"${commonColor.name}" já existe na lista de cores da loja.`,
+      });
       return;
     }
 
@@ -546,7 +644,17 @@ export function StoreColorsManager({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div>
+        {targetColorAttribute ? (
+          <StoreAttributeNameField
+            attributeId={targetColorAttribute.id}
+            attributeName={targetColorAttribute.name}
+            attributeCode={targetColorAttribute.code}
+            onRefreshAttributes={onRefreshAttributes}
+            disabled={isErpIntegrated}
+          />
+        ) : null}
+
+        <div className={isErpIntegrated ? "hidden" : undefined}>
           <div className="grid grid-cols-1 md:grid-cols-[220px_150px_150px_150px] gap-4">
             <Label className="h-6 inline-flex items-end px-2 pb-1 text-sm font-medium">Nome</Label>
             <Label className="h-6 inline-flex items-end px-2 pb-1 text-sm font-medium">Codigo HEX</Label>
@@ -594,8 +702,9 @@ export function StoreColorsManager({
               <div className="relative h-10 w-10 overflow-hidden rounded border">
                 {newColorImageUrl && (
                   <>
-                    <Image
+                    <CloudflareImage
                       src={newColorImageUrl}
+                      cloudflare={{ width: 40, height: 40, fit: "cover", dpr: 2 }}
                       alt="Preview nova cor"
                       fill
                       sizes="40px"
@@ -629,7 +738,7 @@ export function StoreColorsManager({
           </div>
         </div>
 
-        <div className="space-y-4">
+        <div className={`space-y-4${isErpIntegrated ? " hidden" : ""}`}>
           <Label className="text-sm text-muted-foreground">
             {targetColorAttribute ? "Cores (Quick Add)" : "Cores rapidas:"}
           </Label>
@@ -655,12 +764,36 @@ export function StoreColorsManager({
         {colors.length > 0 && (
           <div className="space-y-4 mt-4">
             <Label>{colors.length === 1 ? "Cor Adicionada (1)" : `Cores Adicionadas (${colors.length})`}</Label>
-            <p className="text-xs text-muted-foreground">Arraste para ordenar as cores da loja.</p>
-            {colors.map((color) => (
+            <div className="relative">
+              <Input
+                value={colorSearch}
+                onChange={(event) => setColorSearch(event.target.value)}
+                placeholder="Buscar cor por nome ou HEX..."
+                className="h-10 pr-9"
+              />
+              {colorSearch.trim() && (
+                <button
+                  type="button"
+                  onClick={() => setColorSearch("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:text-foreground cursor-pointer"
+                  aria-label="Limpar busca"
+                  title="Limpar busca"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Lista ordenada por nome.
+              {searchedAndSortedColors.length !== colors.length
+                ? ` Exibindo ${searchedAndSortedColors.length} de ${colors.length}.`
+                : ""}
+            </p>
+            {searchedAndSortedColors.map((color) => (
               <Card
                 key={color.id}
                 className={`p-4 ${draggedColorId === color.id ? 'opacity-60' : ''} ${dragOverColorId === color.id ? 'ring-2 ring-primary ring-offset-1' : ''}`}
-                draggable={!isSavingColorOrder}
+                draggable={false}
                 onDragStart={() => handleColorDragStart(color.id)}
                 onDragOver={(event) => handleColorDragOver(event, color.id)}
                 onDragLeave={handleColorDragLeave}
@@ -673,7 +806,13 @@ export function StoreColorsManager({
                       <GripVertical className="h-4 w-4" />
                     </div>
                     <div>
-                      <p className="font-medium">{color.name}</p>
+                      <Input
+                        value={color.name}
+                        onChange={(e) => updateColorName(color.id, e.target.value)}
+                        className="h-7 mb-2 w-40 text-sm font-medium"
+                        placeholder="Nome da cor"
+                        disabled={isSavingColorOrder}
+                      />
                       <div className="flex items-center gap-4">
                         <input
                           type="color"
@@ -696,8 +835,9 @@ export function StoreColorsManager({
                     <div className="flex flex-wrap gap-4">
                       {color.images[0] && (
                         <div className="relative h-10 w-10 rounded border overflow-hidden">
-                          <Image
+                          <CloudflareImage
                             src={color.images[0] || "/placeholder.svg"}
+                            cloudflare={{ width: 40, height: 40, fit: "cover", dpr: 2 }}
                             alt={`${color.name}`}
                             fill
                             sizes="40px"

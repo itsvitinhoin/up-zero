@@ -4,7 +4,6 @@ import { getSmartList, updateSmartListResultCount } from '@/lib/campaigns/store'
 import { previewSmartList } from '@/lib/campaigns/engine'
 import { adminMockCustomers, adminMockOrders } from '@/lib/admin-mock-data'
 
-export const dynamic = 'force-dynamic'
 
 function decodeJwtStoreId(token: string): number | null {
   try {

@@ -54,7 +54,6 @@ import {
 } from "@/lib/actions/settings"
 import type { PriceTable } from "@/lib/types"
 import { useToast } from "@/hooks/use-toast"
-import { AdminHero, AdminPage, AdminPanel, DesktopOnly, MobileCardList } from "@/components/admin/admin-mobile-ui"
 
 interface AdminPriceTablesPageClientProps {
   initialPriceTables: PriceTable[]
@@ -212,16 +211,18 @@ export default function AdminPriceTablesPageClient({
 
   return (
     <>
-      <AdminPage>
-        <AdminHero
-          icon={DollarSign}
-          eyebrow="Precos"
-          title="Regras de preco"
-          description="Configure precos diferenciados para clientes B2B com leitura clara no mobile."
-          actions={
+      <div className="space-y-6 p-6 lg:p-8">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-lg font-medium text-foreground flex items-center gap-2">
+              <DollarSign className="h-5 w-5 text-primary" />
+              Regras de Preço
+            </h1>
+            <p className="text-sm text-muted-foreground">Configure preços diferenciados para clientes B2B</p>
+          </div>
           <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
             <DialogTrigger asChild>
-              <Button onClick={openCreateDialog} className="min-h-12 rounded-2xl cursor-pointer">
+              <Button onClick={openCreateDialog} className="cursor-pointer">
                 <Plus className="mr-2 h-4 w-4" />
                 Nova Tabela
               </Button>
@@ -266,12 +267,14 @@ export default function AdminPriceTablesPageClient({
                   <div className="space-y-2">
                     <Label htmlFor="percentage">Percentual (%)</Label>
                     <PercentageInput
+                      id="percentage"
                       value={formData.percentage ? parseFloat(formData.percentage) / 100 : 0}
-                      onChange={(value) => setFormData({ ...formData, percentage: value == null ? "" : Math.abs(value * 100).toString() })}
+                      onChange={(value) => setFormData({ ...formData, percentage: Math.abs(value * 100).toString() })}
                       placeholder="Ex: 10% para desconto de 10%"
                       allowNegative={false}
                       min={0}
                       max={100}
+                      required
                     />
                     <p className="text-xs text-muted-foreground">
                       Informe apenas valores positivos (ex: 10% = 10% de desconto)
@@ -310,51 +313,9 @@ export default function AdminPriceTablesPageClient({
               </form>
             </DialogContent>
           </Dialog>
-          }
-        />
+        </div>
 
-        <MobileCardList>
-          {priceTables.length === 0 ? (
-            <AdminPanel>
-              <div className="py-8 text-center">
-                <DollarSign className="mx-auto mb-2 h-8 w-8 text-muted-foreground" />
-                <p className="text-muted-foreground">Nenhuma regra de preço</p>
-              </div>
-            </AdminPanel>
-          ) : (
-            priceTables.map((table) => (
-              <AdminPanel key={table.id}>
-                <div className="space-y-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-base font-semibold text-foreground">{table.name}</p>
-                      <p className="text-sm text-muted-foreground">
-                        {table.type === "PERCENTAGE" && table.percentage !== undefined && table.percentage !== null
-                          ? `${Math.abs(table.percentage)}%`
-                          : "Preco fixo por produto"}
-                      </p>
-                    </div>
-                    <Badge
-                      variant="outline"
-                      className={table.isActive
-                        ? "text-xs font-medium bg-emerald-50 text-emerald-600 border border-emerald-100"
-                        : "text-xs font-medium bg-zinc-50 text-zinc-600 border border-zinc-200"
-                      }
-                    >
-                      {table.isActive ? "Ativa" : "Inativa"}
-                    </Badge>
-                  </div>
-                  <Badge variant="outline" className={table.type === "PERCENTAGE" ? "bg-blue-50 text-blue-600 border-blue-100" : "bg-violet-50 text-violet-600 border-violet-100"}>
-                    {table.type === "PERCENTAGE" ? "Percentual" : "Preco fixo"}
-                  </Badge>
-                </div>
-              </AdminPanel>
-            ))
-          )}
-        </MobileCardList>
-
-        <DesktopOnly>
-        <div className="rounded-[24px] border border-border/60 bg-card/95 shadow-sm overflow-x-auto">
+        <div className="rounded-xl border border-border/20 bg-card overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -426,8 +387,7 @@ export default function AdminPriceTablesPageClient({
             </TableBody>
           </Table>
         </div>
-        </DesktopOnly>
-      </AdminPage>
+      </div>
 
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>

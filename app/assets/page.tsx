@@ -1,3 +1,4 @@
+import { Suspense } from 'react'
 import { cookies } from 'next/headers'
 import { getAdminStoreIdFromToken } from '@/lib/auth'
 import AdminAssetsPageClient from '@/components/admin/admin-assets-page-client'
@@ -6,11 +7,14 @@ import { getAssetsAction, getAssetsSummaryAction } from '@/lib/actions/assets'
 import { getAssetCategoriesAction } from '@/lib/actions/asset-categories'
 import type { Attribute } from '@/lib/actions/attributes'
 import type { Category } from '@/lib/types'
+import { AdminRouteSkeleton } from '@/components/admin/admin-route-skeleton'
 
 export const metadata = {
   title: 'Assets | Admin',
   description: 'Gerencie assets e imagens por combinação de atributos',
 }
+
+export const instant = false
 
 type ProductOption = {
   id: string
@@ -19,14 +23,27 @@ type ProductOption = {
 }
 
 type AdminAssetsPageProps = {
-  searchParams?: Promise<{ page?: string }>
+  searchParams?: Promise<{ page?: string; q?: string; category?: string; product?: string }>
 }
 
-export default async function AdminAssetsPage({ searchParams }: AdminAssetsPageProps) {
-  const resolvedSearchParams = await searchParams
+export default function AdminAssetsPage({ searchParams }: AdminAssetsPageProps) {
+  return (
+    <Suspense fallback={<AdminRouteSkeleton />}>
+      <AdminAssetsPageContent searchParams={searchParams} />
+    </Suspense>
+  )
+}
+
+async function AdminAssetsPageContent({ searchParams }: AdminAssetsPageProps) {
+  const resolvedSearchParams = (await searchParams) ?? {}
   const page = Number.isFinite(Number(resolvedSearchParams?.page))
     ? Math.max(1, Number(resolvedSearchParams?.page))
     : 1
+  const q = (resolvedSearchParams?.q ?? '').trim()
+  const category = (resolvedSearchParams?.category ?? '').trim()
+  const normalizedCategory = /^\d+$/.test(category) ? category : 'all'
+  const product = (resolvedSearchParams?.product ?? '').trim()
+  const normalizedProduct = /^\d+$/.test(product) ? product : 'all'
   const limit = 25
 
   const cookieStore = await cookies()
@@ -92,8 +109,18 @@ export default async function AdminAssetsPage({ searchParams }: AdminAssetsPageP
   }
 
   const [assetsResult, assetsSummaryResult] = await Promise.all([
-    getAssetsAction({ page, limit }),
-    getAssetsSummaryAction(),
+    getAssetsAction({
+      page,
+      limit,
+      q,
+      categoryId: normalizedCategory !== 'all' ? normalizedCategory : undefined,
+      productId: normalizedProduct !== 'all' ? normalizedProduct : undefined,
+    }),
+    getAssetsSummaryAction({
+      q,
+      categoryId: normalizedCategory !== 'all' ? normalizedCategory : undefined,
+      productId: normalizedProduct !== 'all' ? normalizedProduct : undefined,
+    }),
   ])
   const assets = assetsResult.success && assetsResult.data ? assetsResult.data : []
   const total = assetsResult.success ? Number(assetsResult.total || 0) : 0
@@ -114,6 +141,14 @@ export default async function AdminAssetsPage({ searchParams }: AdminAssetsPageP
       total={total}
       currentPage={currentPage}
       pageSize={pageSize}
+      initialPagination={{
+        total,
+        page: currentPage,
+        limit: pageSize,
+        search: q,
+        category: normalizedCategory,
+        product: normalizedProduct,
+      }}
       products={products}
       attributes={attributes}
       categories={categories}

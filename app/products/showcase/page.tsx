@@ -1,14 +1,27 @@
+import { Suspense } from 'react'
 import { getCategoriesAction } from '@/lib/actions/categories'
 import { getAdminStoreIdFromToken } from '@/lib/auth'
 import { getProductSortItemsAction } from '@/lib/actions/product-sort-orders'
 import AdminProductShowcasePageClient from '@/components/admin/admin-product-showcase-page-client'
+import { connection } from 'next/server'
+import Loading from './loading'
 
 export const metadata = {
   title: 'Vitrine | Catálogo',
   description: 'Ordenação manual da vitrine por categoria e tipo de ordenação',
 }
 
-export default async function AdminProductShowcasePage() {
+export default function AdminProductShowcasePage() {
+  return (
+    <Suspense fallback={<Loading />}>
+      <AdminProductShowcasePageContent />
+    </Suspense>
+  )
+}
+
+async function AdminProductShowcasePageContent() {
+  await connection()
+
   const [categoriesResult, storeId] = await Promise.all([
     getCategoriesAction(),
     getAdminStoreIdFromToken(),

@@ -173,3 +173,54 @@ export async function saveProductSortOrderAction(input: {
     }
   }
 }
+
+export async function rebuildProductSortOrderAction(input: {
+  contextType: ProductSortContextType
+  contextId: number
+  sortType: string
+  resetSortType: string
+}): Promise<{ success: boolean; error?: string; updated?: number }> {
+  try {
+    const base = resolveBackendBase()
+    if (!base) {
+      return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+    }
+
+    const cookieStore = await cookies()
+    const adminToken = cookieStore.get('adminAuthToken')?.value
+
+    const res = await fetch(new URL('/product-sort-orders/rebuild', base), {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminToken ? { cookie: `adminAuthToken=${adminToken}` } : {}),
+      },
+      cache: 'no-store',
+      body: JSON.stringify({
+        context_type: input.contextType,
+        context_id: input.contextId,
+        sort_type: input.sortType,
+        reset_sort_type: input.resetSortType,
+      }),
+    })
+
+    if (!res.ok) {
+      const errorText = await res.text().catch(() => '')
+      return {
+        success: false,
+        error: errorText || `Erro ao resetar ordenação (status ${res.status})`,
+      }
+    }
+
+    const payload = await res.json().catch(() => ({}))
+    return {
+      success: true,
+      updated: Number.isFinite(payload?.updated) ? Number(payload.updated) : undefined,
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao resetar ordenação',
+    }
+  }
+}

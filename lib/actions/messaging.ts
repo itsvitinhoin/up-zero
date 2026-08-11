@@ -2,6 +2,7 @@
 
 import { cookies } from 'next/headers'
 import { revalidatePath } from 'next/cache'
+import { checkUserPermission } from '@/lib/actions/permissions'
 import type {
   ApiResponse,
   FlowAction,
@@ -20,6 +21,61 @@ type MessagingOverview = {
 type MessageTemplateInput = Omit<MessageTemplate, 'id' | 'createdAt' | 'updatedAt'>
 type MessageFlowInput = Omit<MessageFlow, 'id' | 'createdAt' | 'updatedAt'>
 
+type DispatchOrderMessageInput = {
+  orderId: string
+  trigger: MessageTemplate['trigger']
+  channel: MessageTemplate['channel']
+}
+
+type DispatchCartMessageInput = {
+  cartId: string
+  trigger: MessageTemplate['trigger']
+  channel: MessageTemplate['channel']
+}
+
+type DispatchPaymentLinkMessageInput = {
+  paymentLinkId: number | string
+  trigger: Extract<MessageTemplate['trigger'], 'PAYMENT_LINK_CREATED' | 'PAYMENT_LINK_REMINDER'>
+  channel: Extract<MessageTemplate['channel'], 'WHATSAPP' | 'EMAIL'>
+  storefrontBaseUrl?: string
+}
+
+type DispatchOrderMessageResult = {
+  success: boolean
+  message: string
+  channel: string
+  recipient: string
+  renderedMessage: string
+  whatsappUrl?: string | null
+}
+
+type DispatchCartMessageResult = {
+  success: boolean
+  message: string
+  channel: string
+  recipient: string
+  renderedMessage: string
+  whatsappUrl?: string | null
+}
+
+type DispatchPaymentLinkMessageResult = {
+  success: boolean
+  message: string
+  channel: string
+  recipient: string
+  renderedMessage: string
+  whatsappUrl?: string | null
+}
+
+async function hasMessagingPermission(permissionCode: string): Promise<boolean> {
+  try {
+    const result = await checkUserPermission(permissionCode)
+    return result?.has_permission === true
+  } catch {
+    return false
+  }
+}
+
 function resolveBackendBaseUrl(): string | null {
   const base = (process.env.NEXT_PUBLIC_RUST_URL ?? '').trim()
   if (!base) return null
@@ -34,14 +90,18 @@ async function buildAdminCookieHeader(): Promise<string | undefined> {
 }
 
 async function readBackendErrorMessage(response: Response, fallback: string): Promise<string> {
+  const text = await response.text().catch(() => '')
+  if (!text) return fallback
+
   try {
-    const payload = (await response.json()) as { message?: string; error?: string }
+    const payload = JSON.parse(text) as { message?: string; error?: string }
     if (payload?.message && typeof payload.message === 'string') return payload.message
     if (payload?.error && typeof payload.error === 'string') return payload.error
   } catch {
-    const text = await response.text().catch(() => '')
-    if (text) return text
+    // Body is not JSON; return raw text below.
   }
+
+  if (text.trim()) return text
   return fallback
 }
 
@@ -93,6 +153,7 @@ function mapTemplate(raw: Record<string, unknown>): MessageTemplate {
     content: String(raw.content || ''),
     variables: Array.isArray(raw.variables) ? raw.variables.map((item) => String(item)) : [],
     delayMinutes: Number(raw.delayMinutes || 0),
+    copyEmails: raw.copyEmails ? String(raw.copyEmails) : undefined,
     createdAt: raw.createdAt ? new Date(String(raw.createdAt)) : new Date(),
     updatedAt: raw.updatedAt ? new Date(String(raw.updatedAt)) : new Date(),
   }
@@ -135,6 +196,7 @@ function normalizeTemplatePayload(template: MessageTemplateInput) {
     content: template.content,
     variables: template.variables,
     delayMinutes: template.delayMinutes,
+    copyEmails: template.copyEmails || null,
   }
 }
 
@@ -165,6 +227,10 @@ function normalizeFlowPayload(flow: MessageFlowInput) {
 }
 
 export async function getMensageriaOverviewAction(): Promise<ApiResponse<MessagingOverview>> {
+  if (!(await hasMessagingPermission('messaging.view'))) {
+    return { success: false, error: 'Você não tem permissão para visualizar mensageria' }
+  }
+
   const baseUrl = resolveBackendBaseUrl()
   if (!baseUrl) {
     return { success: false, error: 'Backend URL não configurado' }
@@ -223,6 +289,10 @@ export async function getMensageriaOverviewAction(): Promise<ApiResponse<Messagi
 }
 
 export async function upsertWhatsAppConfigAction(config: WhatsAppConfig): Promise<ApiResponse<WhatsAppConfig>> {
+  if (!(await hasMessagingPermission('messaging.manage_settings'))) {
+    return { success: false, error: 'Você não tem permissão para gerenciar configurações de mensageria' }
+  }
+
   const baseUrl = resolveBackendBaseUrl()
   if (!baseUrl) {
     return { success: false, error: 'Backend URL não configurado' }
@@ -265,6 +335,10 @@ export async function upsertWhatsAppConfigAction(config: WhatsAppConfig): Promis
 }
 
 export async function createMessageTemplateAction(template: MessageTemplateInput): Promise<ApiResponse<MessageTemplate>> {
+  if (!(await hasMessagingPermission('messaging.manage_templates'))) {
+    return { success: false, error: 'Você não tem permissão para gerenciar templates de mensageria' }
+  }
+
   const baseUrl = resolveBackendBaseUrl()
   if (!baseUrl) return { success: false, error: 'Backend URL não configurado' }
 
@@ -293,6 +367,10 @@ export async function createMessageTemplateAction(template: MessageTemplateInput
 }
 
 export async function updateMessageTemplateAction(id: string, template: MessageTemplateInput): Promise<ApiResponse<MessageTemplate>> {
+  if (!(await hasMessagingPermission('messaging.manage_templates'))) {
+    return { success: false, error: 'Você não tem permissão para gerenciar templates de mensageria' }
+  }
+
   const baseUrl = resolveBackendBaseUrl()
   if (!baseUrl) return { success: false, error: 'Backend URL não configurado' }
 
@@ -321,6 +399,10 @@ export async function updateMessageTemplateAction(id: string, template: MessageT
 }
 
 export async function deleteMessageTemplateAction(id: string): Promise<ApiResponse<null>> {
+  if (!(await hasMessagingPermission('messaging.manage_templates'))) {
+    return { success: false, error: 'Você não tem permissão para gerenciar templates de mensageria' }
+  }
+
   const baseUrl = resolveBackendBaseUrl()
   if (!baseUrl) return { success: false, error: 'Backend URL não configurado' }
 
@@ -346,6 +428,10 @@ export async function deleteMessageTemplateAction(id: string): Promise<ApiRespon
 }
 
 export async function toggleMessageTemplateAction(id: string, isActive: boolean): Promise<ApiResponse<null>> {
+  if (!(await hasMessagingPermission('messaging.manage_templates'))) {
+    return { success: false, error: 'Você não tem permissão para gerenciar templates de mensageria' }
+  }
+
   const baseUrl = resolveBackendBaseUrl()
   if (!baseUrl) return { success: false, error: 'Backend URL não configurado' }
 
@@ -373,6 +459,10 @@ export async function toggleMessageTemplateAction(id: string, isActive: boolean)
 }
 
 export async function createMessageFlowAction(flow: MessageFlowInput): Promise<ApiResponse<MessageFlow>> {
+  if (!(await hasMessagingPermission('messaging.manage_templates'))) {
+    return { success: false, error: 'Você não tem permissão para gerenciar templates de mensageria' }
+  }
+
   const baseUrl = resolveBackendBaseUrl()
   if (!baseUrl) return { success: false, error: 'Backend URL não configurado' }
 
@@ -401,6 +491,10 @@ export async function createMessageFlowAction(flow: MessageFlowInput): Promise<A
 }
 
 export async function updateMessageFlowAction(id: string, flow: MessageFlowInput): Promise<ApiResponse<MessageFlow>> {
+  if (!(await hasMessagingPermission('messaging.manage_templates'))) {
+    return { success: false, error: 'Você não tem permissão para gerenciar templates de mensageria' }
+  }
+
   const baseUrl = resolveBackendBaseUrl()
   if (!baseUrl) return { success: false, error: 'Backend URL não configurado' }
 
@@ -429,6 +523,10 @@ export async function updateMessageFlowAction(id: string, flow: MessageFlowInput
 }
 
 export async function deleteMessageFlowAction(id: string): Promise<ApiResponse<null>> {
+  if (!(await hasMessagingPermission('messaging.manage_templates'))) {
+    return { success: false, error: 'Você não tem permissão para gerenciar templates de mensageria' }
+  }
+
   const baseUrl = resolveBackendBaseUrl()
   if (!baseUrl) return { success: false, error: 'Backend URL não configurado' }
 
@@ -454,6 +552,10 @@ export async function deleteMessageFlowAction(id: string): Promise<ApiResponse<n
 }
 
 export async function toggleMessageFlowAction(id: string, isActive: boolean): Promise<ApiResponse<null>> {
+  if (!(await hasMessagingPermission('messaging.manage_templates'))) {
+    return { success: false, error: 'Você não tem permissão para gerenciar templates de mensageria' }
+  }
+
   const baseUrl = resolveBackendBaseUrl()
   if (!baseUrl) return { success: false, error: 'Backend URL não configurado' }
 
@@ -477,5 +579,164 @@ export async function toggleMessageFlowAction(id: string, isActive: boolean): Pr
     return { success: true, data: null }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : 'Erro desconhecido ao alterar status do fluxo' }
+  }
+}
+
+export async function dispatchOrderMessageAction(
+  input: DispatchOrderMessageInput,
+): Promise<ApiResponse<DispatchOrderMessageResult>> {
+  if (!(await hasMessagingPermission('messaging.send'))) {
+    return { success: false, error: 'Você não tem permissão para enviar mensagens' }
+  }
+
+  const baseUrl = resolveBackendBaseUrl()
+  if (!baseUrl) return { success: false, error: 'Backend URL não configurado' }
+
+  try {
+    const cookieHeader = await buildAdminCookieHeader()
+    const response = await fetch(`${baseUrl}/messaging/orders/${encodeURIComponent(String(input.orderId))}/dispatch`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      body: JSON.stringify({
+        trigger: input.trigger,
+        channel: input.channel,
+      }),
+    })
+
+    if (!response.ok) {
+      const error = await readBackendErrorMessage(response, 'Erro ao disparar mensagem do pedido')
+      return { success: false, error }
+    }
+
+    const payload = (await response.json()) as Record<string, unknown>
+    return {
+      success: true,
+      data: {
+        success: Boolean(payload.success),
+        message: String(payload.message || ''),
+        channel: String(payload.channel || ''),
+        recipient: String(payload.recipient || ''),
+        renderedMessage: String(payload.renderedMessage || ''),
+        whatsappUrl: payload.whatsappUrl ? String(payload.whatsappUrl) : null,
+      },
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro desconhecido ao disparar mensagem do pedido',
+    }
+  }
+}
+
+export async function dispatchCartMessageAction(
+  input: DispatchCartMessageInput,
+): Promise<ApiResponse<DispatchCartMessageResult>> {
+  if (!(await hasMessagingPermission('messaging.send'))) {
+    return { success: false, error: 'Você não tem permissão para enviar mensagens' }
+  }
+
+  const baseUrl = resolveBackendBaseUrl()
+  if (!baseUrl) return { success: false, error: 'Backend URL não configurado' }
+
+  try {
+    const cookieHeader = await buildAdminCookieHeader()
+    const response = await fetch(`${baseUrl}/messaging/carts/${encodeURIComponent(String(input.cartId))}/dispatch`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      body: JSON.stringify({
+        trigger: input.trigger,
+        channel: input.channel,
+      }),
+    })
+
+    if (!response.ok) {
+      const error = await readBackendErrorMessage(response, 'Erro ao disparar mensagem do carrinho')
+      return { success: false, error }
+    }
+
+    const payload = (await response.json()) as Record<string, unknown>
+    return {
+      success: true,
+      data: {
+        success: Boolean(payload.success),
+        message: String(payload.message || ''),
+        channel: String(payload.channel || ''),
+        recipient: String(payload.recipient || ''),
+        renderedMessage: String(payload.renderedMessage || ''),
+        whatsappUrl: payload.whatsappUrl ? String(payload.whatsappUrl) : null,
+      },
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro desconhecido ao disparar mensagem do carrinho',
+    }
+  }
+}
+
+export async function dispatchPaymentLinkMessageAction(
+  input: DispatchPaymentLinkMessageInput,
+): Promise<ApiResponse<DispatchPaymentLinkMessageResult>> {
+  if (!(await hasMessagingPermission('messaging.send'))) {
+    return { success: false, error: 'Você não tem permissão para enviar mensagens' }
+  }
+
+  const baseUrl = resolveBackendBaseUrl()
+  if (!baseUrl) return { success: false, error: 'Backend URL não configurado' }
+
+  const numericId = Number(input.paymentLinkId)
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return { success: false, error: 'Link de pagamento inválido' }
+  }
+
+  try {
+    const cookieHeader = await buildAdminCookieHeader()
+    const response = await fetch(
+      `${baseUrl}/messaging/payment-links/${encodeURIComponent(String(Math.trunc(numericId)))}/dispatch`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(cookieHeader ? { cookie: cookieHeader } : {}),
+        },
+        body: JSON.stringify({
+          trigger: input.trigger,
+          channel: input.channel,
+          storefrontBaseUrl: input.storefrontBaseUrl || undefined,
+        }),
+      },
+    )
+
+    if (!response.ok) {
+      const error = await readBackendErrorMessage(response, 'Erro ao disparar mensagem do link de pagamento')
+      return { success: false, error }
+    }
+
+    const payload = (await response.json()) as Record<string, unknown>
+    return {
+      success: true,
+      data: {
+        success: Boolean(payload.success),
+        message: String(payload.message || ''),
+        channel: String(payload.channel || ''),
+        recipient: String(payload.recipient || ''),
+        renderedMessage: String(payload.renderedMessage || ''),
+        whatsappUrl: payload.whatsappUrl ? String(payload.whatsappUrl) : null,
+      },
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Erro desconhecido ao disparar mensagem do link de pagamento',
+    }
   }
 }

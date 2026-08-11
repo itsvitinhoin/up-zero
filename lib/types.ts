@@ -9,35 +9,16 @@ export type CustomerType = 'RETAIL' | 'WHOLESALE'
 export type PriceTableType = 'PERCENTAGE' | 'OVERRIDE'
 
 export type CouponType = 'percentage' | 'fixed'
-export type DiscountRuleType = 'coupon' | 'automatic' | 'payment_method'
-export type DiscountType = 'percentage' | 'fixed_amount' | 'free_shipping'
-export type DiscountPriority = 'low' | 'medium' | 'high'
-export type DiscountTargetType = 'product' | 'category' | 'collection' | 'brand' | 'tag'
 
-export interface DiscountTarget {
-  type: DiscountTargetType
-  id: string
-  name: string
-}
+export type OrderStatus = 'PENDING' | 'IN_ANALYSIS' | 'RELEASED' | 'CONFIRMED' | 'PROCESSING' | 'INVOICED' | 'SHIPPED' | 'DELIVERED' | 'CANCELLED'
 
-export type OrderStatus = 'PENDING' | 'CONFIRMED' | 'PROCESSING' | 'INVOICED' | 'SHIPPED' | 'DELIVERED' | 'CANCELLED'
-
-export type PaymentMethod =
-  | 'PIX'
-  | 'BOLETO'
-  | 'FATURADO'
-  | 'CARTAO_EXTERNO'
-  | 'CARTAO_CREDITO'
-  | 'CARTAO_DEBITO'
-  | 'CHEQUE'
-  | 'DINHEIRO'
-  | 'TRANSFERENCIA'
+export type PaymentMethod = 'PIX' | 'BOLETO' | 'FATURADO' | 'CARTAO_EXTERNO' | (string & {})
 
 export type PriceVisibilityMode = 'LOGIN_REQUIRED' | 'PUBLIC'
 
-export type StockMode = 'FANTASY' | 'BINARY' | 'REAL' | 'INFINITO'
+export type StockMode = 'FANTASY' | 'BINARY' | 'REAL' | 'INFINITO' | 'WMS'
 
-export type SignWholesaleFieldType = 'TEXT' | 'EMAIL' | 'PHONE' | 'CNPJ' | 'LONG_TEXT' | 'URL' | 'SELECT' | 'UPLOAD'
+export type SignWholesaleFieldType = 'TEXT' | 'EMAIL' | 'PHONE' | 'CNPJ' | 'LONG_TEXT' | 'ADDRESS' | 'URL' | 'SELECT' | 'UPLOAD'
 
 export interface SignWholesaleField {
   id: string
@@ -55,6 +36,7 @@ export interface SignWholesaleAutoApproval {
   mode: 'CNAE' | 'MANUAL'
   validateCnpjOnReceita: boolean
   allowedCnaes: string[]
+  approveCpfAutomatically: boolean
 }
 
 export interface SignWholesaleSellerAssignment {
@@ -84,10 +66,15 @@ export interface User {
   name: string
   email: string
   phone?: string | null
+  sellerSlug?: string | null
   passwordHash: string
   role: UserRole
   roleId?: string | null
   isActive: boolean
+  deviceCount?: number
+  hasDevices?: boolean
+  devicePlatforms?: string[]
+  lastDeviceSeenAt?: Date | null
   createdAt: Date
   updatedAt: Date
 }
@@ -127,18 +114,13 @@ export interface Customer {
   paymentTerms: PaymentMethod[]
   assignedSellerId: string | null
   assignedSellerName?: string | null
-  // Classification
-  cnae?: string | null
-  cnaeDescription?: string | null
-  registrationOrigin?: string | null
-  // Branch data binding — storefront where this customer registered
-  branchId?: string | null
-  branchSlug?: string | null
   // ReceitaWS integration
   receitawsMeta?: {
     consultedAt: string
     data: Record<string, unknown>
   } | null
+  whatsappContacted?: boolean
+  whatsappContactedAt?: string | null
   customFields?: CustomerCustomField[]
   createdAt: Date
   updatedAt: Date
@@ -166,7 +148,10 @@ export interface Product {
   description: string | null
   materials: string | null
   measures: string | null
+  measurementTableId?: string | null
+  measurementTableName?: string | null
   basePrice: number
+  promoPrice?: number | null
   cost: number | null
   isActive: boolean
   isFeatured: boolean
@@ -177,9 +162,29 @@ export interface Product {
   sizes: string[]
   sizeSortOrders?: Record<string, number>
   colors: ProductColor[]
+  meta?: Record<string, unknown> | null
   variants?: ProductVariant[]
   createdAt: Date
   updatedAt: Date
+}
+
+export type ProductCustomFieldType = 'TEXT' | 'LONG_TEXT' | 'NUMBER' | 'URL' | 'SELECT' | 'MULTI_UPLOAD' | 'RICH_TEXT'
+
+export interface ProductCustomFieldOption {
+  value: string
+  label: string
+}
+
+export interface ProductCustomField {
+  id: string
+  label: string
+  type: ProductCustomFieldType
+  enabled: boolean
+  required: boolean
+  order: number
+  placeholder?: string
+  helpText?: string
+  options?: ProductCustomFieldOption[]
 }
 
 export interface ProductColor {
@@ -201,10 +206,17 @@ export interface ProductVariant {
   color: string
   size: string
   variantSku: string
+  combinationKey?: string | null
+  attributeValueIds?: number[]
+  isSimpleProduct?: boolean
   isHighlighted?: boolean
+  preferredSellableLocationIds?: number[]
   attribute_value_hexa?: string | null
   stock: number
   priceOverride: number | null
+  ncm?: string | null
+  barcode?: string | null
+  weightGrams?: number | null
   createdAt: Date
 }
 
@@ -259,34 +271,18 @@ export interface PriceTableItem {
 
 export interface Coupon {
   id: string
-  name?: string
   code: string
   type: CouponType
-  ruleType?: DiscountRuleType
-  discountType?: DiscountType
   valueCents: number
-  startsAt: Date
-  endsAt: Date
+  startsAt: Date | null
+  endsAt: Date | null
+  uniquePerUserActive: boolean
   maxUses: number | null
   currentUses: number
   minOrderValueCents: number | null
-  minItemsQuantity?: number | null
-  firstPurchaseOnly?: boolean
-  firstPurchaseMinOrderValueCents?: number | null
-  firstPurchaseMinItemsQuantity?: number | null
-  maxUsesPerCustomer?: number | null
-  canStack?: boolean
-  priority?: DiscountPriority
-  paymentMethod?: string | null
-  applyToAllProducts?: boolean
-  includeTargets?: DiscountTarget[]
-  excludeTargets?: DiscountTarget[]
-  excludePromotionalProducts?: boolean
-  excludeDiscountedProducts?: boolean
   scope: CouponScope
   isActive: boolean
   createdAt: Date
-  updatedAt?: Date
 }
 
 export interface CouponScope {
@@ -308,6 +304,13 @@ export interface CartItem {
   productId: string
   variantId: string
   quantity: number
+  compositionInstanceId?: number | null
+  compositionItemId?: number | null
+  compositionGroupUuid?: string | null
+  compositionNameSnapshot?: string | null
+  compositionPricingModeSnapshot?: string | null
+  compositionDisplayModeSnapshot?: string | null
+  compositionDiscountAllocatedCents?: number
   product?: Product
   variant?: ProductVariant
 }
@@ -321,14 +324,18 @@ export type PaymentStatus = 'PENDING' | 'PAID' | 'PARTIAL' | 'REFUNDED' | 'CANCE
 
 export interface Order {
   id: string
+  code?: string | null
   customerId: string
   createdByUserId: string
   createdBySellerId: string | null
+  origin?: 'customer' | 'manager' | 'api' | 'import' | string | null
   status: OrderStatus
   paymentStatus: PaymentStatus
   subtotal: number
   couponDiscount?: number
   tierDiscount?: number
+  compositionDiscountTotal?: number
+  hasCompositionDiscount?: boolean
   discountTotal: number
   manualDiscount: number
   total: number
@@ -336,12 +343,16 @@ export interface Order {
   totalItems?: number
   fulfilledItems?: number
   shippingName: string | null
+  shippingMethodCode?: string | null
+  shippingDeliveryDays?: number | null
+  shippingNote?: string | null
   shippingPrice: number
   paymentMethod: PaymentMethod | null
   notes: string | null
   internalNotes: string | null
   trackingCode: string | null
   trackingUrl: string | null
+  trackingSource?: string | null
   // Shipping address snapshot
   shippingStreet: string
   shippingNumber: string
@@ -350,9 +361,10 @@ export interface Order {
   shippingCity: string
   shippingState: string
   shippingZipCode: string
-  // Branch data binding — origin storefront of this order
-  branchId?: string | null
-  branchSlug?: string | null
+  customerName?: string | null
+  customerPhone?: string | null
+  assignedSellerId?: string | null
+  assignedSellerName?: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -367,6 +379,7 @@ export interface OrderItem {
   assetImageUrl?: string | null
   imageUrl?: string | null
   nameSnapshot: string
+  productSkuSnapshot?: string | null
   skuSnapshot: string
   variantCombinationKey?: string | null
   colorSnapshot: string | null
@@ -381,6 +394,7 @@ export interface OrderItem {
   variantAvailableQty?: number
   status?: 'active' | 'attended' | 'removed'
   origin?: 'customer' | 'manager_added' | 'replacement' | 'gift'
+  compositionDiscountAllocatedCents?: number
 }
 
 export type OrderInvoiceStatus = 'PENDING' | 'PROCESSING' | 'AUTHORIZED' | 'REJECTED' | 'CANCELLED' | 'ERROR'
@@ -388,7 +402,8 @@ export type OrderInvoiceStatus = 'PENDING' | 'PROCESSING' | 'AUTHORIZED' | 'REJE
 export interface OrderInvoice {
   id: string
   storeId: string
-  orderId: string
+  orderId: string | null
+  invoiceType?: 'order' | 'standalone'
   status: OrderInvoiceStatus
   payload: Record<string, unknown>
   meta: Record<string, unknown>
@@ -404,13 +419,16 @@ export interface OrderInvoice {
   updatedAt: Date
 }
 
-export type OrderLabelStatus = 'ISSUED' | 'ERROR'
+export type OrderLabelStatus = 'PROCESSING' | 'ISSUED' | 'ERROR'
 
 export interface OrderLabel {
   id: string
   storeId: string
-  orderId: string
+  orderId: string | null
+  labelMode: 'order' | 'standalone'
   status: OrderLabelStatus
+  chaveNfe: string | null
+  numeroNfe: string | null
   trackingCode: string | null
   carrier: string | null
   pdfUrl: string | null
@@ -473,7 +491,9 @@ export interface CustomShippingMethod {
   isPickup: boolean
   pickupAddress: string | null
   pickupSchedule: PickupScheduleConfig | null
-  pricingType: 'FIXED' | 'BY_WEIGHT' | 'BY_VALUE' | 'BY_REGION' | 'FREE'
+  allowCustomerNotes: boolean
+  customerNoteInstruction: string | null
+  pricingType: 'FIXED' | 'BY_WEIGHT' | 'BY_VALUE' | 'BY_REGION' | 'FREE' | 'NEGOTIATED'
   fixedPrice: number | null
   freeAboveValue: number | null
   minDays: number
@@ -498,6 +518,9 @@ export interface DefaultPackageConfig {
 
 export interface CorreiosConfig {
   enabled: boolean
+  idCorreios: string | null
+  apiKey: string | null
+  postcardNumber: string | null
   contractCode: string | null
   contractPassword: string | null
   originCep: string
@@ -508,16 +531,40 @@ export interface CorreiosConfig {
   declareValue: boolean
 }
 
+export interface MelhorEnvioConfig {
+  enabled: boolean
+  token: string | null
+  originCep: string
+  serviceIds: number[]
+  document: string | null
+  markupPercent: number
+  markupFixed: number
+  additionalDays: number
+}
+
+export interface MandaeConfig {
+  enabled: boolean
+  apiKey: string | null
+  originCep: string
+  markupPercent: number
+  markupFixed: number
+  additionalDays: number
+  declareValue: boolean
+}
+
 export interface ShippingSettings {
   defaultPackage: DefaultPackageConfig
   defaultOriginCep: string
   defaultPackageWeight: number
+  checkoutMessage: string
   showEstimatedDelivery: boolean
   freeShippingEnabled: boolean
   freeShippingMinValue: number
   freeShippingRegions: string[]
   regionalOffers: RegionalShippingOffer[]
   correios: CorreiosConfig
+  melhorEnvio: MelhorEnvioConfig
+  mandae: MandaeConfig
   customMethods: CustomShippingMethod[]
 }
 
@@ -536,8 +583,22 @@ export interface SiteCustomization {
   fontFamily: StoreFontFamily
   forceUppercaseText: boolean
   storefrontDisplayMode?: 'products' | 'imageLevels'
+  storefrontNavigationMode?: 'pagination' | 'infiniteScroll'
+  storefrontDefaultSort?: 'relevance' | 'price_asc' | 'price_desc' | 'newest' | 'sku'
+  /** Show PIX discount on product cards and PDP. Default true when omitted. */
+  showPixDiscount?: boolean
+  /** Show installment info on product cards and PDP. Default true when omitted. */
+  showInstallments?: boolean
+  // Media aspect ratio for product image/video thumbnails (site + admin), in pixels.
+  // Same width/height is used for both photos and videos. When not informed,
+  // current default proportions are kept (683x1024px).
+  mediaAspectWidth?: number | null
+  mediaAspectHeight?: number | null
+    // Menu
+    menuTransparent: boolean
   // Announcement bar
   announcementBar: AnnouncementBarConfig
+  popupCoupon?: CouponPopupConfig
   // Banners
   mainBanners: BannerConfig[]
   miniBanners?: BannerConfig[]
@@ -551,6 +612,7 @@ export interface SiteCustomization {
   logoLightUrl: string | null
   logoDarkUrl: string | null
   faviconUrl: string | null
+  loginSideImageUrl?: string | null
 }
 
 export interface AnnouncementBarConfig {
@@ -561,6 +623,13 @@ export interface AnnouncementBarConfig {
   textColor: string
   isAnimated: boolean
   animationSpeed: 'SLOW' | 'NORMAL' | 'FAST'
+}
+
+export interface CouponPopupConfig {
+  enabled: boolean
+  imageUrl: string | null
+  couponCode: string
+  applyButtonText: string
 }
 
 export interface BannerConfig {
@@ -601,8 +670,10 @@ export interface InfoBannersConfig {
 }
 
 export type PaymentMode = 'MANUAL' | 'INTEGRATED'
+export type PaymentIntegratedFlow = 'AUTO_CHARGE' | 'LINK_AFTER_VALIDATION'
+export type PaymentGatewayEnvironment = 'PRODUCTION' | 'SANDBOX'
 
-export type PaymentProvider = 'STRIPE' | 'MERCADO_PAGO' | 'PAGSEGURO' | 'ASAAS' | 'NONE'
+export type PaymentProvider = 'STRIPE' | 'MERCADO_PAGO' | 'PAGBANK' | 'ASAAS' | 'GETNET' | 'PAGARME' | 'REDE' | 'NONE'
 
 export interface PaymentMethodConditions {
   discountPercent?: number
@@ -610,11 +681,14 @@ export interface PaymentMethodConditions {
   feePercent?: number
   minOrderValue?: number | null
   maxOrderValue?: number | null
+  minInstallmentAmount?: number | null
+  allowDiscountCombination?: boolean
   label?: string | null
 }
 
 export interface CustomPaymentMethod {
   id: string
+  paymentMethodId?: number | null
   title: string
   description: string
   icon: string | null
@@ -625,13 +699,21 @@ export interface CustomPaymentMethod {
 
 export interface PaymentSettings {
   mode: PaymentMode
+  integratedFlow: PaymentIntegratedFlow
   provider: PaymentProvider
+  gatewayEnvironment?: PaymentGatewayEnvironment | null
   // For manual mode
   manualInstructions: string
   // API Keys (only provider-specific)
   apiKey: string | null
   secretKey: string | null
   webhookSecret: string | null
+  webhookToken: string | null
+  providerWebhookUrl: string | null
+  providerCronUrl: string | null
+  getnetWebhookEvent?: string | null
+  getnetWebhookSubscriptionId?: string | null
+  getnetWebhookAuthenticationType?: string | null
   // Enabled methods
   enablePix: boolean
   enableBoleto: boolean
@@ -663,6 +745,7 @@ export interface MarketingSettings {
   // Google
   googleAnalytics: MarketingIntegration & {
     measurementId: string | null
+    accessToken: string | null
   }
   googleAds: MarketingIntegration & {
     conversionId: string | null
@@ -691,6 +774,12 @@ export interface DomainSettings {
   domainVerificationToken: string | null
   sslEnabled: boolean
   wwwRedirect: boolean
+}
+
+export type ErpIntegrationProvider = 'NONE' | 'MANSE' | 'MIRE' | 'BLING'
+
+export interface ErpSettings {
+  provider: ErpIntegrationProvider
 }
 
 export interface MenuItem {
@@ -789,6 +878,7 @@ export interface SiteSettings {
   pendingCustomerMessage: string
   // Price visibility
   priceVisibilityMode: PriceVisibilityMode
+  userLinksPriceVisibilityMode?: PriceVisibilityMode
   // Seller permissions
   sellerCanApproveCustomers: boolean
   sellerCanEditPriceTable: boolean
@@ -807,12 +897,16 @@ export interface SiteSettings {
   marketingSettings: MarketingSettings
   // Domain settings
   domainSettings: DomainSettings
+  // ERP integration settings
+  erpSettings: ErpSettings
   // Menu
   menuItems: MenuItem[]
   // Institutional pages
   institutionalPages: InstitutionalPage[]
   // Signup wholesale form and approval
   sign_wholesale: SignWholesaleSettings
+  // Product custom fields config
+  productCustomFields?: ProductCustomField[]
   updatedAt: Date
   // Billing / Plans
   billing?: BillingSettings
@@ -847,6 +941,9 @@ export interface ProductWithVariants extends Product {
 export interface OrderWithItems extends Order {
   items: OrderItem[]
   customer?: Customer
+  invoice?: OrderInvoice | null
+  label?: OrderLabel | null
+  payments?: unknown[]
 }
 
 export interface CustomerWithUser extends Customer {
@@ -939,6 +1036,8 @@ export interface SessionUser {
   customerId?: string
   sellerId?: string
   storeId?: number
+  permissionCodes?: string[]
+  isSystemRole?: boolean
 }
 
 // ==================== API TYPES ====================
@@ -963,6 +1062,8 @@ export interface CustomLink {
   name: string
   slug: string
   isActive: boolean
+  showPrice: boolean
+  applyToAllProducts: boolean
   startsAt: string | null
   endsAt: string | null
   createdBy: string | null
@@ -976,6 +1077,8 @@ export interface CustomLinkSummary {
   name: string
   slug: string
   isActive: boolean
+  showPrice: boolean
+  applyToAllProducts: boolean
   productCount: number
   clicks: number
   orders: number
@@ -1010,6 +1113,9 @@ export type MessageTriggerType =
   | 'CUSTOMER_REGISTERED'
   | 'CUSTOMER_APPROVED'
   | 'CUSTOMER_REJECTED'
+  | 'CUSTOMER_PASSWORD_RESET'
+  | 'ORDER_CREATED'
+  | 'ORDER_INVOICE_GENERATED'
   | 'ORDER_CONFIRMED'
   | 'ORDER_PROCESSING'
   | 'ORDER_SHIPPED'
@@ -1018,6 +1124,9 @@ export type MessageTriggerType =
   | 'CART_ABANDONED'
   | 'PAYMENT_CONFIRMED'
   | 'PAYMENT_FAILED'
+  | 'PAYMENT_LINK_CREATED'
+  | 'PAYMENT_LINK_REMINDER'
+  | 'CONTACT_MESSAGE'
 
 export type MessageChannel = 'WHATSAPP' | 'EMAIL' | 'SMS'
 
@@ -1041,6 +1150,7 @@ export interface MessageTemplate {
   content: string
   variables: string[]
   delayMinutes: number
+  copyEmails?: string
   createdAt: Date
   updatedAt: Date
 }
@@ -1110,17 +1220,8 @@ export interface MessageFlow {
   updatedAt: Date
 }
 
-// ==================== BRANCHES ====================
-
 export type BranchStatus = 'active' | 'inactive'
 
-/**
- * A Branch (Filial) represents a segmented storefront URL for a single brand.
- * Example: brand.com/saopaulo, brand.com/riodejaneiro
- *
- * Branches are first-class entities — not just URL aliases.
- * All key business data (orders, customers, leads) is bound to a branch_id.
- */
 export interface Branch {
   id: string
   storeId: number
@@ -1134,12 +1235,10 @@ export interface Branch {
   responsibleName: string | null
   contactWhatsapp: string | null
   contactEmail: string | null
-  // Future-proofing: stored as JSON in backend, enables per-branch customization
   themeConfig: Record<string, unknown> | null
   seoConfig: Record<string, unknown> | null
   trackingConfig: Record<string, unknown> | null
   catalogConfig: Record<string, unknown> | null
-  // Future-proofing: per-branch pricing and inventory scope
   pricingTableId: string | null
   salesChannelCode: string | null
   createdAt: Date

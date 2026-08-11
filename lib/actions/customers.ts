@@ -3,15 +3,20 @@
 import { revalidatePath } from 'next/cache'
 import { cookies, headers } from 'next/headers'
 import { getAdminStoreIdFromToken } from '@/lib/auth'
-import type { ApiResponse, Customer, PaymentMethod } from '@/lib/types'
+import { checkUserPermission } from '@/lib/actions/permissions'
+import type { ApiResponse, Customer, MessageChannel, MessageTriggerType, PaymentMethod } from '@/lib/types'
 
 interface ClientPayload {
+  customer_type?: string
+  store_id?: number | null
   contact_name?: string
   email?: string
   phone?: string
   company_name?: string
   trade_name?: string
   cnpj?: string
+  gender?: string | null
+  birth_date?: string | null
   state_registration?: string | null
   segment?: string
   address_zip?: string
@@ -34,10 +39,91 @@ interface ClientPayload {
 
 const PAYMENT_METHODS: PaymentMethod[] = ['PIX', 'BOLETO', 'FATURADO', 'CARTAO_EXTERNO']
 
+export type CustomerWebhookEvent =
+  | 'customer.created'
+  | 'customer.updated'
+  | 'customer.approved'
+  | 'customer.rejected'
+
+interface CustomerWebhookDispatchResult {
+  success: boolean
+  message: string
+  event: string
+  customerId: number
+  storeId: number
+  payload?: unknown
+}
+
+export type CustomerMessageTrigger = Extract<
+  MessageTriggerType,
+  'CUSTOMER_REGISTERED' | 'CUSTOMER_APPROVED' | 'CUSTOMER_REJECTED' | 'CUSTOMER_PASSWORD_RESET'
+>
+
+interface CustomerMessageDispatchResult {
+  success: boolean
+  message: string
+  channel: string
+  recipient: string
+  renderedMessage: string
+  whatsappUrl?: string | null
+}
+
 function resolveBackendBaseUrl(): string | null {
   const base = (process.env.NEXT_PUBLIC_RUST_URL ?? '').trim()
   if (!base) return null
   return base.replace(/\/$/, '')
+}
+
+async function hasCustomerPermission(permissionCode: string): Promise<boolean> {
+  try {
+    const result = await checkUserPermission(permissionCode)
+    return result?.has_permission === true
+  } catch {
+    return false
+  }
+}
+
+async function canViewCustomers(): Promise<boolean> {
+  return hasCustomerPermission('customers.view')
+}
+
+async function canViewAssignedCustomersOnly(): Promise<boolean> {
+  try {
+    const result = await checkUserPermission('customers.view_assigned_only')
+    if (result?.source === 'system_role') return false
+    return result?.has_permission === true
+  } catch {
+    return false
+  }
+}
+
+async function canCreateCustomers(): Promise<boolean> {
+  return hasCustomerPermission('customers.create')
+}
+
+async function canEditCustomers(): Promise<boolean> {
+  return hasCustomerPermission('customers.edit')
+}
+
+async function canAssignSellerToCustomer(): Promise<boolean> {
+  return hasCustomerPermission('customers.assign_seller')
+}
+
+function formDataChangesAssignedSeller(formData: FormData): boolean {
+  return formData.has('assignedSellerId')
+}
+
+function isAssignedSellerOnlyUpdate(formData: FormData): boolean {
+  const keys = Array.from(formData.keys())
+  return keys.length === 1 && keys[0] === 'assignedSellerId'
+}
+
+async function canDeleteCustomers(): Promise<boolean> {
+  return hasCustomerPermission('customers.delete')
+}
+
+async function canSendMessages(): Promise<boolean> {
+  return hasCustomerPermission('messaging.send')
 }
 
 async function readBackendErrorMessage(response: Response, fallback: string): Promise<string> {
@@ -57,6 +143,188 @@ async function readBackendErrorMessage(response: Response, fallback: string): Pr
   }
 }
 
+async function resolveAuthenticatedAdminId(baseUrl: string, adminToken?: string): Promise<string | null> {
+  try {
+    const response = await fetch(`${baseUrl}/admin/me`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminToken ? { cookie: `adminAuthToken=${adminToken}` } : {}),
+      },
+      cache: 'no-store',
+    })
+
+    if (!response.ok) return null
+
+    const payload = (await response.json()) as { id?: number | string }
+    const id = payload?.id
+    if (typeof id === 'number' && Number.isInteger(id) && id > 0) return String(id)
+    if (typeof id === 'string' && id.trim().length > 0) return id.trim()
+    return null
+  } catch {
+    return null
+  }
+}
+
+function buildCustomerPayloadFromFormData(formData: FormData): ClientPayload {
+  const payload: ClientPayload = {}
+
+  if (formData.has('customerType')) {
+    const value = ((formData.get('customerType') as string) || '').trim().toUpperCase()
+    if (value === 'RETAIL' || value === 'WHOLESALE') {
+      payload.customer_type = value
+    }
+  }
+  if (formData.has('contactName')) {
+    payload.contact_name = formData.get('contactName') as string
+  }
+  if (formData.has('email')) {
+    payload.email = formData.get('email') as string
+  }
+  if (formData.has('phone')) {
+    payload.phone = formData.get('phone') as string
+  }
+  if (formData.has('companyName')) {
+    payload.company_name = formData.get('companyName') as string
+  }
+  if (formData.has('tradeName')) {
+    payload.trade_name = formData.get('tradeName') as string
+  }
+  if (formData.has('cnpj')) {
+    payload.cnpj = formData.get('cnpj') as string
+  }
+  if (formData.has('retailGender')) {
+    const value = (formData.get('retailGender') as string) || ''
+    payload.gender = value || null
+  }
+  if (formData.has('retailBirthDate')) {
+    const value = (formData.get('retailBirthDate') as string) || ''
+    payload.birth_date = value || null
+  }
+  if (formData.has('stateRegistration')) {
+    const val = formData.get('stateRegistration') as string
+    payload.state_registration = val || null
+  }
+  if (formData.has('segment')) {
+    payload.segment = formData.get('segment') as string
+  }
+  if (formData.has('zipCode')) {
+    payload.address_zip = formData.get('zipCode') as string
+  }
+  if (formData.has('street')) {
+    payload.address_street = formData.get('street') as string
+  }
+  if (formData.has('number')) {
+    payload.address_number = formData.get('number') as string
+  }
+  if (formData.has('complement')) {
+    const val = formData.get('complement') as string
+    payload.address_complement = val || null
+  }
+  if (formData.has('neighborhood')) {
+    payload.address_neighborhood = formData.get('neighborhood') as string
+  }
+  if (formData.has('city')) {
+    payload.address_city = formData.get('city') as string
+  }
+  if (formData.has('state')) {
+    payload.address_state = formData.get('state') as string
+  }
+  if (formData.has('priceTableId')) {
+    const value = (formData.get('priceTableId') as string) || ''
+    const numeric = Number(value)
+    const hasValidValue = value !== '' && value !== 'default' && Number.isFinite(numeric) && numeric > 0
+    payload.price_table_id = hasValidValue ? numeric : null
+    payload.clear_price_table_id = !hasValidValue
+  }
+  if (formData.has('minPiecesOverride')) {
+    const raw = (formData.get('minPiecesOverride') as string) || ''
+    const numeric = raw ? Number(raw) : NaN
+    const hasValidValue = Number.isFinite(numeric) && numeric >= 0
+    payload.min_pieces_override = hasValidValue ? Math.round(numeric) : null
+    payload.clear_min_pieces_override = !hasValidValue
+  }
+  if (formData.has('extraDiscountPct')) {
+    const raw = (formData.get('extraDiscountPct') as string) || ''
+    const numeric = raw ? Number(raw) : NaN
+    payload.extra_discount_bps = Number.isFinite(numeric)
+      ? Math.max(0, Math.min(10000, Math.round(numeric * 100)))
+      : null
+  }
+  if (formData.has('assignedSellerId')) {
+    const value = (formData.get('assignedSellerId') as string) || ''
+    if (value && value !== 'default') {
+      payload.assigned_seller_id = Number(value)
+    } else {
+      payload.clear_assigned_seller_id = true
+    }
+  }
+  if (formData.has('password')) {
+    const password = ((formData.get('password') as string) || '').trim()
+    if (password) {
+      payload.password = password
+    }
+  }
+  if (formData.has('paymentTerms')) {
+    const raw = (formData.get('paymentTerms') as string) || '[]'
+    let parsed: unknown = []
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      parsed = []
+    }
+
+    const normalized = Array.isArray(parsed)
+      ? parsed
+          .map((value) => String(value || '').toUpperCase())
+          .filter((value): value is PaymentMethod => PAYMENT_METHODS.includes(value as PaymentMethod))
+      : []
+
+    payload.meta = {
+      payment_terms: normalized,
+    }
+  }
+
+  return payload
+}
+
+function readWholesaleProfile(client: Record<string, unknown>): Record<string, unknown> | null {
+  const profile = client.wholesale_profile
+  return profile && typeof profile === 'object' ? (profile as Record<string, unknown>) : null
+}
+
+function readReceitawsData(meta: Record<string, unknown>): Record<string, unknown> | null {
+  const receitaws = meta.receitaws
+  if (!receitaws || typeof receitaws !== 'object') return null
+  const data = (receitaws as Record<string, unknown>).data
+  return data && typeof data === 'object' ? (data as Record<string, unknown>) : null
+}
+
+function pickNonEmptyString(...values: unknown[]): string {
+  for (const value of values) {
+    const text = String(value ?? '').trim()
+    if (text) return text
+  }
+  return ''
+}
+
+const RESERVED_CUSTOMER_FIELD_IDS = new Set([
+  'companyName',
+  'razaoSocial',
+  'tradeName',
+  'nomeFantasia',
+  'stateRegistration',
+  'segment',
+  'address',
+  'addressZip',
+  'addressStreet',
+  'addressNumber',
+  'addressComplement',
+  'addressNeighborhood',
+  'addressCity',
+  'addressState',
+])
+
 function transformClientToCustomer(client: Record<string, unknown>): Customer {
   const meta = (client.meta && typeof client.meta === 'object') ? (client.meta as Record<string, unknown>) : {}
   const paymentTermsRaw = Array.isArray(meta.payment_terms) ? meta.payment_terms : []
@@ -67,6 +335,7 @@ function transformClientToCustomer(client: Record<string, unknown>): Customer {
     ? (meta.custom_fields as Record<string, unknown>)
     : {}
   const customFields = Object.entries(customFieldsRaw)
+    .filter(([id]) => !RESERVED_CUSTOMER_FIELD_IDS.has(id))
     .map(([id, entry]) => {
       if (entry && typeof entry === 'object') {
         const payload = entry as Record<string, unknown>
@@ -84,14 +353,35 @@ function transformClientToCustomer(client: Record<string, unknown>): Customer {
     })
     .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
 
-  const isWholesale = !!client.company_name
-  const customerType = isWholesale ? 'WHOLESALE' : 'RETAIL'
+  const rawCustomerType = typeof client.customer_type === 'string'
+    ? client.customer_type.toUpperCase()
+    : typeof client.customerType === 'string'
+      ? client.customerType.toUpperCase()
+      : null
+  const normalizedDocument = String(client.cnpj || client.cpf_cnpj || '').replace(/\D/g, '')
+  const customerType = rawCustomerType === 'RETAIL' || rawCustomerType === 'WHOLESALE'
+    ? rawCustomerType
+    : normalizedDocument.length === 11
+      ? 'RETAIL'
+      : 'WHOLESALE'
+  const isWholesale = customerType === 'WHOLESALE'
+  const wholesaleProfile = readWholesaleProfile(client)
+  const receitawsData = readReceitawsData(meta)
   const companyName = isWholesale
-    ? String(client.company_name || '')
-    : String(client.name || '')
+    ? pickNonEmptyString(
+        client.company_name,
+        wholesaleProfile?.company_name,
+        receitawsData?.nome,
+      )
+    : pickNonEmptyString(client.name)
   const tradeName = isWholesale
-    ? String(client.trade_name || '')
-    : String(client.name || '')
+    ? pickNonEmptyString(
+        client.trade_name,
+        wholesaleProfile?.trade_name,
+        receitawsData?.fantasia,
+        receitawsData?.nome,
+      )
+    : pickNonEmptyString(client.name)
   const document = isWholesale
     ? String(client.cnpj || '')
     : String(client.cpf_cnpj || '')
@@ -117,11 +407,25 @@ function transformClientToCustomer(client: Record<string, unknown>): Customer {
     ? String(client.address_zip || '')
     : String(client.address_zip || '')
   const status = (client.status as 'PENDING' | 'APPROVED' | 'REJECTED') || (isWholesale ? 'PENDING' : 'APPROVED')
+  const whatsappContactedAtRaw = meta.whatsapp_contacted_at
+  const whatsappContactedAt = typeof whatsappContactedAtRaw === 'string' && whatsappContactedAtRaw.trim().length > 0
+    ? whatsappContactedAtRaw
+    : null
+  const whatsappContacted = whatsappContactedAt !== null || meta.whatsapp_contacted === true
+  const rawId =
+    client.id ??
+    client.customer_id ??
+    client.client_id ??
+    client.user_id ??
+    client.customerId ??
+    client.clientId ??
+    null
+  const normalizedId = rawId === null || rawId === undefined ? '' : String(rawId).trim()
 
   // Map B2bCustomer fields to Customer
   return {
-    id: String(client.id || ''),
-    userId: String(client.id || ''),
+    id: normalizedId,
+    userId: normalizedId,
     customerType,
     companyName,
     tradeName,
@@ -151,23 +455,6 @@ function transformClientToCustomer(client: Record<string, unknown>): Customer {
     paymentTerms,
     assignedSellerId: client.assigned_seller_id ? String(client.assigned_seller_id) : null,
     assignedSellerName: client.assigned_seller_name ? String(client.assigned_seller_name) : null,
-    cnae: (() => {
-      const direct = meta.cnae ? String(meta.cnae) : null
-      if (direct) return direct
-      const rws = meta.receitaws && typeof meta.receitaws === 'object' ? (meta.receitaws as Record<string, unknown>) : {}
-      const rwsData = rws.data && typeof rws.data === 'object' ? (rws.data as Record<string, unknown>) : {}
-      return rwsData.cnae ? String(rwsData.cnae) : null
-    })(),
-    cnaeDescription: (() => {
-      const direct = meta.cnae_description ? String(meta.cnae_description) : null
-      if (direct) return direct
-      const rws = meta.receitaws && typeof meta.receitaws === 'object' ? (meta.receitaws as Record<string, unknown>) : {}
-      const rwsData = rws.data && typeof rws.data === 'object' ? (rws.data as Record<string, unknown>) : {}
-      return rwsData.cnae_description ? String(rwsData.cnae_description) : null
-    })(),
-    registrationOrigin: client.origin ? String(client.origin) : (client.registration_origin ? String(client.registration_origin) : null),
-    branchId: client.branch_id ? String(client.branch_id) : (client.branchId ? String(client.branchId) : null),
-    branchSlug: client.branch_slug ? String(client.branch_slug) : (client.branchSlug ? String(client.branchSlug) : null),
     receitawsMeta:
       meta.receitaws && typeof meta.receitaws === 'object'
         ? {
@@ -176,9 +463,11 @@ function transformClientToCustomer(client: Record<string, unknown>): Customer {
               ((meta.receitaws as Record<string, unknown>).data as Record<string, unknown>) || {},
           }
         : null,
+    whatsappContacted,
+    whatsappContactedAt,
     customFields,
-    createdAt: new Date(client.created_at as string || new Date()),
-    updatedAt: new Date(client.updated_at as string || new Date()),
+    createdAt: client.created_at ? new Date(String(client.created_at)) : new Date(0),
+    updatedAt: client.updated_at ? new Date(String(client.updated_at)) : new Date(0),
   }
 }
 
@@ -225,9 +514,15 @@ async function resolveRequestedStoreId(storeId?: number | string | null): Promis
 export async function getCustomersAction(filters?: {
   status?: string
   assignedSellerId?: string
+  withoutSeller?: boolean
   q?: string
   search?: string
+  customerType?: string
 }): Promise<ApiResponse<Customer[]>> {
+  if (!(await canViewCustomers())) {
+    return { success: false, error: 'Você não tem permissão para visualizar clientes' }
+  }
+
   const baseUrl = resolveBackendBaseUrl()
   if (!baseUrl) {
     return { success: false, error: 'Backend URL não configurado' }
@@ -237,16 +532,31 @@ export async function getCustomersAction(filters?: {
     const cookieStore = await cookies()
     const adminToken = cookieStore.get('adminAuthToken')?.value
     const scopedStoreId = await getAdminStoreIdFromToken()
+    const enforceAssignedOnlyScope = await canViewAssignedCustomersOnly()
+    const scopedAssignedSellerId = enforceAssignedOnlyScope
+      ? await resolveAuthenticatedAdminId(baseUrl, adminToken)
+      : null
 
     if (!scopedStoreId) {
       return { success: false, error: 'Não foi possível resolver a loja do administrador autenticado' }
     }
 
-    let wholesaleUrl = `${baseUrl}/b2b`
-    let retailUrl = `${baseUrl}/clients`
+    if (enforceAssignedOnlyScope && !scopedAssignedSellerId) {
+      return { success: false, error: 'Não foi possível resolver o vendedor autenticado' }
+    }
+
+    let customersUrl = `${baseUrl}/customers`
 
     const params = new URLSearchParams()
     if (filters?.status) params.append('status', filters.status)
+    if (scopedAssignedSellerId) {
+      params.append('assigned_seller_id', scopedAssignedSellerId)
+    } else if (filters?.withoutSeller) {
+      params.append('without_seller', 'true')
+    } else if (filters?.assignedSellerId) {
+      params.append('assigned_seller_id', filters.assignedSellerId)
+    }
+    params.append('limit', '50')
 
     if (scopedStoreId) {
       params.append('store_id', String(scopedStoreId))
@@ -254,48 +564,30 @@ export async function getCustomersAction(filters?: {
 
     const queryTerm = (filters?.q || filters?.search || '').trim()
     if (queryTerm) params.append('q', queryTerm)
+    if (filters?.customerType?.trim()) params.append('customer_type', filters.customerType.trim())
 
     if (params.toString()) {
-      const searchParams = params.toString()
-      wholesaleUrl += `?${searchParams}`
-      retailUrl += `?${searchParams}`
+      customersUrl += `?${params.toString()}`
     }
 
-    const [wholesaleRes, retailRes] = await Promise.all([
-      fetch(wholesaleUrl, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(adminToken && { cookie: `adminAuthToken=${adminToken}` }),
-        },
-        cache: 'no-store',
-      }),
-      fetch(retailUrl, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(adminToken && { cookie: `adminAuthToken=${adminToken}` }),
-        },
-        cache: 'no-store',
-      }),
-    ])
+    const response = await fetch(customersUrl, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminToken && { cookie: `adminAuthToken=${adminToken}` }),
+      },
+      cache: 'no-store',
+    })
 
-    if (!wholesaleRes.ok && !retailRes.ok) {
+    if (!response.ok) {
       const error = await readBackendErrorMessage(
-        wholesaleRes,
-        `HTTP ${wholesaleRes.status}: Erro ao buscar clientes`
+        response,
+        `HTTP ${response.status}: Erro ao buscar clientes`
       )
       return { success: false, error }
     }
 
-    let wholesaleClients = wholesaleRes.ok
-      ? ((await wholesaleRes.json()) as Record<string, unknown>[])
-      : []
-    let retailClients = retailRes.ok
-      ? ((await retailRes.json()) as Record<string, unknown>[])
-      : []
-
-    let customers = [...wholesaleClients, ...retailClients].map(transformClientToCustomer)
+    let customers = ((await response.json()) as Record<string, unknown>[]).map(transformClientToCustomer)
 
     customers.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
 
@@ -308,12 +600,28 @@ export async function getCustomersAction(filters?: {
   }
 }
 
-export async function getCustomersSummaryAction(): Promise<ApiResponse<{
+export async function getCustomersPaginatedAction(filters?: {
+  status?: string
+  assignedSellerId?: string
+  withoutSeller?: boolean
+  q?: string
+  search?: string
+  customerType?: string
+  page?: number
+  limit?: number
+  from?: string
+  to?: string
+}): Promise<ApiResponse<{
+  items: Customer[]
   total: number
-  pending: number
-  approved: number
-  rejected: number
+  page: number
+  limit: number
+  totalPages: number
 }>> {
+  if (!(await canViewCustomers())) {
+    return { success: false, error: 'Você não tem permissão para visualizar clientes' }
+  }
+
   const baseUrl = resolveBackendBaseUrl()
   if (!baseUrl) {
     return { success: false, error: 'Backend URL não configurado' }
@@ -323,50 +631,173 @@ export async function getCustomersSummaryAction(): Promise<ApiResponse<{
     const cookieStore = await cookies()
     const adminToken = cookieStore.get('adminAuthToken')?.value
     const scopedStoreId = await getAdminStoreIdFromToken()
+    const enforceAssignedOnlyScope = await canViewAssignedCustomersOnly()
+    const scopedAssignedSellerId = enforceAssignedOnlyScope
+      ? await resolveAuthenticatedAdminId(baseUrl, adminToken)
+      : null
 
     if (!scopedStoreId) {
       return { success: false, error: 'Não foi possível resolver a loja do administrador autenticado' }
     }
 
+    if (enforceAssignedOnlyScope && !scopedAssignedSellerId) {
+      return { success: false, error: 'Não foi possível resolver o vendedor autenticado' }
+    }
+
+    const page = Math.max(1, Number(filters?.page) || 1)
+    const limit = Math.max(1, Number(filters?.limit) || 20)
     const params = new URLSearchParams()
+
+    if (filters?.status) params.append('status', filters.status)
+    if (scopedAssignedSellerId) {
+      params.append('assigned_seller_id', scopedAssignedSellerId)
+    } else if (filters?.withoutSeller) {
+      params.append('without_seller', 'true')
+    } else if (filters?.assignedSellerId) {
+      params.append('assigned_seller_id', filters.assignedSellerId)
+    }
+    params.append('page', String(page))
+    params.append('limit', String(limit))
     params.append('store_id', String(scopedStoreId))
 
-    const wholesaleUrl = `${baseUrl}/b2b/summary?${params.toString()}`
-    const retailUrl = `${baseUrl}/clients/summary?${params.toString()}`
+    const queryTerm = (filters?.q || filters?.search || '').trim()
+    if (queryTerm) params.append('q', queryTerm)
+    if (filters?.customerType?.trim()) params.append('customer_type', filters.customerType.trim())
+    if (filters?.from?.trim()) params.append('from', filters.from.trim())
+    if (filters?.to?.trim()) params.append('to', filters.to.trim())
 
-    const [wholesaleRes, retailRes] = await Promise.all([
-      fetch(wholesaleUrl, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(adminToken && { cookie: `adminAuthToken=${adminToken}` }),
-        },
-        cache: 'no-store',
-      }),
-      fetch(retailUrl, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(adminToken && { cookie: `adminAuthToken=${adminToken}` }),
-        },
-        cache: 'no-store',
-      }),
-    ])
+    const response = await fetch(`${baseUrl}/customers/paginated?${params.toString()}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminToken && { cookie: `adminAuthToken=${adminToken}` }),
+      },
+      cache: 'no-store',
+    })
 
-    if (!wholesaleRes.ok && !retailRes.ok) {
+    if (!response.ok) {
       const error = await readBackendErrorMessage(
-        wholesaleRes,
-        `HTTP ${wholesaleRes.status}: Erro ao buscar resumo de clientes`
+        response,
+        `HTTP ${response.status}: Erro ao buscar clientes`
       )
       return { success: false, error }
     }
 
-    const wholesaleSummary = wholesaleRes.ok
-      ? (await wholesaleRes.json()) as Record<string, unknown>
-      : {}
-    const retailSummary = retailRes.ok
-      ? (await retailRes.json()) as Record<string, unknown>
-      : {}
+    const payload = (await response.json()) as {
+      items?: Record<string, unknown>[]
+      total?: unknown
+      page?: unknown
+      limit?: unknown
+      totalPages?: unknown
+      total_pages?: unknown
+    }
+
+    const items = (Array.isArray(payload.items) ? payload.items : []).map(transformClientToCustomer)
+    items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+
+    const parsedTotal = Number(payload.total)
+    const parsedPage = Number(payload.page)
+    const parsedLimit = Number(payload.limit)
+    const rawTotalPages = payload.totalPages ?? payload.total_pages
+    const parsedTotalPages = Number(rawTotalPages)
+
+    const data = {
+      items,
+      total: Number.isFinite(parsedTotal) && parsedTotal >= 0 ? parsedTotal : 0,
+      page: Number.isFinite(parsedPage) && parsedPage >= 1 ? parsedPage : page,
+      limit: Number.isFinite(parsedLimit) && parsedLimit >= 1 ? parsedLimit : limit,
+      totalPages:
+        Number.isFinite(parsedTotalPages) && parsedTotalPages >= 1
+          ? parsedTotalPages
+          : Math.max(1, Math.ceil((Number.isFinite(parsedTotal) && parsedTotal >= 0 ? parsedTotal : 0) / limit)),
+    }
+
+    return { success: true, data }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro desconhecido ao listar clientes',
+    }
+  }
+}
+
+export async function getCustomersSummaryAction(filters?: {
+  status?: string
+  q?: string
+  search?: string
+  customerType?: string
+  from?: string
+  to?: string
+  assignedSellerId?: string
+  withoutSeller?: boolean
+}): Promise<ApiResponse<{
+  total: number
+  pending: number
+  approved: number
+  rejected: number
+  wholesale: number
+  retail: number
+}>> {
+  if (!(await canViewCustomers())) {
+    return { success: false, error: 'Você não tem permissão para visualizar clientes' }
+  }
+
+  const baseUrl = resolveBackendBaseUrl()
+  if (!baseUrl) {
+    return { success: false, error: 'Backend URL não configurado' }
+  }
+
+  try {
+    const cookieStore = await cookies()
+    const adminToken = cookieStore.get('adminAuthToken')?.value
+    const scopedStoreId = await getAdminStoreIdFromToken()
+    const enforceAssignedOnlyScope = await canViewAssignedCustomersOnly()
+    const scopedAssignedSellerId = enforceAssignedOnlyScope
+      ? await resolveAuthenticatedAdminId(baseUrl, adminToken)
+      : null
+
+    if (!scopedStoreId) {
+      return { success: false, error: 'Não foi possível resolver a loja do administrador autenticado' }
+    }
+
+    if (enforceAssignedOnlyScope && !scopedAssignedSellerId) {
+      return { success: false, error: 'Não foi possível resolver o vendedor autenticado' }
+    }
+
+    const params = new URLSearchParams()
+    params.append('store_id', String(scopedStoreId))
+    if (filters?.status?.trim()) params.append('status', filters.status.trim())
+    const queryTerm = (filters?.q || filters?.search || '').trim()
+    if (queryTerm) params.append('q', queryTerm)
+    if (filters?.customerType?.trim()) params.append('customer_type', filters.customerType.trim())
+    if (filters?.from?.trim()) params.append('from', filters.from.trim())
+    if (filters?.to?.trim()) params.append('to', filters.to.trim())
+    if (scopedAssignedSellerId) {
+      params.append('assigned_seller_id', scopedAssignedSellerId)
+    } else if (filters?.withoutSeller) {
+      params.append('without_seller', 'true')
+    } else if (filters?.assignedSellerId?.trim()) {
+      params.append('assigned_seller_id', filters.assignedSellerId.trim())
+    }
+
+    const response = await fetch(`${baseUrl}/customers/summary?${params.toString()}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminToken && { cookie: `adminAuthToken=${adminToken}` }),
+      },
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const error = await readBackendErrorMessage(
+        response,
+        `HTTP ${response.status}: Erro ao buscar resumo de clientes`
+      )
+      return { success: false, error }
+    }
+
+    const summary = (await response.json()) as Record<string, unknown>
 
     const toNumber = (value: unknown): number => {
       const parsed = Number(value)
@@ -374,10 +805,12 @@ export async function getCustomersSummaryAction(): Promise<ApiResponse<{
     }
 
     const data = {
-      total: toNumber(wholesaleSummary.total) + toNumber(retailSummary.total),
-      pending: toNumber(wholesaleSummary.pending) + toNumber(retailSummary.pending),
-      approved: toNumber(wholesaleSummary.approved) + toNumber(retailSummary.approved),
-      rejected: toNumber(wholesaleSummary.rejected) + toNumber(retailSummary.rejected),
+      total: toNumber(summary.total),
+      pending: toNumber(summary.pending),
+      approved: toNumber(summary.approved),
+      rejected: toNumber(summary.rejected),
+      wholesale: toNumber(summary.wholesale),
+      retail: toNumber(summary.retail),
     }
 
     return { success: true, data }
@@ -390,6 +823,10 @@ export async function getCustomersSummaryAction(): Promise<ApiResponse<{
 }
 
 export async function getCustomerDetailAction(id: string): Promise<ApiResponse<Customer>> {
+  if (!(await canViewCustomers())) {
+    return { success: false, error: 'Você não tem permissão para visualizar clientes' }
+  }
+
   const baseUrl = resolveBackendBaseUrl()
   if (!baseUrl) {
     return { success: false, error: 'Backend URL não configurado' }
@@ -399,7 +836,7 @@ export async function getCustomerDetailAction(id: string): Promise<ApiResponse<C
     const cookieStore = await cookies()
     const adminToken = cookieStore.get('adminAuthToken')?.value
 
-    const response = await fetch(`${baseUrl}/b2b/${id}`, {
+    const response = await fetch(`${baseUrl}/customers/${id}`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
@@ -430,7 +867,7 @@ export async function getCustomerDetailAction(id: string): Promise<ApiResponse<C
 
     const client = (await response.json()) as Record<string, unknown>
     const customer = transformClientToCustomer(client)
-    
+
     return { success: true, data: customer }
   } catch (error) {
     return {
@@ -444,6 +881,22 @@ export async function updateCustomerAction(
   id: string,
   formData: FormData
 ): Promise<ApiResponse<Customer>> {
+  const changesAssignedSeller = formDataChangesAssignedSeller(formData)
+  const assignedSellerOnlyUpdate = isAssignedSellerOnlyUpdate(formData)
+
+  if (assignedSellerOnlyUpdate) {
+    if (!(await canAssignSellerToCustomer())) {
+      return { success: false, error: 'Você não tem permissão para atribuir vendedora ao cliente' }
+    }
+  } else {
+    if (!(await canEditCustomers())) {
+      return { success: false, error: 'Você não tem permissão para editar clientes' }
+    }
+    if (changesAssignedSeller && !(await canAssignSellerToCustomer())) {
+      return { success: false, error: 'Você não tem permissão para atribuir vendedora ao cliente' }
+    }
+  }
+
   const baseUrl = resolveBackendBaseUrl()
   if (!baseUrl) {
     return { success: false, error: 'Backend URL não configurado' }
@@ -452,109 +905,9 @@ export async function updateCustomerAction(
   try {
     const cookieStore = await cookies()
     const adminToken = cookieStore.get('adminAuthToken')?.value
+    const payload = buildCustomerPayloadFromFormData(formData)
 
-    const payload: ClientPayload = {}
-
-    // Map form fields to API fields
-    if (formData.has('contactName')) {
-      payload.contact_name = formData.get('contactName') as string
-    }
-    if (formData.has('email')) {
-      payload.email = formData.get('email') as string
-    }
-    if (formData.has('phone')) {
-      payload.phone = formData.get('phone') as string
-    }
-    if (formData.has('companyName')) {
-      payload.company_name = formData.get('companyName') as string
-    }
-    if (formData.has('tradeName')) {
-      payload.trade_name = formData.get('tradeName') as string
-    }
-    if (formData.has('cnpj')) {
-      payload.cnpj = formData.get('cnpj') as string
-    }
-    if (formData.has('stateRegistration')) {
-      const val = formData.get('stateRegistration') as string
-      payload.state_registration = val || null
-    }
-    if (formData.has('segment')) {
-      payload.segment = formData.get('segment') as string
-    }
-    if (formData.has('zipCode')) {
-      payload.address_zip = formData.get('zipCode') as string
-    }
-    if (formData.has('street')) {
-      payload.address_street = formData.get('street') as string
-    }
-    if (formData.has('number')) {
-      payload.address_number = formData.get('number') as string
-    }
-    if (formData.has('complement')) {
-      const val = formData.get('complement') as string
-      payload.address_complement = val || null
-    }
-    if (formData.has('neighborhood')) {
-      payload.address_neighborhood = formData.get('neighborhood') as string
-    }
-    if (formData.has('city')) {
-      payload.address_city = formData.get('city') as string
-    }
-    if (formData.has('state')) {
-      payload.address_state = formData.get('state') as string
-    }
-    if (formData.has('priceTableId')) {
-      const value = (formData.get('priceTableId') as string) || ''
-      const numeric = Number(value)
-      const hasValidValue = value !== '' && value !== 'default' && Number.isFinite(numeric) && numeric > 0
-      payload.price_table_id = hasValidValue ? numeric : null
-      payload.clear_price_table_id = !hasValidValue
-    }
-    if (formData.has('minPiecesOverride')) {
-      const raw = (formData.get('minPiecesOverride') as string) || ''
-      const numeric = raw ? Number(raw) : NaN
-      const hasValidValue = Number.isFinite(numeric) && numeric >= 0
-      payload.min_pieces_override = hasValidValue ? Math.round(numeric) : null
-      payload.clear_min_pieces_override = !hasValidValue
-    }
-    if (formData.has('extraDiscountPct')) {
-      const raw = (formData.get('extraDiscountPct') as string) || ''
-      const numeric = raw ? Number(raw) : NaN
-      payload.extra_discount_bps = Number.isFinite(numeric)
-        ? Math.max(0, Math.min(10000, Math.round(numeric * 100)))
-        : null
-    }
-    if (formData.has('assignedSellerId')) {
-      const value = (formData.get('assignedSellerId') as string) || ''
-      payload.assigned_seller_id = value && value !== 'default' ? Number(value) : null
-    }
-    if (formData.has('password')) {
-      const password = ((formData.get('password') as string) || '').trim()
-      if (password) {
-        payload.password = password
-      }
-    }
-    if (formData.has('paymentTerms')) {
-      const raw = (formData.get('paymentTerms') as string) || '[]'
-      let parsed: unknown = []
-      try {
-        parsed = JSON.parse(raw)
-      } catch {
-        parsed = []
-      }
-
-      const normalized = Array.isArray(parsed)
-        ? parsed
-            .map((value) => String(value || '').toUpperCase())
-            .filter((value): value is PaymentMethod => PAYMENT_METHODS.includes(value as PaymentMethod))
-        : []
-
-      payload.meta = {
-        payment_terms: normalized,
-      }
-    }
-
-    const response = await fetch(`${baseUrl}/b2b/${id}`, {
+    const response = await fetch(`${baseUrl}/customers/${id}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -576,6 +929,14 @@ export async function updateCustomerAction(
       if (formData.has('neighborhood')) retailPayload.address_neighborhood = formData.get('neighborhood') as string
       if (formData.has('city')) retailPayload.address_city = formData.get('city') as string
       if (formData.has('state')) retailPayload.address_state = formData.get('state') as string
+      if (formData.has('assignedSellerId')) {
+        const value = (formData.get('assignedSellerId') as string) || ''
+        if (value && value !== 'default') {
+          retailPayload.assigned_seller_id = Number(value)
+        } else {
+          retailPayload.clear_assigned_seller_id = true
+        }
+      }
       if (formData.has('password')) {
         const password = ((formData.get('password') as string) || '').trim()
         if (password) retailPayload.password = password
@@ -622,7 +983,62 @@ export async function updateCustomerAction(
   }
 }
 
+export async function convertCustomerTypeAction(
+  id: string,
+  formData: FormData
+): Promise<ApiResponse<Customer>> {
+  if (!(await canEditCustomers())) {
+    return { success: false, error: 'Você não tem permissão para editar clientes' }
+  }
+
+  const baseUrl = resolveBackendBaseUrl()
+  if (!baseUrl) {
+    return { success: false, error: 'Backend URL não configurado' }
+  }
+
+  try {
+    const cookieStore = await cookies()
+    const adminToken = cookieStore.get('adminAuthToken')?.value
+    const payload = buildCustomerPayloadFromFormData(formData)
+    payload.store_id = await getAdminStoreIdFromToken()
+
+    const response = await fetch(`${baseUrl}/customers/${id}/convert-type`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminToken && { cookie: `adminAuthToken=${adminToken}` }),
+      },
+      body: JSON.stringify(payload),
+    })
+
+    if (!response.ok) {
+      const error = await readBackendErrorMessage(
+        response,
+        `HTTP ${response.status}: Erro ao converter tipo do cliente`
+      )
+      return { success: false, error }
+    }
+
+    const updated = (await response.json()) as Record<string, unknown>
+    const customer = transformClientToCustomer(updated)
+
+    revalidatePath('/customers')
+    revalidatePath(`/customers/${id}`)
+
+    return { success: true, data: customer }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro desconhecido ao converter cliente',
+    }
+  }
+}
+
 export async function approveCustomerAction(id: string): Promise<ApiResponse<Customer>> {
+  if (!(await canEditCustomers())) {
+    return { success: false, error: 'Você não tem permissão para editar clientes' }
+  }
+
   const baseUrl = resolveBackendBaseUrl()
   if (!baseUrl) {
     return { success: false, error: 'Backend URL não configurado' }
@@ -632,7 +1048,7 @@ export async function approveCustomerAction(id: string): Promise<ApiResponse<Cus
     const cookieStore = await cookies()
     const adminToken = cookieStore.get('adminAuthToken')?.value
 
-    const response = await fetch(`${baseUrl}/b2b/${id}`, {
+    const response = await fetch(`${baseUrl}/customers/${id}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -665,6 +1081,10 @@ export async function approveCustomerAction(id: string): Promise<ApiResponse<Cus
 }
 
 export async function rejectCustomerAction(id: string): Promise<ApiResponse<Customer>> {
+  if (!(await canEditCustomers())) {
+    return { success: false, error: 'Você não tem permissão para editar clientes' }
+  }
+
   const baseUrl = resolveBackendBaseUrl()
   if (!baseUrl) {
     return { success: false, error: 'Backend URL não configurado' }
@@ -674,7 +1094,7 @@ export async function rejectCustomerAction(id: string): Promise<ApiResponse<Cust
     const cookieStore = await cookies()
     const adminToken = cookieStore.get('adminAuthToken')?.value
 
-    const response = await fetch(`${baseUrl}/b2b/${id}`, {
+    const response = await fetch(`${baseUrl}/customers/${id}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -706,7 +1126,11 @@ export async function rejectCustomerAction(id: string): Promise<ApiResponse<Cust
   }
 }
 
-export async function deleteCustomerAction(id: string): Promise<ApiResponse<{ id: string }>> {
+export async function approveClientAction(id: string): Promise<ApiResponse<Customer>> {
+  if (!(await canEditCustomers())) {
+    return { success: false, error: 'Você não tem permissão para editar clientes' }
+  }
+
   const baseUrl = resolveBackendBaseUrl()
   if (!baseUrl) {
     return { success: false, error: 'Backend URL não configurado' }
@@ -716,7 +1140,298 @@ export async function deleteCustomerAction(id: string): Promise<ApiResponse<{ id
     const cookieStore = await cookies()
     const adminToken = cookieStore.get('adminAuthToken')?.value
 
-    const wholesaleResponse = await fetch(`${baseUrl}/b2b/${id}`, {
+    const response = await fetch(`${baseUrl}/clients/${id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminToken && { cookie: `adminAuthToken=${adminToken}` }),
+      },
+      body: JSON.stringify({ status: 'APPROVED' }),
+    })
+
+    if (!response.ok) {
+      const error = await readBackendErrorMessage(
+        response,
+        `HTTP ${response.status}: Erro ao aprovar cliente retail`
+      )
+      return { success: false, error }
+    }
+
+    const updated = (await response.json()) as Record<string, unknown>
+    const customer = transformClientToCustomer(updated)
+
+    revalidatePath('/customers')
+    revalidatePath(`/customers/${id}`)
+
+    return { success: true, data: customer }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro desconhecido ao aprovar cliente retail',
+    }
+  }
+}
+
+export async function rejectClientAction(id: string): Promise<ApiResponse<Customer>> {
+  if (!(await canEditCustomers())) {
+    return { success: false, error: 'Você não tem permissão para editar clientes' }
+  }
+
+  const baseUrl = resolveBackendBaseUrl()
+  if (!baseUrl) {
+    return { success: false, error: 'Backend URL não configurado' }
+  }
+
+  try {
+    const cookieStore = await cookies()
+    const adminToken = cookieStore.get('adminAuthToken')?.value
+
+    const response = await fetch(`${baseUrl}/clients/${id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminToken && { cookie: `adminAuthToken=${adminToken}` }),
+      },
+      body: JSON.stringify({ status: 'REJECTED' }),
+    })
+
+    if (!response.ok) {
+      const error = await readBackendErrorMessage(
+        response,
+        `HTTP ${response.status}: Erro ao rejeitar cliente retail`
+      )
+      return { success: false, error }
+    }
+
+    const updated = (await response.json()) as Record<string, unknown>
+    const customer = transformClientToCustomer(updated)
+
+    revalidatePath('/customers')
+    revalidatePath(`/customers/${id}`)
+
+    return { success: true, data: customer }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro desconhecido ao rejeitar cliente retail',
+    }
+  }
+}
+
+export async function dispatchCustomerWebhookAction(
+  id: string,
+  event: CustomerWebhookEvent,
+): Promise<ApiResponse<CustomerWebhookDispatchResult>> {
+  const baseUrl = resolveBackendBaseUrl()
+  if (!baseUrl) {
+    return { success: false, error: 'Backend URL não configurado' }
+  }
+
+  try {
+    const cookieStore = await cookies()
+    const adminToken = cookieStore.get('adminAuthToken')?.value
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(adminToken && { cookie: `adminAuthToken=${adminToken}` }),
+    }
+
+    const wholesaleResponse = await fetch(`${baseUrl}/customers/${id}/webhooks/dispatch`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ event }),
+    })
+
+    if (!wholesaleResponse.ok) {
+      const retailResponse = await fetch(`${baseUrl}/clients/${id}/webhooks/dispatch`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ event }),
+      })
+
+      if (!retailResponse.ok) {
+        const error = await readBackendErrorMessage(
+          wholesaleResponse,
+          `HTTP ${wholesaleResponse.status}: Erro ao disparar webhook`,
+        )
+        return { success: false, error }
+      }
+
+      const data = (await retailResponse.json()) as CustomerWebhookDispatchResult
+      return { success: true, data }
+    }
+
+    const data = (await wholesaleResponse.json()) as CustomerWebhookDispatchResult
+    return { success: true, data }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro desconhecido ao disparar webhook',
+    }
+  }
+}
+
+export async function dispatchCustomerMessageAction(
+  id: string,
+  input: { trigger: CustomerMessageTrigger; channel: Extract<MessageChannel, 'WHATSAPP' | 'EMAIL'> },
+): Promise<ApiResponse<CustomerMessageDispatchResult>> {
+  if (!(await canSendMessages())) {
+    return { success: false, error: 'Você não tem permissão para enviar mensagens' }
+  }
+
+  const baseUrl = resolveBackendBaseUrl()
+  if (!baseUrl) {
+    return { success: false, error: 'Backend URL não configurado' }
+  }
+
+  try {
+    const cookieStore = await cookies()
+    const adminToken = cookieStore.get('adminAuthToken')?.value
+    const response = await fetch(`${baseUrl}/messaging/customers/${id}/dispatch`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminToken && { cookie: `adminAuthToken=${adminToken}` }),
+      },
+      body: JSON.stringify({
+        trigger: input.trigger,
+        channel: input.channel,
+      }),
+    })
+
+    if (!response.ok) {
+      const error = await readBackendErrorMessage(
+        response,
+        `HTTP ${response.status}: Erro ao disparar mensagem do cliente`,
+      )
+      return { success: false, error }
+    }
+
+    const payload = (await response.json()) as Record<string, unknown>
+    return {
+      success: true,
+      data: {
+        success: Boolean(payload.success),
+        message: String(payload.message || ''),
+        channel: String(payload.channel || ''),
+        recipient: String(payload.recipient || ''),
+        renderedMessage: String(payload.renderedMessage || ''),
+        whatsappUrl: payload.whatsappUrl ? String(payload.whatsappUrl) : null,
+      },
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro desconhecido ao disparar mensagem do cliente',
+    }
+  }
+}
+
+export async function markCustomerWhatsappContactAction(
+  id: string,
+): Promise<ApiResponse<{ whatsappContacted: boolean; whatsappContactedAt: string }>> {
+  const baseUrl = resolveBackendBaseUrl()
+  if (!baseUrl) {
+    return { success: false, error: 'Backend URL não configurado' }
+  }
+
+  try {
+    const cookieStore = await cookies()
+    const adminToken = cookieStore.get('adminAuthToken')?.value
+    const whatsappContactedAt = new Date().toISOString()
+    const metaPayload = {
+      whatsapp_contacted: true,
+      whatsapp_contacted_at: whatsappContactedAt,
+    }
+
+    const wholesaleResponse = await fetch(`${baseUrl}/customers/${id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminToken && { cookie: `adminAuthToken=${adminToken}` }),
+      },
+      body: JSON.stringify({ meta: metaPayload }),
+    })
+
+    let updatedClient: Record<string, unknown> | null = null
+
+    if (!wholesaleResponse.ok) {
+      const retailResponse = await fetch(`${baseUrl}/clients/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(adminToken && { cookie: `adminAuthToken=${adminToken}` }),
+        },
+        body: JSON.stringify({ meta: metaPayload }),
+      })
+
+      if (!retailResponse.ok) {
+        const error = await readBackendErrorMessage(
+          wholesaleResponse,
+          `HTTP ${wholesaleResponse.status}: Erro ao registrar contato por WhatsApp`,
+        )
+        return { success: false, error }
+      }
+
+      try {
+        updatedClient = (await retailResponse.json()) as Record<string, unknown>
+      } catch {
+        updatedClient = null
+      }
+    } else {
+      try {
+        updatedClient = (await wholesaleResponse.json()) as Record<string, unknown>
+      } catch {
+        updatedClient = null
+      }
+    }
+
+    revalidatePath('/customers')
+    revalidatePath(`/customers/${id}`)
+
+    const updatedMeta =
+      updatedClient?.meta && typeof updatedClient.meta === 'object'
+        ? (updatedClient.meta as Record<string, unknown>)
+        : null
+
+    const persistedWhatsappContactedAtRaw = updatedMeta?.whatsapp_contacted_at
+    const persistedWhatsappContactedAt =
+      typeof persistedWhatsappContactedAtRaw === 'string' && persistedWhatsappContactedAtRaw.trim().length > 0
+        ? persistedWhatsappContactedAtRaw
+        : whatsappContactedAt
+
+    return {
+      success: true,
+      data: {
+        whatsappContacted: true,
+        whatsappContactedAt: persistedWhatsappContactedAt,
+      },
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Erro desconhecido ao registrar contato por WhatsApp',
+    }
+  }
+}
+
+export async function deleteCustomerAction(id: string): Promise<ApiResponse<{ id: string }>> {
+  if (!(await canDeleteCustomers())) {
+    return { success: false, error: 'Você não tem permissão para excluir clientes' }
+  }
+
+  const baseUrl = resolveBackendBaseUrl()
+  if (!baseUrl) {
+    return { success: false, error: 'Backend URL não configurado' }
+  }
+
+  try {
+    const cookieStore = await cookies()
+    const adminToken = cookieStore.get('adminAuthToken')?.value
+
+    const wholesaleResponse = await fetch(`${baseUrl}/customers/${id}`, {
       method: 'DELETE',
       headers: {
         'Content-Type': 'application/json',
@@ -772,7 +1487,7 @@ export async function getCustomerByUserIdAction(userId: string): Promise<ApiResp
     const cookieStore = await cookies()
     const adminToken = cookieStore.get('adminAuthToken')?.value
 
-    const response = await fetch(`${baseUrl}/b2b?user_id=${userId}`, {
+    const response = await fetch(`${baseUrl}/customers/wholesale?user_id=${userId}`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
@@ -816,8 +1531,8 @@ export async function getCurrentB2bCustomerAction(storeId?: number | string | nu
 
     const requestedStoreId = await resolveRequestedStoreId(storeId)
     const endpoint = requestedStoreId
-      ? `${baseUrl}/b2b/me?store_id=${requestedStoreId}`
-      : `${baseUrl}/b2b/me`
+      ? `${baseUrl}/customers/me?store_id=${requestedStoreId}`
+      : `${baseUrl}/customers/me`
 
     const response = await fetch(endpoint, {
       method: 'GET',
@@ -886,6 +1601,10 @@ export async function createCustomerAdminAction(formData: {
   data_abertura?: string
   optante_simples?: boolean
 }): Promise<ApiResponse<{ id: string }>> {
+  if (!(await canCreateCustomers())) {
+    return { success: false, error: 'Você não tem permissão para criar clientes' }
+  }
+
   // Sanitize Next.js serialized undefined ("$undefined") values
   const fd = Object.fromEntries(
     Object.entries(formData).map(([k, v]) =>
@@ -953,7 +1672,7 @@ export async function createCustomerAdminAction(formData: {
       return { success: true, data: { id: String(newRetailId) } }
     }
 
-    const registerRes = await fetch(`${baseUrl}/b2b/register`, {
+    const registerRes = await fetch(`${baseUrl}/customers/register`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1011,6 +1730,9 @@ export async function createCustomerAdminAction(formData: {
     }
     const cleanSellerId = sanitizeUndef(fd.assigned_seller_id)
     if (cleanSellerId) {
+      if (!(await canAssignSellerToCustomer())) {
+        return { success: false, error: 'Você não tem permissão para atribuir vendedora ao cliente' }
+      }
       const n = Number(cleanSellerId)
       if (Number.isFinite(n) && n > 0) updatePayload.assigned_seller_id = n
     }
@@ -1022,7 +1744,7 @@ export async function createCustomerAdminAction(formData: {
       metaUpdate.receitaws = { consulted_at: new Date().toISOString(), data: rfData }
     if (Object.keys(metaUpdate).length) updatePayload.meta = metaUpdate
 
-    const updateRes = await fetch(`${baseUrl}/b2b/${newId}`, {
+    const updateRes = await fetch(`${baseUrl}/customers/${newId}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',

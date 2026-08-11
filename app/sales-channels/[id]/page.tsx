@@ -1,8 +1,10 @@
+import { Suspense } from 'react'
 import { cookies } from 'next/headers'
 import { getAdminSession } from '@/lib/actions/auth'
 import { redirect, notFound } from 'next/navigation'
 import { getSalesChannelsAction, getChannelPricesAction } from '@/lib/actions/sales-channels'
 import { AdminChannelPricesClient, type SalesChannelProduct } from '@/components/admin/admin-channel-prices-client'
+import { AdminRouteSkeleton } from '@/components/admin/admin-route-skeleton'
 
 interface Props {
   params: Promise<{ id: string }>
@@ -33,6 +35,8 @@ type RustProductItem = {
   variants?: RustProductVariant[]
 }
 
+
+export const instant = false
 export async function generateMetadata({ params }: Props) {
   const { id } = await params
   const result = await getSalesChannelsAction()
@@ -40,7 +44,15 @@ export async function generateMetadata({ params }: Props) {
   return { title: `${channel?.name ?? 'Canal'} — Preços por Produto | Admin` }
 }
 
-export default async function ChannelPricesPage({ params, searchParams }: Props) {
+export default function ChannelPricesPage({ params, searchParams }: Props) {
+  return (
+    <Suspense fallback={<AdminRouteSkeleton />}>
+      <ChannelPricesPageContent params={params} searchParams={searchParams} />
+    </Suspense>
+  )
+}
+
+async function ChannelPricesPageContent({ params, searchParams }: Props) {
   const session = await getAdminSession()
   if (!session) redirect('/login')
 

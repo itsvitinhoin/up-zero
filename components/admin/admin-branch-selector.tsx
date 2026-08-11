@@ -28,8 +28,6 @@ import { useAdminBranch } from '@/contexts/admin-branch-context'
 export function AdminBranchSelector() {
   const { branches, activeBranchId, activeBranch, setActiveBranch } = useAdminBranch()
 
-  if (branches.length === 0) return null
-
   const label = activeBranch ? activeBranch.name : 'Todas as Filiais'
 
   return (

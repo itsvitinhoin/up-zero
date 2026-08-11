@@ -37,7 +37,6 @@ import {
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Card, CardContent, CardDescription } from "@/components/ui/card"
-import { AdminHero, AdminPage, AdminPanel } from "@/components/admin/admin-mobile-ui"
 import {
   Plus,
   MoreVertical,
@@ -83,6 +82,8 @@ export default function AdminCategoriesPageClient({
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [categoryToDelete, setCategoryToDelete] = useState<Category | null>(null)
   const [isDeletingCategory, setIsDeletingCategory] = useState(false)
+  const [errorDialogOpen, setErrorDialogOpen] = useState(false)
+  const [errorDialogMessage, setErrorDialogMessage] = useState("")
 
   const [formData, setFormData] = useState({
     name: "",
@@ -203,7 +204,8 @@ export default function AdminCategoriesPageClient({
   async function handleDelete(id: string) {
     const hasChildren = categories.some((c) => c.parentId === id)
     if (hasChildren) {
-      alert("Remova as subcategorias antes de excluir esta categoria.")
+      setErrorDialogMessage("Remova as subcategorias antes de excluir esta categoria.")
+      setErrorDialogOpen(true)
       return
     }
 
@@ -386,16 +388,18 @@ export default function AdminCategoriesPageClient({
   }
 
   return (
-    <AdminPage>
-      <AdminHero
-        icon={Folder}
-        eyebrow="Catalogo"
-        title="Categorias"
-        description="Organize suas categorias em arvore hierarquica com melhor leitura no mobile."
-        actions={
-          <div className="flex items-center gap-2">
+    <div className="p-4 lg:p-6 space-y-4 lg:space-y-6 pb-24 lg:pb-6">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <h1 className="text-xl lg:text-2xl font-bold text-foreground">Categorias</h1>
+          <p className="text-sm text-muted-foreground">
+            Organize suas categorias em arvore hierarquica
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
           {hasOrderChanges && (
-            <Button onClick={saveOrderChanges} disabled={isSaving} className="min-h-12 rounded-2xl">
+            <Button onClick={saveOrderChanges} disabled={isSaving} className="h-10">
               {isSaving ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
@@ -407,7 +411,7 @@ export default function AdminCategoriesPageClient({
 
           <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
             <DialogTrigger asChild>
-              <Button onClick={() => openCreateDialog()} className="min-h-12 rounded-2xl">
+              <Button onClick={() => openCreateDialog()} className="h-10">
                 <Plus className="mr-2 h-4 w-4" />
                 Nova Categoria
               </Button>
@@ -487,26 +491,25 @@ export default function AdminCategoriesPageClient({
               </form>
             </DialogContent>
           </Dialog>
-          </div>
-        }
-      />
+        </div>
+      </div>
 
       {isLoading ? (
-        <AdminPanel><div className="text-center py-12">
+        <div className="text-center py-12">
           <Loader2 className="mx-auto h-8 w-8 animate-spin text-muted-foreground mb-2" />
           <p className="text-muted-foreground">Carregando...</p>
-        </div></AdminPanel>
+        </div>
       ) : categoryTree.length === 0 ? (
-        <AdminPanel className="border-dashed"><div className="text-center py-12 border-2 border-dashed rounded-lg">
+        <div className="text-center py-12 border-2 border-dashed rounded-lg">
           <Folder className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
           <p className="text-muted-foreground mb-4">Nenhuma categoria encontrada</p>
           <Button onClick={() => openCreateDialog()}>
             <Plus className="mr-2 h-4 w-4" />
             Criar Primeira Categoria
           </Button>
-        </div></AdminPanel>
+        </div>
       ) : (
-        <Card className="rounded-[24px] border-border/60 shadow-sm">
+        <Card>
           <CardContent className="pt-4 space-y-2">
             <CardDescription className="mb-3">
               Arraste para reordenar. Clique na seta para expandir subcategorias.
@@ -543,6 +546,20 @@ export default function AdminCategoriesPageClient({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </AdminPage>
+
+      <Dialog open={errorDialogOpen} onOpenChange={setErrorDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Erro</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">{errorDialogMessage}</p>
+          <div className="flex justify-end">
+            <Button type="button" onClick={() => setErrorDialogOpen(false)}>
+              Fechar
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
   )
 }

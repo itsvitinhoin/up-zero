@@ -87,7 +87,7 @@ export async function listB2BCustomersAction(): Promise<ApiResponse<B2bCustomer[
       params.set('store_id', String(scopedStoreId))
     }
 
-    const response = await fetch(`${baseUrl}/b2b${params.toString() ? `?${params.toString()}` : ''}`, {
+    const response = await fetch(`${baseUrl}/customers/wholesale${params.toString() ? `?${params.toString()}` : ''}`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
@@ -127,7 +127,7 @@ export async function getB2BCustomerAction(id: number): Promise<ApiResponse<B2bC
     const cookieStore = await cookies()
     const adminToken = cookieStore.get('adminAuthToken')?.value
 
-    const response = await fetch(`${baseUrl}/b2b/${id}`, {
+    const response = await fetch(`${baseUrl}/customers/${id}`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
@@ -163,7 +163,7 @@ export async function updateB2BCustomerAction(
     const cookieStore = await cookies()
     const adminToken = cookieStore.get('adminAuthToken')?.value
 
-    const response = await fetch(`${baseUrl}/b2b/${id}`, {
+    const response = await fetch(`${baseUrl}/customers/${id}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',

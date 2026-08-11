@@ -4,7 +4,7 @@ import { getOrdersAction } from '@/lib/actions/orders'
 
 export async function GET(request: NextRequest) {
   const session = await getSession()
-  
+
   if (!session) {
     return NextResponse.json(
       { success: false, error: 'Unauthorized' },
@@ -17,11 +17,13 @@ export async function GET(request: NextRequest) {
   const result = await getOrdersAction({
     customerId: searchParams.get('customerId') || undefined,
     status: searchParams.get('status') || undefined,
+    paymentStatus: searchParams.get('payment_status') || searchParams.get('paymentStatus') || undefined,
+    cardMode: searchParams.get('cardmode') === '1' || searchParams.get('cardmode') === 'true',
   })
 
   if (!result.success) {
     return NextResponse.json({ success: false, error: result.error || 'Erro ao carregar pedidos' }, { status: 500 })
   }
 
-  return NextResponse.json({ success: true, data: result.data ?? [] })
+  return NextResponse.json({ success: true, data: result.data ?? [], summary: result.summary ?? null })
 }

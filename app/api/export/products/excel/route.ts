@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAdminStoreIdFromToken } from '@/lib/auth';
 import { resolveStorefrontApiKeyFromRequest } from '@/lib/actions/storefront-scope';
+import { checkUserPermission } from '@/lib/actions/permissions';
 
 interface ExportProduct {
   id: string;
@@ -9,7 +10,9 @@ interface ExportProduct {
   category: string;
   description: string;
   basePrice: number;
+  promoPrice: number | null;
   cost: number | null;
+  stock: number;
   colors: string;
   sizes: string;
   isActive: string;
@@ -18,14 +21,96 @@ interface ExportProduct {
 
 interface ExportRequest {
   products?: ExportProduct[];
-  timestamp: string;
+  timestamp?: string;
   fetchAll?: boolean;
   search?: string;
+  category?: string;
+  status?: string;
+  attributeValues?: string;
 }
 
-export async function POST(request: NextRequest) {
+type ExportStockMode = 'FANTASY' | 'BINARY' | 'REAL' | 'INFINITO' | 'WMS';
+
+type ExportStockConfig = {
+  stockMode: ExportStockMode;
+  variantMaxQty: number;
+};
+
+function toPositiveInt(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.trunc(parsed));
+}
+
+function normalizeStockMode(value: unknown): ExportStockMode {
+  const raw = String(value || '').trim().toUpperCase();
+  if (raw === 'BINARY' || raw === 'REAL' || raw === 'INFINITO' || raw === 'WMS') return raw;
+  return 'FANTASY';
+}
+
+async function fetchExportStockConfig(params: {
+  baseUrl: string;
+  timeoutMs: number;
+  rustApiKey: string;
+  cookieHeader: string;
+  adminStoreId: number | null;
+}): Promise<ExportStockConfig> {
+  const fallback: ExportStockConfig = { stockMode: 'FANTASY', variantMaxQty: 999 };
+
   try {
-    const body: ExportRequest = await request.json();
+    const settingsUrl = new URL('/settings', params.baseUrl);
+    if (params.adminStoreId) {
+      settingsUrl.searchParams.set('store_id', String(params.adminStoreId));
+    }
+
+    const response = await fetch(settingsUrl.toString(), {
+      headers: {
+        ...(params.rustApiKey ? { 'x-api-key': params.rustApiKey } : {}),
+        ...(params.cookieHeader ? { cookie: params.cookieHeader } : {}),
+      },
+      signal: AbortSignal.timeout(params.timeoutMs),
+      cache: 'no-store',
+    });
+
+    if (!response.ok) return fallback;
+
+    const payload = await response.json();
+    const list = Array.isArray(payload) ? payload : [];
+    const stockEntry = list.find((entry: any) => String(entry?.code || '').toLowerCase() === 'stock');
+    const meta = stockEntry && typeof stockEntry.meta === 'object' ? stockEntry.meta : null;
+    if (!meta) return fallback;
+
+    return {
+      stockMode: normalizeStockMode((meta as Record<string, unknown>).stockMode),
+      variantMaxQty: toPositiveInt((meta as Record<string, unknown>).variantMaxQty, 999),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function resolveVariantAvailableStock(variant: any, stockConfig: ExportStockConfig): number {
+  const isActive = variant?.active !== false;
+  const stockQty = Math.max(0, Number(variant?.stock_qty || 0));
+  const reservedQty = Math.max(0, Number(variant?.reserved_qty || 0));
+
+  switch (stockConfig.stockMode) {
+    case 'REAL':
+      return Math.max(0, stockQty)
+    case 'WMS':
+      return Math.max(0, stockQty - reservedQty);
+    case 'BINARY':
+      return isActive ? 1 : 0;
+    case 'INFINITO':
+      return isActive ? 9999 : 0;
+    case 'FANTASY':
+    default:
+      return isActive ? Math.max(0, stockConfig.variantMaxQty - reservedQty) : 0;
+  }
+}
+
+async function exportProductsExcel(request: NextRequest, body: ExportRequest) {
+  try {
     const timeoutMs = Math.max(
       30_000,
       Number.parseInt(process.env.EXPORT_RUST_TIMEOUT_MS || '180000', 10) || 180_000,
@@ -88,6 +173,14 @@ export async function POST(request: NextRequest) {
             }
           }
 
+          const stockConfig = await fetchExportStockConfig({
+            baseUrl,
+            timeoutMs,
+            rustApiKey,
+            cookieHeader,
+            adminStoreId,
+          });
+
           const limit = 100;
           let page = 1;
           let total = 0;
@@ -98,8 +191,20 @@ export async function POST(request: NextRequest) {
             productsUrl.searchParams.set('page', String(page));
             productsUrl.searchParams.set('limit', String(limit));
             productsUrl.searchParams.set('summary', 'true');
+            if (adminStoreId) {
+              productsUrl.searchParams.set('store_id', String(adminStoreId));
+            }
             if (body.search && body.search.trim().length > 0) {
               productsUrl.searchParams.set('search', body.search.trim());
+            }
+            if (body.category && body.category.trim().length > 0 && body.category !== 'all') {
+              productsUrl.searchParams.set('category_id', body.category.trim());
+            }
+            if (body.status && (body.status === 'active' || body.status === 'inactive')) {
+              productsUrl.searchParams.set('status', body.status);
+            }
+            if (body.attributeValues && body.attributeValues.trim().length > 0) {
+              productsUrl.searchParams.set('attribute_value_ids', body.attributeValues.trim());
             }
 
             const productsRes = await fetch(productsUrl.toString(), {
@@ -139,6 +244,10 @@ export async function POST(request: NextRequest) {
             const categoryIds = Array.isArray(item?.category_ids) ? item.category_ids : [];
 
             const firstVariant = variants[0] || {};
+            const firstVariantPromoCents = Number(firstVariant?.promo_cents ?? 0);
+            const totalStock = variants.reduce((sum: number, variant: any) => {
+              return sum + resolveVariantAvailableStock(variant, stockConfig);
+            }, 0);
             const colors = new Set<string>();
             const sizes = new Set<string>();
             const images = new Set<string>();
@@ -180,7 +289,9 @@ export async function POST(request: NextRequest) {
               category: categoryName,
               description: String(product?.description || ''),
               basePrice: Number(firstVariant?.price_cents ?? 0) / 100,
+              promoPrice: firstVariantPromoCents > 0 ? firstVariantPromoCents / 100 : null,
               cost: typeof firstVariant?.cost_cents === 'number' ? Number(firstVariant.cost_cents) / 100 : null,
+              stock: totalStock,
               colors: Array.from(colors).join(', '),
               sizes: Array.from(sizes).join(', '),
               isActive: product?.active === false ? 'Inativo' : 'Ativo',
@@ -204,7 +315,7 @@ export async function POST(request: NextRequest) {
           },
           body: JSON.stringify({
             products: productsToExport,
-            timestamp: body.timestamp,
+            timestamp: body.timestamp || new Date().toISOString(),
           }),
           signal: AbortSignal.timeout(timeoutMs),
         });
@@ -240,7 +351,7 @@ export async function POST(request: NextRequest) {
     const contentDisposition =
       excelResponse.headers.get('content-disposition') ||
       `attachment; filename="produtos-${new Date().toISOString().split('T')[0]}.xlsx"`;
-    
+
     return new NextResponse(buffer, {
       status: 200,
       headers: {
@@ -257,4 +368,38 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   }
+}
+
+export async function GET(request: NextRequest) {
+  const permission = await checkUserPermission('reports.export').catch(() => null);
+  if (permission?.has_permission !== true) {
+    return NextResponse.json({ error: 'Você não tem permissão para exportar relatórios' }, { status: 403 });
+  }
+
+  const searchParams = request.nextUrl.searchParams;
+
+  return exportProductsExcel(request, {
+    fetchAll: true,
+    timestamp: new Date().toISOString(),
+    search: (searchParams.get('q') || searchParams.get('search') || '').trim() || undefined,
+    category: (searchParams.get('category') || '').trim() || undefined,
+    status: (searchParams.get('status') || '').trim().toLowerCase() || undefined,
+    attributeValues: (searchParams.get('attribute_values') || '').trim() || undefined,
+  });
+}
+
+export async function POST(request: NextRequest) {
+  const permission = await checkUserPermission('reports.export').catch(() => null);
+  if (permission?.has_permission !== true) {
+    return NextResponse.json({ error: 'Você não tem permissão para exportar relatórios' }, { status: 403 });
+  }
+
+  let body: ExportRequest = {};
+  try {
+    body = await request.json();
+  } catch {
+    body = {};
+  }
+
+  return exportProductsExcel(request, body);
 }

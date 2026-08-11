@@ -1,8 +1,19 @@
 import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
+import { Suspense } from 'react'
 import AdminLoginForm from '@/components/admin/admin-login-form'
 
-export default async function AdminLoginPage() {
+export const instant = false
+
+export default function AdminLoginPage() {
+  return (
+    <Suspense fallback={<AdminLoginForm />}>
+      <AdminLoginPageContent />
+    </Suspense>
+  )
+}
+
+async function AdminLoginPageContent() {
   const cookieStore = await cookies()
   const adminToken = cookieStore.get('adminAuthToken')?.value
   const base = process.env.NEXT_PUBLIC_RUST_URL

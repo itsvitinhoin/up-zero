@@ -1,19 +1,20 @@
 "use client";
 
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { Save, AlertCircle, ExternalLink } from "lucide-react";
+import { Save, AlertCircle, ExternalLink, Eye, EyeOff } from "lucide-react";
 import type { SiteSettings, MarketingSettings } from "@/lib/types";
 import { tAdmin } from "@/lib/i18n/admin";
 
 export function getDefaultMarketingSettings(): MarketingSettings {
   return {
     metaPixel: { enabled: false, id: null, accessToken: null, testEventCode: null },
-    googleAnalytics: { enabled: false, id: null, measurementId: null },
+    googleAnalytics: { enabled: false, id: null, measurementId: null, accessToken: null },
     googleAds: { enabled: false, id: null, conversionId: null, conversionLabel: null },
     googleMerchant: { enabled: false, id: null, merchantId: null },
     googleTagManager: { enabled: false, id: null },
@@ -35,6 +36,9 @@ interface MarketingTabProps {
 
 export function MarketingTab({ locale = "en", settings, setSettings, isSaving, onSave }: MarketingTabProps) {
   const ms = settings.marketingSettings || getDefaultMarketingSettings();
+  const [showMetaAccessToken, setShowMetaAccessToken] = useState(false);
+  const [showGa4AccessToken, setShowGa4AccessToken] = useState(false);
+  const [showTiktokAccessToken, setShowTiktokAccessToken] = useState(false);
 
   function updateMarketingSettings(updates: Partial<MarketingSettings>) {
     setSettings({ ...settings, marketingSettings: { ...ms, ...updates } });
@@ -42,15 +46,9 @@ export function MarketingTab({ locale = "en", settings, setSettings, isSaving, o
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-semibold">{tAdmin(locale, "admin.marketing.title", "Marketing & Tracking")}</h2>
-          <p className="text-muted-foreground">{tAdmin(locale, "admin.marketing.subtitle", "Configure pixels and marketing integrations to track conversions")}</p>
-        </div>
-        <Button onClick={onSave} disabled={isSaving}>
-          <Save className="mr-2 h-4 w-4" />
-          {isSaving ? tAdmin(locale, "admin.common.saving", "Saving...") : tAdmin(locale, "admin.marketing.save", "Save Marketing")}
-        </Button>
+      <div>
+        <h2 className="text-xl font-semibold">{tAdmin(locale, "admin.marketing.title", "Marketing & Tracking")}</h2>
+        <p className="text-muted-foreground">{tAdmin(locale, "admin.marketing.subtitle", "Configure pixels and marketing integrations to track conversions")}</p>
       </div>
 
       <div className="grid gap-6">
@@ -79,7 +77,19 @@ export function MarketingTab({ locale = "en", settings, setSettings, isSaving, o
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="metaAccessToken">Access Token (para Conversions API)</Label>
-                  <Input id="metaAccessToken" type="password" value={ms.metaPixel.accessToken || ""} onChange={(e) => updateMarketingSettings({ metaPixel: { ...ms.metaPixel, accessToken: e.target.value || null } })} placeholder="EAAxxxxxxxx..." />
+                  <div className="relative">
+                    <Input id="metaAccessToken" type={showMetaAccessToken ? "text" : "password"} value={ms.metaPixel.accessToken || ""} onChange={(e) => updateMarketingSettings({ metaPixel: { ...ms.metaPixel, accessToken: e.target.value || null } })} placeholder="EAAxxxxxxxx..." className="pr-10" />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="absolute right-0 top-0 h-10 w-10"
+                      onClick={() => setShowMetaAccessToken((prev) => !prev)}
+                      aria-label={showMetaAccessToken ? "Ocultar token" : "Mostrar token"}
+                    >
+                      {showMetaAccessToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </Button>
+                  </div>
                 </div>
               </div>
               <div className="space-y-2">
@@ -112,9 +122,27 @@ export function MarketingTab({ locale = "en", settings, setSettings, isSaving, o
           </CardHeader>
           {ms.googleAnalytics.enabled && (
             <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="ga4MeasurementId">Measurement ID</Label>
-                <Input id="ga4MeasurementId" value={ms.googleAnalytics.measurementId || ""} onChange={(e) => updateMarketingSettings({ googleAnalytics: { ...ms.googleAnalytics, measurementId: e.target.value || null, id: e.target.value || null } })} placeholder="G-XXXXXXXXXX" />
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="ga4MeasurementId">Measurement ID</Label>
+                  <Input id="ga4MeasurementId" value={ms.googleAnalytics.measurementId || ""} onChange={(e) => updateMarketingSettings({ googleAnalytics: { ...ms.googleAnalytics, measurementId: e.target.value || null, id: e.target.value || null } })} placeholder="G-XXXXXXXXXX" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="ga4AccessToken">Access Token (para Conversions API)</Label>
+                  <div className="relative">
+                    <Input id="ga4AccessToken" type={showGa4AccessToken ? "text" : "password"} value={ms.googleAnalytics.accessToken || ""} onChange={(e) => updateMarketingSettings({ googleAnalytics: { ...ms.googleAnalytics, accessToken: e.target.value || null } })} placeholder="GA4 API secret / token" className="pr-10" />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="absolute right-0 top-0 h-10 w-10"
+                      onClick={() => setShowGa4AccessToken((prev) => !prev)}
+                      aria-label={showGa4AccessToken ? "Ocultar token" : "Mostrar token"}
+                    >
+                      {showGa4AccessToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </Button>
+                  </div>
+                </div>
               </div>
               <a href="https://analytics.google.com" target="_blank" rel="noopener noreferrer" className="text-sm text-primary flex items-center gap-1 hover:underline">
                 {tAdmin(locale, "admin.marketing.links.ga4", "Open Google Analytics")} <ExternalLink className="h-3 w-3" />
@@ -247,7 +275,19 @@ export function MarketingTab({ locale = "en", settings, setSettings, isSaving, o
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="tiktokAccessToken">Access Token (Events API)</Label>
-                  <Input id="tiktokAccessToken" type="password" value={ms.tiktokPixel.accessToken || ""} onChange={(e) => updateMarketingSettings({ tiktokPixel: { ...ms.tiktokPixel, accessToken: e.target.value || null } })} placeholder={tAdmin(locale, "admin.marketing.tiktok.tokenPlaceholder", "Access token...")} />
+                  <div className="relative">
+                    <Input id="tiktokAccessToken" type={showTiktokAccessToken ? "text" : "password"} value={ms.tiktokPixel.accessToken || ""} onChange={(e) => updateMarketingSettings({ tiktokPixel: { ...ms.tiktokPixel, accessToken: e.target.value || null } })} placeholder={tAdmin(locale, "admin.marketing.tiktok.tokenPlaceholder", "Access token...")} className="pr-10" />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="absolute right-0 top-0 h-10 w-10"
+                      onClick={() => setShowTiktokAccessToken((prev) => !prev)}
+                      aria-label={showTiktokAccessToken ? "Ocultar token" : "Mostrar token"}
+                    >
+                      {showTiktokAccessToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </Button>
+                  </div>
                 </div>
               </div>
               <a href="https://ads.tiktok.com" target="_blank" rel="noopener noreferrer" className="text-sm text-primary flex items-center gap-1 hover:underline">
@@ -362,6 +402,17 @@ export function MarketingTab({ locale = "en", settings, setSettings, isSaving, o
           </CardContent>
         </Card>
       </div>
+
+      <Button
+        onClick={onSave}
+        disabled={isSaving}
+        className="fixed sm:bottom-6 bottom-20 right-6 z-50 h-12 rounded-full px-4 shadow-lg"
+        aria-label="Salvar"
+        title="Salvar"
+      >
+        <Save className="mr-2 h-5 w-5" />
+        Salvar
+      </Button>
     </div>
   );
 }

@@ -5,7 +5,7 @@ import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { useRouter } from 'next/navigation'
-import { createCustomerAdminAction, updateCustomerAction } from '@/lib/actions/customers'
+import { convertCustomerTypeAction, createCustomerAdminAction, updateCustomerAction } from '@/lib/actions/customers'
 import { lookupReceitaWSCnpjAction } from '@/lib/actions/receitaws'
 import type { Admin } from '@/lib/actions/admins'
 import type { Customer, PriceTable, PaymentMethod } from '@/lib/types'
@@ -14,6 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
 import CNPJInput from '@/components/form/CNPJInput'
+import CPFInput from '@/components/form/CPFInput'
 import CellphoneInput from '@/components/form/CellphoneInput'
 import AddressInput from '@/components/form/AddressInput'
 import {
@@ -39,6 +40,30 @@ import {
 } from '@/components/ui/select'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { useAdminStore } from '@/contexts/admin-store-context'
+
+function isValidCpf(digits: string): boolean {
+  if (digits.length !== 11 || /^(\d)\1{10}$/.test(digits)) return false
+  let sum = 0
+  for (let i = 0; i < 9; i++) sum += Number(digits[i]) * (10 - i)
+  const d1 = (sum * 10) % 11; const n1 = d1 === 10 ? 0 : d1
+  if (n1 !== Number(digits[9])) return false
+  sum = 0
+  for (let i = 0; i < 10; i++) sum += Number(digits[i]) * (11 - i)
+  const d2 = (sum * 10) % 11; const n2 = d2 === 10 ? 0 : d2
+  return n2 === Number(digits[10])
+}
+
+function isValidCnpj(digits: string): boolean {
+  if (digits.length !== 14 || /^(\d)\1{13}$/.test(digits)) return false
+  const calc = (d: string, weights: number[]) => {
+    const sum = weights.reduce((acc, w, i) => acc + Number(d[i]) * w, 0)
+    const r = sum % 11; return r < 2 ? 0 : 11 - r
+  }
+  const w1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
+  const w2 = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
+  return calc(digits, w1) === Number(digits[12]) && calc(digits, w2) === Number(digits[13])
+}
 
 const schema = z.object({
   customerType: z.enum(['WHOLESALE', 'RETAIL']).default('WHOLESALE'),
@@ -79,10 +104,10 @@ const schema = z.object({
   }
 
   if (data.customerType === 'WHOLESALE') {
-    if (digits.length < 14) {
+    if (digits.length < 14 || !isValidCnpj(digits)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'CNPJ inválido (14 dígitos)',
+        message: 'CNPJ inválido',
         path: ['cnpj'],
       })
     }
@@ -115,10 +140,10 @@ const schema = z.object({
     }
   }
 
-  if (data.customerType === 'RETAIL' && digits.length !== 11) {
+  if (data.customerType === 'RETAIL' && (digits.length !== 11 || !isValidCpf(digits))) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'CPF inválido (11 dígitos)',
+      message: 'CPF inválido',
       path: ['cnpj'],
     })
   }
@@ -146,7 +171,7 @@ interface Props {
   sellers: Admin[]
   mode?: 'create' | 'edit'
   customer?: Customer | null
-  onCreated?: (id: string) => void
+  onCreated?: (id: string) => void | Promise<void>
   onUpdated?: (id: string) => void
 }
 
@@ -154,7 +179,7 @@ const PAYMENT_METHODS: { value: PaymentMethod; label: string }[] = [
   { value: 'PIX', label: 'PIX' },
   { value: 'BOLETO', label: 'Boleto' },
   { value: 'FATURADO', label: 'Faturado' },
-  { value: 'CARTAO_EXTERNO', label: 'Cartão Externo' },
+  { value: 'CARTAO_EXTERNO', label: 'Cartão' },
 ]
 
 function SixDigitPinInput({
@@ -248,6 +273,16 @@ export function NewCustomerDialog({
   onUpdated,
 }: Props) {
   const router = useRouter()
+  const { session } = useAdminStore()
+  const normalizedPermissionCodes = Array.isArray(session?.permissionCodes)
+    ? session.permissionCodes
+        .map((code) => String(code || '').trim().toLowerCase())
+        .filter(Boolean)
+    : []
+  const hasPermissionContext = Array.isArray(session?.permissionCodes)
+  const isSystemRole = session?.isSystemRole === true
+  const canAssignSeller = isSystemRole
+    || (hasPermissionContext && normalizedPermissionCodes.includes('customers.assign_seller'))
   const [isPending, startTransition] = useTransition()
   const [activeTab, setActiveTab] = useState<'empresa' | 'contato' | 'endereco' | 'comercial' | 'senha'>('empresa')
   const [receitawsLoading, setReceitawsLoading] = useState(false)
@@ -283,6 +318,49 @@ export function NewCustomerDialog({
   const customerType = watch('customerType')
   const watchCnpj = watch('cnpj') || ''
 
+  async function applyReceitaWSLookup(cnpjValue?: string) {
+    const digits = (cnpjValue ?? watch('cnpj') ?? '').replace(/\D/g, '')
+
+    if (digits.length !== 14) {
+      toast.error('Informe um CNPJ válido com 14 dígitos')
+      return false
+    }
+
+    setReceitawsLoading(true)
+    try {
+      const result = await lookupReceitaWSCnpjAction(digits)
+
+      if (!result.success || !result.data) {
+        toast.error(result.error || 'Não foi possível consultar a ReceitaWS')
+        return false
+      }
+
+      const data = result.data
+      setValue('companyName', data.companyName || '', { shouldDirty: true, shouldValidate: true })
+      setValue('tradeName', data.tradeName || data.companyName || '', { shouldDirty: true, shouldValidate: true })
+      setValue('stateRegistration', data.stateRegistration || '', { shouldDirty: true, shouldValidate: true })
+      setValue('segment', data.segment || '', { shouldDirty: true, shouldValidate: true })
+      setValue('zipCode', data.zipCode || '', { shouldDirty: true, shouldValidate: true })
+      setValue('street', data.street || '', { shouldDirty: true, shouldValidate: true })
+      setValue('number', data.number || '', { shouldDirty: true, shouldValidate: true })
+      setValue('complement', data.complement || '', { shouldDirty: true, shouldValidate: true })
+      setValue('neighborhood', data.neighborhood || '', { shouldDirty: true, shouldValidate: true })
+      setValue('city', data.city || '', { shouldDirty: true, shouldValidate: true })
+      setValue('state', data.state || '', { shouldDirty: true, shouldValidate: true })
+      if (data.phone && !watch('phone')?.replace(/\D/g, '')) {
+        setValue('phone', data.phone, { shouldDirty: true, shouldValidate: true })
+      }
+      if (data.email && !watch('email')?.trim()) {
+        setValue('email', data.email, { shouldDirty: true, shouldValidate: true })
+      }
+
+      setLastReceitaWSCnpj(digits)
+      return true
+    } finally {
+      setReceitawsLoading(false)
+    }
+  }
+
   useEffect(() => {
     const digits = watchCnpj.replace(/\D/g, '')
 
@@ -302,42 +380,12 @@ export function NewCustomerDialog({
     }
 
     let cancelled = false
-    setReceitawsLoading(true)
 
-    void lookupReceitaWSCnpjAction(digits)
-      .then((result) => {
+    void applyReceitaWSLookup(digits)
+      .then((success) => {
         if (cancelled) return
-
-        if (!result.success || !result.data) {
-          if (result.error) {
-            toast.error(result.error)
-          }
-          return
-        }
-
-        const data = result.data
-        setValue('companyName', data.companyName || '', { shouldDirty: true, shouldValidate: true })
-        setValue('tradeName', data.tradeName || data.companyName || '', { shouldDirty: true, shouldValidate: true })
-        setValue('stateRegistration', data.stateRegistration || '', { shouldDirty: true, shouldValidate: true })
-        setValue('segment', data.segment || '', { shouldDirty: true, shouldValidate: true })
-        setValue('zipCode', data.zipCode || '', { shouldDirty: true, shouldValidate: true })
-        setValue('street', data.street || '', { shouldDirty: true, shouldValidate: true })
-        setValue('number', data.number || '', { shouldDirty: true, shouldValidate: true })
-        setValue('complement', data.complement || '', { shouldDirty: true, shouldValidate: true })
-        setValue('neighborhood', data.neighborhood || '', { shouldDirty: true, shouldValidate: true })
-        setValue('city', data.city || '', { shouldDirty: true, shouldValidate: true })
-        setValue('state', data.state || '', { shouldDirty: true, shouldValidate: true })
-        if (data.phone) {
-          setValue('phone', data.phone, { shouldDirty: true, shouldValidate: true })
-        }
-        if (data.email) {
-          setValue('email', data.email, { shouldDirty: true, shouldValidate: true })
-        }
-        setLastReceitaWSCnpj(digits)
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setReceitawsLoading(false)
+        if (!success) {
+          setLastReceitaWSCnpj('')
         }
       })
 
@@ -421,7 +469,10 @@ export function NewCustomerDialog({
         const fd = new FormData()
         fd.set('companyName', data.companyName || '')
         fd.set('tradeName', data.tradeName || data.companyName || '')
+        fd.set('customerType', data.customerType)
         fd.set('cnpj', data.cnpj || '')
+        fd.set('retailGender', data.retailGender || '')
+        fd.set('retailBirthDate', data.retailBirthDate || '')
         fd.set('stateRegistration', data.stateRegistration || '')
         fd.set('contactName', data.contactName || '')
         fd.set('email', data.email || '')
@@ -435,16 +486,21 @@ export function NewCustomerDialog({
         fd.set('city', data.city || '')
         fd.set('state', data.state || '')
         fd.set('priceTableId', data.priceTableId || 'default')
-        fd.set('assignedSellerId', data.assignedSellerId || 'default')
+        if (canAssignSeller) {
+          fd.set('assignedSellerId', data.assignedSellerId || 'default')
+        }
         fd.set('paymentTerms', JSON.stringify(data.paymentTerms || []))
         if (hasPasswordChange) {
           fd.set('password', passwordOtp)
         }
 
-        const result = await updateCustomerAction(customer.id, fd)
+        const hasCustomerTypeChange = data.customerType !== (customer.customerType || 'WHOLESALE')
+        const result = hasCustomerTypeChange
+          ? await convertCustomerTypeAction(customer.id, fd)
+          : await updateCustomerAction(customer.id, fd)
 
         if (!result.success) {
-          toast.error(result.error ?? 'Erro ao atualizar cliente')
+          toast.error(result.error ?? (hasCustomerTypeChange ? 'Erro ao converter tipo do cliente' : 'Erro ao atualizar cliente'))
           return
         }
 
@@ -481,7 +537,9 @@ export function NewCustomerDialog({
           address_city: data.city,
           address_state: data.state,
           price_table_id: data.priceTableId || undefined,
-          assigned_seller_id: data.assignedSellerId || undefined,
+          ...(canAssignSeller && data.assignedSellerId
+            ? { assigned_seller_id: data.assignedSellerId }
+            : {}),
           payment_terms: data.paymentTerms,
         })
 
@@ -492,11 +550,11 @@ export function NewCustomerDialog({
 
         reset()
         onOpenChange(false)
-        if (data.customerType === 'RETAIL') {
+        if (onCreated) {
+          await onCreated(result.data!.id)
+        } else if (data.customerType === 'RETAIL') {
           router.push('/customers')
           router.refresh()
-        } else if (onCreated) {
-          onCreated(result.data!.id)
         } else {
           router.push(`/customers/${result.data!.id}`)
         }
@@ -523,28 +581,6 @@ export function NewCustomerDialog({
         </DialogHeader>
 
         <form onSubmit={handleSubmit(onSubmit)}>
-          <div className="mb-4 space-y-2">
-            <Label>Tipo de Cliente</Label>
-            <Controller
-              control={control}
-              name="customerType"
-              render={({ field }) => (
-                <Select value={field.value} onValueChange={field.onChange}>
-                  <SelectTrigger
-                    disabled={mode === 'edit'}
-                    className={mode === 'edit' ? '' : 'cursor-pointer'}
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="RETAIL" className="cursor-pointer">Varejo</SelectItem>
-                    <SelectItem value="WHOLESALE" className="cursor-pointer">Atacado</SelectItem>
-                  </SelectContent>
-                </Select>
-              )}
-            />
-          </div>
-
           <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'empresa' | 'contato' | 'endereco' | 'comercial' | 'senha')} className="w-full">
             <TabsList className={customerType === 'RETAIL' ? `grid w-full ${mode === 'edit' ? 'grid-cols-3' : 'grid-cols-2'}` : `grid w-full ${mode === 'edit' ? 'grid-cols-5' : 'grid-cols-4'}`}>
               <TabsTrigger value="empresa" className="cursor-pointer">{customerType === 'RETAIL' ? 'Cliente' : 'Empresa'}</TabsTrigger>
@@ -557,6 +593,25 @@ export function NewCustomerDialog({
 
             {/* ── EMPRESA ── */}
             <TabsContent value="empresa" className="space-y-4 mt-4">
+              <div className="space-y-2">
+                <Label>Tipo de Cliente</Label>
+                <Controller
+                  control={control}
+                  name="customerType"
+                  render={({ field }) => (
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <SelectTrigger className="cursor-pointer max-w-32">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="RETAIL" className="cursor-pointer">Varejo</SelectItem>
+                        <SelectItem value="WHOLESALE" className="cursor-pointer">Atacado</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+              </div>
+
               {customerType === 'WHOLESALE' ? (
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
@@ -574,6 +629,11 @@ export function NewCustomerDialog({
                             error={!!errors.cnpj}
                             helperText={errors.cnpj?.message as string | undefined}
                             fullWidth
+                            onLookup={() => {
+                              void applyReceitaWSLookup(field.value || '')
+                            }}
+                            lookupLoading={receitawsLoading}
+                            lookupDisabled={(field.value || '').replace(/\D/g, '').length !== 14}
                           />
                           {receitawsLoading && (
                             <p className="text-xs text-muted-foreground">Consultando ReceitaWS...</p>
@@ -589,9 +649,22 @@ export function NewCustomerDialog({
                 </div>
               ) : (
                 <div className="space-y-2">
-                  <Label>CPF *</Label>
-                  <Input {...register('cnpj')} placeholder="000.000.000-00" />
-                  <FieldError name="cnpj" />
+                  <Controller
+                    control={control}
+                    name="cnpj"
+                    render={({ field }) => (
+                      <CPFInput
+                        label="CPF *"
+                        value={field.value || ''}
+                        onChange={field.onChange}
+                        onBlur={field.onBlur}
+                        name={field.name}
+                        error={!!errors.cnpj}
+                        helperText={errors.cnpj?.message as string | undefined}
+                        fullWidth
+                      />
+                    )}
+                  />
                 </div>
               )}
               <div className="space-y-2">
@@ -777,29 +850,31 @@ export function NewCustomerDialog({
                   )}
                 />
               </div>
-              <div className="space-y-2">
-                <Label>Vendedora Responsável</Label>
-                <Controller
-                  control={control}
-                  name="assignedSellerId"
-                  render={({ field }) => (
-                    <Select
-                      value={field.value || '__none__'}
-                      onValueChange={(v) => field.onChange(v === '__none__' ? '' : v)}
-                    >
-                      <SelectTrigger className="cursor-pointer">
-                        <SelectValue placeholder="Nenhuma" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="__none__" className="cursor-pointer">Nenhuma</SelectItem>
-                        {sellers.map((s) => (
-                          <SelectItem key={s.id} value={String(s.id)} className="cursor-pointer">{s.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                />
-              </div>
+              {canAssignSeller ? (
+                <div className="space-y-2">
+                  <Label>Vendedora Responsável</Label>
+                  <Controller
+                    control={control}
+                    name="assignedSellerId"
+                    render={({ field }) => (
+                      <Select
+                        value={field.value || '__none__'}
+                        onValueChange={(v) => field.onChange(v === '__none__' ? '' : v)}
+                      >
+                        <SelectTrigger className="cursor-pointer">
+                          <SelectValue placeholder="Nenhuma" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__none__" className="cursor-pointer">Nenhuma</SelectItem>
+                          {sellers.map((s) => (
+                            <SelectItem key={s.id} value={String(s.id)} className="cursor-pointer">{s.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                </div>
+              ) : null}
               <div className="space-y-2">
                 <Label>Formas de Pagamento Habilitadas</Label>
                 <div className="space-y-2">

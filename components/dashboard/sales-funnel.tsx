@@ -4,10 +4,9 @@ import { UserCheck, ShoppingBag, CheckCircle2, RefreshCw } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge-2'
 import { KpiCard, SectionHeader, StatsRow } from '@/components/dashboard/shared'
-import { useDashboardData } from '@/contexts/dashboard-data'
+import { FUNNEL_DATA } from '@/lib/dashboard-mock-data'
 
 export default function DashboardSalesFunnel() {
-  const { funnelData: FUNNEL_DATA } = useDashboardData()
   return (
     <div className="space-y-6">
       <SectionHeader
@@ -92,6 +91,7 @@ export default function DashboardSalesFunnel() {
           <CardContent className="space-y-2">
             <StatsRow label="Dias médios para 1ª compra" value="13.8 dias" />
             <StatsRow label="Estado com maior conversão" value="SP" sub="94%" />
+            <StatsRow label="Segmento top" value="Moda Feminina" sub="91%" />
           </CardContent>
         </Card>
 

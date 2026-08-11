@@ -1,127 +1,131 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createHmac, timingSafeEqual } from 'crypto'
-import { addIntegrationLog, addWebhookEvent, getConnections } from '@/lib/whatsapp/store'
-import { maskPhone } from '@/lib/whatsapp/meta'
+import { addInboxMessage, addLog, createId, maskId, maskPhone, updateInboxMessageStatus, updateIntegration } from '@/lib/whatsapp/store'
+import type { MessageStatus } from '@/lib/whatsapp/types'
 
-// GET — Meta webhook verification challenge
+
+function normalizeMetaStatus(status: string): MessageStatus {
+  if (status === 'sent' || status === 'delivered' || status === 'read' || status === 'failed') return status
+  return 'queued'
+}
+
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const mode = searchParams.get('hub.mode')
   const token = searchParams.get('hub.verify_token')
   const challenge = searchParams.get('hub.challenge')
+  const expected = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN?.trim()
 
-  if (mode !== 'subscribe' || !token) {
+  if (mode !== 'subscribe' || !challenge) {
     return new NextResponse('Bad Request', { status: 400 })
   }
 
-  // Check against all configured connections and optional shared env token.
-  const connections = getConnections()
-  const envVerifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN
-  const matched = connections.find((c) => c.webhookVerifyToken && c.webhookVerifyToken === token)
-  const matchedEnv = envVerifyToken && envVerifyToken === token
-
-  if (!matched && !matchedEnv) {
-    console.warn('[WA Webhook] Verification failed — verify token did not match any configured value.')
+  if (!expected || token !== expected) {
+    addLog({
+      type: 'webhook_received',
+      status: 'failed',
+      description: 'Failed: webhook verification token did not match.',
+      recommendedAction: 'Set WHATSAPP_WEBHOOK_VERIFY_TOKEN on the server and configure the same value in Meta.',
+    })
     return new NextResponse('Forbidden', { status: 403 })
   }
 
-  console.info('[WA Webhook] Verified callback URL.')
+  updateIntegration({ webhookVerifiedAt: new Date().toISOString() })
+  addLog({
+    type: 'webhook_received',
+    status: 'success',
+    description: 'Meta webhook verification completed.',
+    safePayload: { mode },
+  })
   return new NextResponse(challenge, { status: 200 })
 }
 
-function isValidSignature(rawBody: string, signature: string | null): boolean {
-  const appSecret = process.env.FACEBOOK_APP_SECRET
-  if (!appSecret) return true
-  if (!signature?.startsWith('sha256=')) return false
-
-  const expected = `sha256=${createHmac('sha256', appSecret).update(rawBody).digest('hex')}`
-  const expectedBuffer = Buffer.from(expected)
-  const receivedBuffer = Buffer.from(signature)
-  if (expectedBuffer.length !== receivedBuffer.length) return false
-  return timingSafeEqual(expectedBuffer, receivedBuffer)
-}
-
-// POST — incoming messages from Meta (read receipts, incoming messages, status updates)
 export async function POST(req: NextRequest) {
   try {
-    const rawBody = await req.text()
-    if (!isValidSignature(rawBody, req.headers.get('x-hub-signature-256'))) {
-      console.warn('[WA Webhook] Rejected payload with invalid signature.')
-      return NextResponse.json({ ok: false }, { status: 401 })
-    }
-
-    const body = JSON.parse(rawBody) as {
+    const body = await req.json() as {
       object?: string
-      entry?: {
-        id: string
-        changes: {
-          value: {
-            messaging_product: string
-            metadata?: { display_phone_number?: string; phone_number_id?: string }
-            statuses?: { id: string; status: string; timestamp: string; recipient_id: string }[]
-            messages?: { from: string; id: string; timestamp: string; text?: { body: string }; type: string }[]
+      entry?: Array<{
+        id?: string
+        changes?: Array<{
+          value?: {
+            metadata?: { phone_number_id?: string; display_phone_number?: string }
+            statuses?: Array<{ id: string; status: string; timestamp?: string; recipient_id?: string; errors?: unknown[] }>
+            messages?: Array<{ from: string; id: string; timestamp: string; type: string; text?: { body?: string } }>
           }
-          field: string
-        }[]
-      }[]
+        }>
+      }>
     }
 
     if (body.object !== 'whatsapp_business_account') {
       return NextResponse.json({ ok: true })
     }
 
+    let inboundCount = 0
+    let statusCount = 0
+
     for (const entry of body.entry ?? []) {
       for (const change of entry.changes ?? []) {
-        const val = change.value
+        const value = change.value
+        const phoneNumberId = value?.metadata?.phone_number_id ?? ''
 
-        // Status updates (sent, delivered, read, failed)
-        for (const status of val.statuses ?? []) {
-          addWebhookEvent({
-            id: `wh-status-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            eventType: 'status',
-            receivedAt: new Date(),
-            from: status.recipient_id,
-            messageId: status.id,
-            phoneNumberId: val.metadata?.phone_number_id,
-            displayPhoneNumber: val.metadata?.display_phone_number,
-            status: status.status,
-            rawSummary: `Message status ${status.status}`,
-          })
-          addIntegrationLog({
-            type: 'WEBHOOK_RECEIVED',
-            label: 'Webhook received',
-            status: 'RECEIVED',
-            detail: `Delivery status ${status.status} received for ${maskPhone(status.recipient_id)}.`,
+        for (const status of value?.statuses ?? []) {
+          statusCount += 1
+          updateInboxMessageStatus(status.id, normalizeMetaStatus(status.status), status.errors?.[0])
+          addLog({
+            type: 'webhook_received',
+            status: status.status === 'failed' ? 'failed' : 'info',
+            description: `Webhook message status received: ${status.status}.`,
+            safePayload: {
+              messageId: maskId(status.id),
+              recipient: maskPhone(status.recipient_id),
+              status: status.status,
+            },
+            error: status.errors?.[0],
           })
         }
 
-        // Incoming messages
-        for (const msg of val.messages ?? []) {
-          addWebhookEvent({
-            id: `wh-msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            eventType: 'message',
-            receivedAt: new Date(Number(msg.timestamp) * 1000 || Date.now()),
-            from: msg.from,
-            messageId: msg.id,
-            phoneNumberId: val.metadata?.phone_number_id,
-            displayPhoneNumber: val.metadata?.display_phone_number,
-            messageType: msg.type,
-            textBody: msg.type === 'text' ? msg.text?.body : undefined,
-            rawSummary: msg.type === 'text' ? 'Incoming text message' : `Incoming ${msg.type} message`,
-          })
-          addIntegrationLog({
-            type: 'WEBHOOK_RECEIVED',
-            label: 'Webhook received',
-            status: 'RECEIVED',
-            detail: `Customer reply received from ${maskPhone(msg.from)}.`,
+        for (const message of value?.messages ?? []) {
+          inboundCount += 1
+          const timestamp = message.timestamp
+            ? new Date(Number(message.timestamp) * 1000).toISOString()
+            : new Date().toISOString()
+
+          addInboxMessage({
+            id: createId('msg'),
+            metaMessageId: message.id,
+            conversationId: `conv-${message.from}`,
+            direction: 'inbound',
+            from: message.from,
+            to: phoneNumberId,
+            text: message.text?.body ?? `[${message.type}]`,
+            status: 'received',
+            timestamp,
           })
         }
       }
     }
-  } catch (e) {
-    console.error('[WA Webhook] Error processing payload:', e)
+
+    if (inboundCount > 0) {
+      addLog({
+        type: 'inbox_updated',
+        status: 'success',
+        description: 'Inbox updated with inbound WhatsApp webhook messages.',
+        safePayload: { inboundCount },
+        recommendedAction: 'Open Inbox to review and reply within the 24h customer service window.',
+      })
+    }
+
+    if (inboundCount === 0 && statusCount === 0) {
+      addLog({ type: 'webhook_received', status: 'info', description: 'Webhook received with no message or status events.' })
+    }
+  } catch (error) {
+    addLog({
+      type: 'webhook_received',
+      status: 'failed',
+      description: 'Failed: webhook payload could not be processed.',
+      error,
+      recommendedAction: 'Validate Meta webhook payload shape and server logs.',
+    })
   }
 
-  // Always return 200 to Meta, otherwise they will retry
   return NextResponse.json({ ok: true })
 }

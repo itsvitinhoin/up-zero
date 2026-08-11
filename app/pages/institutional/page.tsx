@@ -1,9 +1,12 @@
+import { Suspense } from 'react'
 import { redirect } from 'next/navigation'
 import { cookies } from 'next/headers'
 import { getAdminSession } from '@/lib/actions/auth'
 import { getInstitutionalPagesAction } from '@/lib/actions/pages'
+import { getAdminStoreIdFromToken } from '@/lib/auth'
 import AdminInstitutionalPagesClient from '@/components/admin/admin-institutional-pages-client'
 import { tAdmin } from '@/lib/i18n/admin'
+import { AdminRouteSkeleton } from '@/components/admin/admin-route-skeleton'
 
 export async function generateMetadata() {
   const cookieStore = await cookies()
@@ -15,7 +18,17 @@ export async function generateMetadata() {
   }
 }
 
-export default async function AdminInstitutionalPagesPage() {
+export const instant = false
+
+export default function AdminInstitutionalPagesPage() {
+  return (
+    <Suspense fallback={<AdminRouteSkeleton />}>
+      <AdminInstitutionalPagesPageContent />
+    </Suspense>
+  )
+}
+
+async function AdminInstitutionalPagesPageContent() {
   const session = await getAdminSession()
   const cookieStore = await cookies()
   const locale = cookieStore.get('ADMIN_LOCALE')?.value || 'pt-BR'
@@ -24,7 +37,17 @@ export default async function AdminInstitutionalPagesPage() {
     redirect('/login')
   }
 
-  const pages = await getInstitutionalPagesAction(session.storeId)
+  const fallbackStoreId = await getAdminStoreIdFromToken()
+  const sessionStoreId = Number(session.storeId)
+  const resolvedStoreId = Number.isInteger(sessionStoreId) && sessionStoreId > 0
+    ? sessionStoreId
+    : (fallbackStoreId ?? null)
 
-  return <AdminInstitutionalPagesClient storeId={session.storeId} initialPages={pages} locale={locale} />
+  if (!resolvedStoreId) {
+    redirect('/login')
+  }
+
+  const pages = await getInstitutionalPagesAction(resolvedStoreId)
+
+  return <AdminInstitutionalPagesClient storeId={resolvedStoreId} initialPages={pages} locale={locale} />
 }

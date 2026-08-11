@@ -25,24 +25,16 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Menu, createMenuAction, deleteMenuAction, updateMenuAction } from '@/lib/actions/menus'
+import { useAdminStore } from '@/contexts/admin-store-context'
 import { toast } from 'sonner'
 import {
   ListTree,
-  Store,
-  Package,
   Plus,
   MoreVertical,
   Pencil,
@@ -58,6 +50,7 @@ interface AdminMenusListClientProps {
 }
 
 export default function AdminMenusListClient({ menus: initialMenus }: AdminMenusListClientProps) {
+  const { session } = useAdminStore()
   const router = useRouter()
   const [menus, setMenus] = useState<Menu[]>(initialMenus)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
@@ -66,50 +59,64 @@ export default function AdminMenusListClient({ menus: initialMenus }: AdminMenus
   const [deletingMenu, setDeletingMenu] = useState<Menu | null>(null)
   const [formData, setFormData] = useState({
     name: '',
+    code: '',
     type: 'retail' as MenuType,
   })
-
-  const getMenuTypeLabel = (type: MenuType) => {
-    if (type === 'retail') return 'Varejo'
-    if (type === 'wholesale') return 'Atacado'
-    if (type === 'footer_retail') return 'Footer Varejo'
-    return 'Footer Atacado'
-  }
-
-  const getMenuBadgeVariant = (type: MenuType) => {
-    if (type === 'retail' || type === 'footer_retail') return 'default' as const
-    return 'secondary' as const
-  }
+  const permissionCodes = Array.isArray(session?.permissionCodes)
+    ? session.permissionCodes.map((code) => String(code || '').trim().toLowerCase()).filter(Boolean)
+    : null
+  const canCreatePages = permissionCodes === null || permissionCodes.includes('pages.create')
+  const canEditPages = permissionCodes === null || permissionCodes.includes('pages.edit')
+  const canDeletePages = permissionCodes === null || permissionCodes.includes('pages.delete')
 
   const handleMenuClick = (menuId: number) => {
     router.push(`/pages/menu/${menuId}`)
   }
 
-  const getMenuIcon = (type: string) => {
-    return type === 'retail' ? <Store className="h-4 w-4 text-muted-foreground shrink-0" /> : <Package className="h-4 w-4 text-muted-foreground shrink-0" />
-  }
-
   function openCreateDialog() {
+    if (!canCreatePages) {
+      toast.error('Você não tem permissão para criar páginas')
+      return
+    }
+
     setEditingMenu(null)
-    setFormData({ name: '', type: 'retail' })
+    setFormData({ name: '', code: '', type: 'retail' })
     setIsDialogOpen(true)
   }
 
   function openEditDialog(menu: Menu) {
+    if (!canEditPages) {
+      toast.error('Você não tem permissão para editar páginas')
+      return
+    }
+
     setEditingMenu(menu)
-    setFormData({ name: menu.name, type: menu.type })
+    setFormData({
+      name: menu.name,
+      code: menu.code || '',
+      type: menu.type,
+    })
     setIsDialogOpen(true)
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    if (editingMenu && !canEditPages) {
+      toast.error('Você não tem permissão para editar páginas')
+      return
+    }
+    if (!editingMenu && !canCreatePages) {
+      toast.error('Você não tem permissão para criar páginas')
+      return
+    }
+
     setIsLoading(true)
 
     try {
       if (editingMenu) {
         const result = await updateMenuAction(editingMenu.id, {
           name: formData.name,
-          type: formData.type,
+          code: formData.code,
         })
         if (result.success && result.menu) {
           setMenus((prev) =>
@@ -122,6 +129,7 @@ export default function AdminMenusListClient({ menus: initialMenus }: AdminMenus
       } else {
         const result = await createMenuAction({
           name: formData.name,
+          code: formData.code,
           type: formData.type,
           is_active: true,
         })
@@ -140,6 +148,11 @@ export default function AdminMenusListClient({ menus: initialMenus }: AdminMenus
   }
 
   async function handleDelete(menuId: number) {
+    if (!canDeletePages) {
+      toast.error('Você não tem permissão para excluir páginas')
+      return
+    }
+
     const result = await deleteMenuAction(menuId)
     if (result.success) {
       setMenus((prev) => prev.filter((m) => m.id !== menuId))
@@ -150,6 +163,11 @@ export default function AdminMenusListClient({ menus: initialMenus }: AdminMenus
   }
 
   async function handleToggleActive(menu: Menu) {
+    if (!canEditPages) {
+      toast.error('Você não tem permissão para editar páginas')
+      return
+    }
+
     const result = await updateMenuAction(menu.id, {
       is_active: !menu.is_active,
     })
@@ -171,12 +189,14 @@ export default function AdminMenusListClient({ menus: initialMenus }: AdminMenus
         </div>
 
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-          <DialogTrigger asChild>
-            <Button onClick={() => openCreateDialog()} className="h-10">
-              <Plus className="mr-2 h-4 w-4" />
-              Novo Menu
-            </Button>
-          </DialogTrigger>
+          {canCreatePages ? (
+            <DialogTrigger asChild>
+              <Button onClick={() => openCreateDialog()} className="h-10">
+                <Plus className="mr-2 h-4 w-4" />
+                Novo Menu
+              </Button>
+            </DialogTrigger>
+          ) : null}
           <DialogContent>
             <DialogHeader>
               <DialogTitle>
@@ -196,23 +216,13 @@ export default function AdminMenusListClient({ menus: initialMenus }: AdminMenus
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="type">Tipo</Label>
-                <Select
-                  value={formData.type}
-                  onValueChange={(v) =>
-                    setFormData({ ...formData, type: v as MenuType })
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="retail">Varejo</SelectItem>
-                    <SelectItem value="wholesale">Atacado</SelectItem>
-                    <SelectItem value="footer_retail">Footer Varejo</SelectItem>
-                    <SelectItem value="footer_wholesale">Footer Atacado</SelectItem>
-                  </SelectContent>
-                </Select>
+                <Label htmlFor="code">Codigo</Label>
+                <Input
+                  id="code"
+                  value={formData.code}
+                  onChange={(e) => setFormData({ ...formData, code: e.target.value })}
+                  placeholder="Ex: menu-principal-varejo"
+                />
               </div>
 
               <div className="flex justify-end gap-2">
@@ -237,10 +247,12 @@ export default function AdminMenusListClient({ menus: initialMenus }: AdminMenus
         <div className="text-center py-12 border-2 border-dashed rounded-lg">
           <ListTree className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
           <p className="text-muted-foreground mb-4">Nenhum menu encontrado</p>
-          <Button onClick={() => openCreateDialog()}>
-            <Plus className="mr-2 h-4 w-4" />
-            Criar Primeiro Menu
-          </Button>
+          {canCreatePages ? (
+            <Button onClick={() => openCreateDialog()}>
+              <Plus className="mr-2 h-4 w-4" />
+              Criar Primeiro Menu
+            </Button>
+          ) : null}
         </div>
       ) : (
         <Card>
@@ -254,17 +266,19 @@ export default function AdminMenusListClient({ menus: initialMenus }: AdminMenus
                 className="flex items-center gap-3 p-3 rounded-lg border border-border/50 bg-card hover:bg-muted/50 transition-all cursor-pointer"
                 onClick={() => handleMenuClick(menu.id)}
               >
-                {getMenuIcon(menu.type)}
+                <ListTree className="h-4 w-4 text-muted-foreground shrink-0" />
 
                 <div className="flex-1 min-w-0">
                   <span className="font-medium">{menu.name}</span>
-                  <Badge variant={getMenuBadgeVariant(menu.type)} className="ml-2 text-xs">
-                    {getMenuTypeLabel(menu.type)}
-                  </Badge>
                   {!menu.is_active && (
                     <Badge variant="outline" className="ml-2 text-xs text-muted-foreground">
                       Inativo
                     </Badge>
+                  )}
+                  {menu.code && (
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      Codigo: {menu.code}
+                    </span>
                   )}
                 </div>
 
@@ -285,30 +299,36 @@ export default function AdminMenusListClient({ menus: initialMenus }: AdminMenus
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => openEditDialog(menu)}>
-                        <Pencil className="mr-2 h-4 w-4" />
-                        Editar
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => handleToggleActive(menu)}>
-                        {menu.is_active ? (
-                          <>
-                            <ToggleLeft className="mr-2 h-4 w-4" />
-                            Desativar
-                          </>
-                        ) : (
-                          <>
-                            <ToggleRight className="mr-2 h-4 w-4" />
-                            Ativar
-                          </>
-                        )}
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() => setDeletingMenu(menu)}
-                        className="text-destructive"
-                      >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Excluir
-                      </DropdownMenuItem>
+                      {canEditPages ? (
+                        <DropdownMenuItem onClick={() => openEditDialog(menu)}>
+                          <Pencil className="mr-2 h-4 w-4" />
+                          Editar
+                        </DropdownMenuItem>
+                      ) : null}
+                      {canEditPages ? (
+                        <DropdownMenuItem onClick={() => handleToggleActive(menu)}>
+                          {menu.is_active ? (
+                            <>
+                              <ToggleLeft className="mr-2 h-4 w-4" />
+                              Desativar
+                            </>
+                          ) : (
+                            <>
+                              <ToggleRight className="mr-2 h-4 w-4" />
+                              Ativar
+                            </>
+                          )}
+                        </DropdownMenuItem>
+                      ) : null}
+                      {canDeletePages ? (
+                        <DropdownMenuItem
+                          onClick={() => setDeletingMenu(menu)}
+                          className="text-destructive"
+                        >
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          Excluir
+                        </DropdownMenuItem>
+                      ) : null}
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>

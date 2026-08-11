@@ -1,7 +1,9 @@
+import { Suspense } from 'react'
+import { connection } from 'next/server'
 import { CustomersListClient } from '@/components/admin/customers-list-client'
-import { getCustomersAction, getCustomersSummaryAction } from '@/lib/actions/customers'
+import { getCustomersPaginatedAction, getCustomersSummaryAction } from '@/lib/actions/customers'
 import { getCustomerOrderSummaryAction } from '@/lib/actions/orders'
-import { adminMockCustomers, withAdminMockCustomers } from '@/lib/admin-mock-data'
+import Loading from './loading'
 
 export const metadata = {
   title: 'Clientes | Admin',
@@ -13,10 +15,35 @@ type AdminCustomersPageProps = {
     q?: string | string[]
     search?: string | string[]
     status?: string | string[]
+    type?: string | string[]
+    page?: string | string[]
+    limit?: string | string[]
+    from?: string | string[]
+    to?: string | string[]
+    period?: string | string[]
+    seller?: string | string[]
+    assigned_seller_id?: string | string[]
   }>
 }
 
-export default async function AdminCustomersPage({ searchParams }: AdminCustomersPageProps) {
+export default function AdminCustomersPage({ searchParams }: AdminCustomersPageProps) {
+  return (
+    <Suspense fallback={<Loading />}>
+      <AdminCustomersPageContent searchParams={searchParams} />
+    </Suspense>
+  )
+}
+
+const CUSTOMER_PAGE_SIZE_OPTIONS = new Set([20, 50, 100])
+
+function parseCustomerPageLimit(value?: string | null): number {
+  const parsed = Number.parseInt(String(value || ''), 10)
+  return CUSTOMER_PAGE_SIZE_OPTIONS.has(parsed) ? parsed : 20
+}
+
+async function AdminCustomersPageContent({ searchParams }: AdminCustomersPageProps) {
+  await connection()
+
   const resolvedSearchParams = (await searchParams) ?? {}
 
   const firstParam = (value?: string | string[]) => {
@@ -32,54 +59,93 @@ export default async function AdminCustomersPage({ searchParams }: AdminCustomer
         : ''
   const search = rawQuery.trim()
   const status = firstParam(resolvedSearchParams.status).trim().toUpperCase()
+  const customerType = firstParam(resolvedSearchParams.type).trim().toUpperCase()
+  const parsedPage = Number(firstParam(resolvedSearchParams.page))
+  const page = Number.isFinite(parsedPage) && parsedPage >= 1 ? Math.floor(parsedPage) : 1
+  const pageLimit = parseCustomerPageLimit(firstParam(resolvedSearchParams.limit))
 
   const normalizedStatus = ['PENDING', 'APPROVED', 'REJECTED'].includes(status) ? status : undefined
-  const hasFilters = search.length > 0 || Boolean(normalizedStatus)
+  const normalizedCustomerType = ['WHOLESALE', 'RETAIL'].includes(customerType) ? customerType : undefined
+  const rawFromDate = firstParam(resolvedSearchParams.from).trim()
+  const rawToDate = firstParam(resolvedSearchParams.to).trim()
+  const fromDate = rawFromDate
+  const toDate = rawToDate
+  const sellerFilterRaw = (firstParam(resolvedSearchParams.seller) || firstParam(resolvedSearchParams.assigned_seller_id)).trim()
+  const withoutSeller = sellerFilterRaw === 'none'
+  const normalizedAssignedSellerId =
+    !withoutSeller && /^\d+$/.test(sellerFilterRaw) ? sellerFilterRaw : undefined
 
-  const [customersResult, summaryResult, ordersSummaryResult] = await Promise.all([
-    getCustomersAction({
+  const [customersResult, customersSummaryResult, ordersSummaryResult] = await Promise.all([
+    getCustomersPaginatedAction({
       q: search || undefined,
       status: normalizedStatus,
+      customerType: normalizedCustomerType,
+      page,
+      limit: pageLimit,
+      from: fromDate || undefined,
+      to: toDate || undefined,
+      assignedSellerId: normalizedAssignedSellerId,
+      withoutSeller: withoutSeller || undefined,
     }),
-    hasFilters ? getCustomersSummaryAction() : Promise.resolve(null),
+    getCustomersSummaryAction({
+      q: search || undefined,
+      status: normalizedStatus,
+      customerType: normalizedCustomerType,
+      from: fromDate || undefined,
+      to: toDate || undefined,
+      assignedSellerId: normalizedAssignedSellerId,
+      withoutSeller: withoutSeller || undefined,
+    }),
     getCustomerOrderSummaryAction(),
   ])
 
-  const initialCustomers = withAdminMockCustomers(
-    customersResult.success && customersResult.data
-      ? customersResult.data
-      : [],
-  )
+  const initialCustomers = customersResult.success && customersResult.data
+    ? customersResult.data.items
+    : []
 
-  const initialSummary = hasFilters && summaryResult?.success && summaryResult.data
-    ? summaryResult.data
+  const initialPagination = customersResult.success && customersResult.data
+    ? {
+        total: customersResult.data.total,
+        page: customersResult.data.page,
+        limit: customersResult.data.limit,
+        totalPages: customersResult.data.totalPages,
+      }
     : {
-        total: initialCustomers.length,
-        pending: initialCustomers.filter((customer) => customer.status === 'PENDING').length,
-        approved: initialCustomers.filter((customer) => customer.status === 'APPROVED').length,
-        rejected: initialCustomers.filter((customer) => customer.status === 'REJECTED').length,
+        total: 0,
+        page,
+        limit: pageLimit,
+        totalPages: 1,
       }
 
   const customerOrderSummary =
     ordersSummaryResult.success && ordersSummaryResult.data
       ? ordersSummaryResult.data
-      : Object.fromEntries(
-          adminMockCustomers.map((customer, index) => [
-            customer.id,
-            {
-              ordersCount: [5, 1, 9][index] ?? 0,
-              totalSpent: [8420, 274.9, 15490][index] ?? 0,
-            },
-          ]),
-        )
+      : {}
+
+  const initialSummary =
+    customersSummaryResult.success && customersSummaryResult.data
+      ? customersSummaryResult.data
+      : {
+          total: initialPagination.total,
+          approved: initialCustomers.filter((customer) => customer.status === 'APPROVED').length,
+          pending: initialCustomers.filter((customer) => customer.status === 'PENDING').length,
+          rejected: initialCustomers.filter((customer) => customer.status === 'REJECTED').length,
+          wholesale: initialCustomers.filter((customer) => customer.customerType === 'WHOLESALE').length,
+          retail: initialCustomers.filter((customer) => customer.customerType === 'RETAIL').length,
+        }
 
   return (
     <CustomersListClient
       initialCustomers={initialCustomers}
+      initialPagination={initialPagination}
       initialSummary={initialSummary}
       customerOrderSummary={customerOrderSummary}
       initialSearch={search}
       initialStatus={normalizedStatus || 'all'}
+      initialType={normalizedCustomerType || 'all'}
+      initialFromDate={fromDate}
+      initialToDate={toDate}
+      initialSellerId={withoutSeller ? 'none' : normalizedAssignedSellerId || 'all'}
     />
   )
 }

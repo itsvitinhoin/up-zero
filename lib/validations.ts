@@ -4,37 +4,37 @@ import { z } from 'zod'
 
 export function validateCNPJ(cnpj: string): boolean {
   const cleanCnpj = cnpj.replace(/[^\d]/g, '')
-  
+
   if (cleanCnpj.length !== 14) return false
   if (/^(\d)\1+$/.test(cleanCnpj)) return false
-  
+
   let size = cleanCnpj.length - 2
   let numbers = cleanCnpj.substring(0, size)
   const digits = cleanCnpj.substring(size)
   let sum = 0
   let pos = size - 7
-  
+
   for (let i = size; i >= 1; i--) {
     sum += parseInt(numbers.charAt(size - i)) * pos--
     if (pos < 2) pos = 9
   }
-  
+
   let result = sum % 11 < 2 ? 0 : 11 - (sum % 11)
   if (result !== parseInt(digits.charAt(0))) return false
-  
+
   size = size + 1
   numbers = cleanCnpj.substring(0, size)
   sum = 0
   pos = size - 7
-  
+
   for (let i = size; i >= 1; i--) {
     sum += parseInt(numbers.charAt(size - i)) * pos--
     if (pos < 2) pos = 9
   }
-  
+
   result = sum % 11 < 2 ? 0 : 11 - (sum % 11)
   if (result !== parseInt(digits.charAt(1))) return false
-  
+
   return true
 }
 
@@ -184,6 +184,7 @@ export const productSchema = z.object({
   description: z.string().optional(),
   materials: z.string().optional(),
   measures: z.string().optional(),
+  measurementTableId: z.string().optional(),
   basePrice: z.number().positive('Preço deve ser positivo'),
   cost: z.number().positive().optional().nullable(),
   isActive: z.boolean().default(true),
@@ -342,10 +343,11 @@ export const siteSettingsSchema = z.object({
   defaultMinPieces: z.number().int().positive().optional(),
   minOrderValue: z.number().positive().optional().nullable(),
   maxInstallmentsText: z.string().optional(),
-  stockMode: z.enum(['FANTASY', 'BINARY', 'REAL', 'INFINITO']).optional(),
+  stockMode: z.enum(['FANTASY', 'BINARY', 'REAL', 'INFINITO', 'WMS']).optional(),
   variantMaxQty: z.number().int().positive().optional(),
   pendingCustomerMessage: z.string().optional(),
   priceVisibilityMode: z.enum(['LOGIN_REQUIRED', 'PUBLIC']).optional(),
+  userLinksPriceVisibilityMode: z.enum(['LOGIN_REQUIRED', 'PUBLIC']).optional(),
   sellerCanApproveCustomers: z.boolean().optional(),
   sellerCanEditPriceTable: z.boolean().optional(),
   sellerCanCreateOrders: z.boolean().optional(),
@@ -360,7 +362,7 @@ export const siteSettingsSchema = z.object({
     fields: z.array(z.object({
       id: z.string(),
       label: z.string(),
-      type: z.enum(['TEXT', 'EMAIL', 'PHONE', 'CNPJ', 'LONG_TEXT', 'URL', 'SELECT', 'UPLOAD']),
+      type: z.enum(['TEXT', 'EMAIL', 'PHONE', 'CNPJ', 'LONG_TEXT', 'ADDRESS', 'URL', 'SELECT', 'UPLOAD']),
       enabled: z.boolean(),
       required: z.boolean(),
       order: z.number().int().positive(),
@@ -401,9 +403,16 @@ export const assistedOrderSchema = z.object({
     productId: z.string().optional(),
     variantId: z.string(),
     quantity: z.number().int().positive(),
+    sourceCartCompositionInstanceId: z.number().int().positive().nullable().optional(),
+    compositionItemId: z.number().int().positive().nullable().optional(),
+    compositionGroupUuid: z.string().uuid().nullable().optional(),
+    compositionNameSnapshot: z.string().nullable().optional(),
+    compositionPricingModeSnapshot: z.string().nullable().optional(),
+    compositionDisplayModeSnapshot: z.string().nullable().optional(),
+    compositionDiscountAllocatedCents: z.number().int().min(0).nullable().optional(),
   })),
   shippingOptionId: z.string(),
-  paymentMethod: z.enum(['PIX', 'BOLETO', 'FATURADO', 'CARTAO_EXTERNO']),
+  paymentMethod: z.string().min(1, 'Forma de pagamento é obrigatória'),
   notes: z.string().optional(),
 })
 

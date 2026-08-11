@@ -1,16 +1,28 @@
+import { Suspense } from 'react'
 import { getCampaignsAction } from '@/lib/actions/campaigns'
 import { getPricingSnapshotsAction } from '@/lib/actions/campaigns'
 import { AdminCampaignsPageClient } from '@/components/admin/campaigns/admin-campaigns-page-client'
+import { connection } from 'next/server'
+import { AdminRouteSkeleton } from '@/components/admin/admin-route-skeleton'
 
 export const metadata = {
   title: 'Campanhas WhatsApp | Admin',
   description: 'Gerencie campanhas de WhatsApp em massa',
 }
 
-export const dynamic = 'force-dynamic'
-export const revalidate = 0
+export const instant = false
 
-export default async function CampaignsPage() {
+export default function CampaignsPage() {
+  return (
+    <Suspense fallback={<AdminRouteSkeleton />}>
+      <CampaignsPageContent />
+    </Suspense>
+  )
+}
+
+async function CampaignsPageContent() {
+  await connection()
+
   const [campaignsResult, pricingResult] = await Promise.all([
     getCampaignsAction(),
     getPricingSnapshotsAction(),

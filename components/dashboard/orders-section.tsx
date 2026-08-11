@@ -7,9 +7,11 @@ import {
 import { Card, CardContent, CardHeader, CardTitle, CardToolbar, CardFooter } from '@/components/ui/card'
 import { Button } from '@/components/ui/button-1'
 import { Badge } from '@/components/ui/badge-2'
+import AdminPaginationControls from '@/components/admin/admin-pagination-controls'
 import { KpiCard, SectionHeader, StatusBadge, EmptyState, GapBar, currencyTooltipFormatter } from '@/components/dashboard/shared'
-import { fmt, type DOrderStatus } from '@/lib/dashboard-mock-data'
-import { useDashboardData } from '@/contexts/dashboard-data'
+import {
+  DASHBOARD_ORDERS, WEEKLY_REVENUE, fmt, type DOrderStatus,
+} from '@/lib/dashboard-mock-data'
 
 const PAGE_SIZE = 10
 
@@ -23,7 +25,6 @@ export default function DashboardOrders() {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<'ALL' | DOrderStatus>('ALL')
   const [page, setPage] = useState(1)
-  const { orders: DASHBOARD_ORDERS, weeklyRevenue: WEEKLY_REVENUE } = useDashboardData()
 
   // Summary KPIs
   const totalOrders = DASHBOARD_ORDERS.length
@@ -193,29 +194,17 @@ export default function DashboardOrders() {
           )}
         </div>
 
-        <CardFooter className="justify-between">
-          <span className="text-sm text-muted-foreground">
-            Mostrando {Math.min((page - 1) * PAGE_SIZE + 1, filtered.length)}–{Math.min(page * PAGE_SIZE, filtered.length)} de {filtered.length} pedidos
-          </span>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPage(p => Math.max(1, p - 1))}
-              disabled={page === 1}
-            >
-              Anterior
-            </Button>
-            <span className="text-sm text-muted-foreground">{page} / {Math.max(1, totalPages)}</span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-              disabled={page >= totalPages}
-            >
-              Próximo
-            </Button>
-          </div>
+        <CardFooter>
+          <AdminPaginationControls
+            currentPage={page}
+            totalPages={totalPages}
+            onPageChange={setPage}
+            showing={{
+              start: Math.min((page - 1) * PAGE_SIZE + 1, filtered.length),
+              end: Math.min(page * PAGE_SIZE, filtered.length),
+              total: filtered.length,
+            }}
+          />
         </CardFooter>
       </Card>
     </div>

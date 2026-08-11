@@ -1,20 +1,32 @@
+import { Suspense } from 'react'
 import { redirect } from 'next/navigation'
 import AdminMenuPage from '@/components/admin/admin-pages-menu-client'
 import { getAdminSession } from '@/lib/actions/auth'
 import { getMenuAction, getMenuItemsAction } from '@/lib/actions/menus'
 import { getCategoriesAction } from '@/lib/actions/categories'
 import { getInstitutionalPagesAction } from '@/lib/actions/pages'
+import { AdminRouteSkeleton } from '@/components/admin/admin-route-skeleton'
 
 export const metadata = {
   title: 'Menu Items | Admin',
   description: 'Configure os itens do menu de navegação da loja',
 }
 
+export const instant = false
+
 interface AdminMenuDetailPageProps {
   params: Promise<{ menuId: string }>
 }
 
-export default async function AdminMenuDetailPage({ params }: AdminMenuDetailPageProps) {
+export default function AdminMenuDetailPage({ params }: AdminMenuDetailPageProps) {
+  return (
+    <Suspense fallback={<AdminRouteSkeleton />}>
+      <AdminMenuDetailPageContent params={params} />
+    </Suspense>
+  )
+}
+
+async function AdminMenuDetailPageContent({ params }: AdminMenuDetailPageProps) {
   const session = await getAdminSession()
 
   if (!session) {
@@ -29,7 +41,7 @@ export default async function AdminMenuDetailPage({ params }: AdminMenuDetailPag
   }
 
   const [menuResult, menuItemsResult, categoriesResult, pagesResult] = await Promise.all([
-    getMenuAction(menuId),
+    getMenuAction(menuId, session.storeId),
     getMenuItemsAction(menuId),
     getCategoriesAction(),
     getInstitutionalPagesAction(session.storeId),
@@ -64,6 +76,7 @@ export default async function AdminMenuDetailPage({ params }: AdminMenuDetailPag
       menuId={menuId}
       storeId={session.storeId}
       menuName={menuResult.menu.name}
+      menuCode={menuResult.menu.code || null}
       menuType={menuResult.menu.type}
       initialItems={initialItems}
       initialCategories={initialCategories}

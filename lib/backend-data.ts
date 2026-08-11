@@ -14,7 +14,15 @@ import type {
   User,
 } from '@/lib/types'
 
-function now() {
+const FALLBACK_NOW_ISO = '2024-01-01T00:00:00.000Z'
+
+function fallbackNow() {
+  // Stable timestamp for prerender-safe fallback responses.
+  return new Date(FALLBACK_NOW_ISO)
+}
+
+function runtimeNow() {
+  // Real current time for runtime mutations/events.
   return new Date()
 }
 
@@ -56,7 +64,7 @@ export async function getCart(userId: string): Promise<Cart> {
     items: [],
     couponCode: null,
     notes: null,
-    updatedAt: now(),
+    updatedAt: fallbackNow(),
   } as Cart
 }
 
@@ -84,7 +92,7 @@ export async function getSiteSettings(): Promise<SiteSettings> {
   return {
     id: 'settings',
     siteName: 'UPZERO',
-    logoUrl: '/logo-upzero.png',
+    logoUrl: null,
     faviconUrl: null,
     primaryColor: '#6B46C1',
     secondaryColor: '#F3F4F6',
@@ -107,8 +115,8 @@ export async function getSiteSettings(): Promise<SiteSettings> {
       cardEnabled: false,
     },
     customization: {
-      logoUrl: '/logo-upzero.png',
-      logoLightUrl: '/logo-upzero.png',
+      logoUrl: null,
+      logoLightUrl: null,
       logoDarkUrl: null,
       faviconUrl: null,
       heroTitle: '',
@@ -117,8 +125,8 @@ export async function getSiteSettings(): Promise<SiteSettings> {
       showCategories: true,
       customCss: '',
     },
-    createdAt: now(),
-    updatedAt: now(),
+    createdAt: fallbackNow(),
+    updatedAt: fallbackNow(),
   } as unknown as SiteSettings
 }
 
@@ -127,7 +135,7 @@ export async function updateSiteSettings(data: Partial<SiteSettings>): Promise<S
   return {
     ...current,
     ...data,
-    updatedAt: now(),
+    updatedAt: runtimeNow(),
   } as SiteSettings
 }
 
@@ -167,6 +175,6 @@ export async function createAuditLog(data: Omit<AuditLog, 'id' | 'createdAt'>): 
   return {
     id: randomId('audit'),
     ...data,
-    createdAt: now(),
+    createdAt: runtimeNow(),
   } as AuditLog
 }

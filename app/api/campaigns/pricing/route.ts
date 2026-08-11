@@ -6,7 +6,6 @@ import {
 } from '@/lib/campaigns/store'
 import type { CampaignPricingSnapshot, MessageCategory } from '@/lib/campaigns/types'
 
-export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)

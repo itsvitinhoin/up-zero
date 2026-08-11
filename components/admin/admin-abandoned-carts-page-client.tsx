@@ -1,30 +1,6 @@
 "use client";
-
-import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
-import {
-  ArrowUpRight,
-  CheckCircle2,
-  Clock,
-  MessageCircle,
-  RotateCcw,
-  Search,
-  ShoppingBag,
-  X,
-  XCircle,
-} from "lucide-react";
-import AdminPaginationControls from "@/components/admin/admin-pagination-controls";
-import {
-  AdminHero,
-  AdminPage,
-  AdminPanel,
-  AdminStatCard,
-  AdminStatGrid,
-  AdminToolbar,
-  DesktopOnly,
-  MobileCardList,
-} from "@/components/admin/admin-mobile-ui";
-import { Badge } from "@/components/ui/badge";
+import { useEffect, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -35,368 +11,676 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { usePaginatedList } from "@/hooks/use-paginated-list";
-import type {
-  AbandonedCart,
-  AbandonedCartRecoveryStatus,
-} from "@/lib/admin-abandoned-carts-mock-data";
+import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Eye,
+  MessageCircle,
+  MoreHorizontal,
+  Search,
+  SlidersHorizontal,
+  FilterX,
+  Loader2,
+  ShoppingCart,
+  AlertCircle,
+  CheckCircle2,
+  TrendingUp,
+  Package,
+  Link2,
+  Copy,
+} from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { toast } from "sonner";
+import { dispatchCartMessageAction } from "@/lib/actions/messaging";
+import { generateAbandonedCartRecoveryLinkAction } from "@/lib/actions/abandoned-carts";
+import AdminPaginationControls from "@/components/admin/admin-pagination-controls";
+import { useAdminStore } from "@/contexts/admin-store-context";
+import { buildStorefrontUrl } from "@/lib/storefront-url";
 
-type StatusOption = {
-  label: string
-  shortLabel: string
-  badge: "slate" | "blue" | "violet" | "emerald" | "rose" | "amber"
-  dot: string
+interface CartRow {
+  id: string;
+  client_id?: number;
+  customer_email?: string;
+  customer_phone?: string;
+  customer_name?: string;
+  status: string;
+  total_items: number;
+  subtotal_cents: number;
+  shipping_cents: number;
+  total_cents: number;
+  created_at: string;
+  updated_at: string;
+  expires_at?: string;
+  recovery_sent_at?: string | null;
+  recovery_method?: string;
+  items_json: string;
 }
 
-const RECOVERY_STATUS: Record<AbandonedCartRecoveryStatus, StatusOption> = {
-  NOT_SENT: { label: "Não disparado", shortLabel: "Não disparado", badge: "amber", dot: "bg-amber-300" },
-  SENT: { label: "Mensagem Enviada", shortLabel: "Enviada", badge: "blue", dot: "bg-blue-300" },
-  RECOVERED: { label: "Recuperado", shortLabel: "Recuperado", badge: "emerald", dot: "bg-emerald-300" },
+const RECOVERY_STATUS_LABELS: Record<
+  string,
+  { label: string; chipClassName: string }
+> = {
+  NOT_SENT: {
+    label: "Não disparado",
+    chipClassName: "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-50",
+  },
+  SENT_WHATSAPP: {
+    label: "Mensagem Enviada (WhatsApp)",
+    chipClassName: "border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-50",
+  },
+  SENT_EMAIL: {
+    label: "Mensagem Enviada (E-mail)",
+    chipClassName: "border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-50",
+  },
+  RECOVERED: {
+    label: "Recuperado",
+    chipClassName: "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50",
+  },
+};
+
+const ABANDONED_CART_PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
+
+function parseAbandonedCartPageLimit(value?: string | number | null): number {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return ABANDONED_CART_PAGE_SIZE_OPTIONS.includes(parsed as (typeof ABANDONED_CART_PAGE_SIZE_OPTIONS)[number])
+    ? parsed
+    : 20;
 }
 
-type AdminAbandonedCartsPageClientProps = {
-  initialCarts: AbandonedCart[]
+interface AdminAbandonedCartsPageClientProps {
+  initialCarts: CartRow[];
+  summary: {
+    total_count: number;
+    in_recovery_count: number;
+    recovered_count: number;
+    potential_revenue_cents: number;
+  };
+  currentPage: number;
+  pageSize: number;
+  totalCount: number;
+  totalPages: number;
+  initialSearch: string;
+  initialRecoveryStatus: string;
 }
 
-function formatCurrency(value: number) {
-  return new Intl.NumberFormat("pt-BR", {
-    style: "currency",
-    currency: "BRL",
-  }).format(value)
-}
-
-function formatDateTime(value: string) {
-  return new Intl.DateTimeFormat("pt-BR", {
-    day: "2-digit",
-    month: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value))
-}
-
-function formatPhone(phone: string) {
-  const digits = phone.replace(/\D/g, "")
-  if (digits.length !== 11) return phone
-  return digits.replace(/(\d{2})(\d{5})(\d{4})/, "($1) $2-$3")
-}
-
-function buildWhatsAppUrl(cart: AbandonedCart) {
-  const digits = cart.phone.replace(/\D/g, "")
-  const phone = digits.startsWith("55") ? digits : `55${digits}`
-  const message = [
-    `Olá, ${cart.customerName}! Tudo bem?`,
-    `Vi que você deixou alguns produtos no carrinho da ${cart.companyName}.`,
-    `Posso te ajudar a fechar esse pedido de ${formatCurrency(cart.subtotal - cart.discountTotal + cart.shippingEstimate)}?`,
-  ].join("\n\n")
-
-  return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`
+interface CartItemPreview {
+  product_variant_id: number;
+  product_name?: string;
+  image_url?: string | null;
+  variant_sku?: string | null;
+  quantity: number;
 }
 
 export default function AdminAbandonedCartsPageClient({
   initialCarts,
+  summary,
+  currentPage,
+  pageSize,
+  totalCount,
+  totalPages,
+  initialSearch,
+  initialRecoveryStatus,
 }: AdminAbandonedCartsPageClientProps) {
-  const router = useRouter()
-  const [search, setSearch] = useState("")
-  const [statusFilter, setStatusFilter] = useState<AbandonedCartRecoveryStatus | "all">("all")
-  const [currentPage, setCurrentPage] = useState(1)
+  const router = useRouter();
+  const pathname = usePathname();
+  const { session, storefrontUrl } = useAdminStore();
+  const canSendMessages = Array.isArray(session?.permissionCodes)
+    ? session.permissionCodes.map((code) => String(code || "").trim().toLowerCase()).includes("messaging.send")
+    : true;
+  const normalizeRecoveryFilter = (value: string) => {
+    const normalized = String(value || "all").trim().toLowerCase();
+    return normalized.length > 0 ? normalized : "all";
+  };
 
-  const filteredCarts = useMemo(() => {
-    const q = search.trim().toLowerCase()
+  const [search, setSearch] = useState(initialSearch);
+  const [recoveryFilter, setRecoveryFilter] = useState(normalizeRecoveryFilter(initialRecoveryStatus));
+  const [selectedLimit, setSelectedLimit] = useState<number>(parseAbandonedCartPageLimit(pageSize));
+  const [carts, setCarts] = useState<CartRow[]>(initialCarts);
+  const [dispatchingCartId, setDispatchingCartId] = useState<string | null>(null);
+  const [generatingLinkCartId, setGeneratingLinkCartId] = useState<string | null>(null);
 
-    return initialCarts.filter((cart) => {
-      const matchesSearch = !q ||
-        cart.id.toLowerCase().includes(q) ||
-        cart.customerName.toLowerCase().includes(q) ||
-        cart.companyName.toLowerCase().includes(q) ||
-        cart.email.toLowerCase().includes(q) ||
-        cart.phone.replace(/\D/g, "").includes(q.replace(/\D/g, ""))
+  const detailsBasePath = pathname.startsWith("/admin/")
+    ? "/admin/carrinhos-abandonados"
+    : "/carrinhos-abandonados";
 
-      const matchesStatus = statusFilter === "all" || cart.recoveryStatus === statusFilter
-
-      return matchesSearch && matchesStatus
-    })
-  }, [initialCarts, search, statusFilter])
-
-  const pageSize = 20
-  const {
-    totalPages,
-    safeCurrentPage,
-    pageStart,
-    pageEnd,
-    paginatedItems: paginatedCarts,
-  } = usePaginatedList({
-    items: filteredCarts,
-    currentPage,
-    pageSize,
-  })
+  const openCartDetails = (cartId: string) => {
+    router.push(`${detailsBasePath}/${encodeURIComponent(cartId)}`);
+  };
 
   useEffect(() => {
-    setCurrentPage(1)
-  }, [search, statusFilter])
+    setSearch(initialSearch);
+  }, [initialSearch]);
 
   useEffect(() => {
-    if (currentPage > totalPages) {
-      setCurrentPage(totalPages)
+    setRecoveryFilter(normalizeRecoveryFilter(initialRecoveryStatus));
+  }, [initialRecoveryStatus]);
+
+  useEffect(() => {
+    setCarts(initialCarts);
+  }, [initialCarts]);
+
+  useEffect(() => {
+    setSelectedLimit(parseAbandonedCartPageLimit(pageSize));
+  }, [pageSize]);
+
+  const formatBRL = (cents: number) => {
+    const reais = Math.floor(cents / 100);
+    const centavos = cents % 100;
+    return `R$ ${reais.toLocaleString("pt-BR")},${centavos.toString().padStart(2, "0")}`;
+  };
+
+  const formatDateTime = (value: string) => {
+    return new Intl.DateTimeFormat("pt-BR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(value));
+  };
+
+  const parseCartItems = (cart: CartRow): CartItemPreview[] => {
+    try {
+      const parsed = JSON.parse(cart.items_json);
+      return Array.isArray(parsed) ? (parsed as CartItemPreview[]) : [];
+    } catch {
+      return [];
     }
-  }, [currentPage, totalPages])
+  };
+
+  function getSkuCount(cart: CartRow): number {
+    return parseCartItems(cart).length;
+  }
+
+  function getRecoveryStatus(cart: CartRow): string {
+    const normalizedStatus = String(cart.status || "").trim().toLowerCase();
+    if (normalizedStatus === "converted") return "RECOVERED";
+
+    if (cart.recovery_method === "email" && cart.recovery_sent_at) return "SENT_EMAIL";
+    if (cart.recovery_method === "whatsapp" && cart.recovery_sent_at) return "SENT_WHATSAPP";
+    return "NOT_SENT";
+  }
+
+  const handleDispatchWhatsApp = async (cart: CartRow) => {
+    if (!canSendMessages) {
+      toast.error("Sem permissão", {
+        description: "Você não tem permissão para enviar mensagens",
+      });
+      return;
+    }
+
+    if (!cart.customer_phone) {
+      toast.error("Telefone não cadastrado", {
+        description: "Este cliente não tem telefone válido para WhatsApp",
+      });
+      return;
+    }
+
+    try {
+      setDispatchingCartId(cart.id);
+
+      const result = await dispatchCartMessageAction({
+        cartId: cart.id,
+        trigger: "CART_ABANDONED",
+        channel: "WHATSAPP",
+      });
+
+      if (result.success && result.data?.whatsappUrl) {
+        setCarts((prev) =>
+          prev.map((c) =>
+            c.id === cart.id
+              ? {
+                  ...c,
+                  recovery_sent_at: new Date().toISOString(),
+                  recovery_method: "whatsapp",
+                }
+              : c
+          )
+        );
+
+        toast.success("Abrindo WhatsApp...", {
+          description: "Clique para enviar a mensagem",
+        });
+
+        window.open(result.data.whatsappUrl, "_blank", "noopener,noreferrer");
+        router.refresh();
+      } else {
+        toast.error("Erro ao gerar link", {
+          description: result.error || "Não foi possível gerar o link do WhatsApp",
+        });
+      }
+    } catch (error) {
+      toast.error("Erro", {
+        description:
+          error instanceof Error ? error.message : "Erro ao disparar mensagem",
+      });
+    } finally {
+      setDispatchingCartId(null);
+    }
+  };
+
+  const handleGenerateRecoveryLink = async (cart: CartRow) => {
+    const recoveryStatus = getRecoveryStatus(cart);
+    if (recoveryStatus === "RECOVERED") {
+      toast.error("Carrinho já recuperado", {
+        description: "Não é possível gerar link para carrinho já convertido em pedido.",
+      });
+      return;
+    }
+
+    const customerId = Number(cart.client_id || 0);
+    if (!Number.isFinite(customerId) || customerId <= 0) {
+      toast.error("Cliente sem vínculo", {
+        description: "Este carrinho não possui cliente para geração de link.",
+      });
+      return;
+    }
+
+    try {
+      setGeneratingLinkCartId(cart.id);
+
+      // Reuse the same storefront base used by "Ver Vitrine".
+      const candidateBase = buildStorefrontUrl(storefrontUrl || "/", "");
+      const absoluteStorefrontBase = /^https?:\/\//i.test(candidateBase)
+        ? candidateBase
+        : undefined;
+
+      const result = await generateAbandonedCartRecoveryLinkAction({
+        cartId: cart.id,
+        customerId,
+        storefrontBaseUrl: absoluteStorefrontBase,
+      });
+
+      if (!result.success) {
+        toast.error("Erro ao gerar link", {
+          description: result.error,
+        });
+        return;
+      }
+
+      const recoveryUrl = result.data.recoveryUrl;
+
+      try {
+        await navigator.clipboard.writeText(recoveryUrl);
+        toast.success("Link gerado e copiado", {
+          description: result.data.hadValidToken
+            ? `Havia ${result.data.revokedTokensCount} link(s) válido(s), um novo foi gerado.`
+            : "Novo link de recuperação gerado com sucesso.",
+        });
+      } catch {
+        toast.success("Link gerado", {
+          description: recoveryUrl,
+        });
+      }
+    } finally {
+      setGeneratingLinkCartId(null);
+    }
+  };
 
   const stats = {
-    total: initialCarts.length,
-    pending: initialCarts.filter((cart) => cart.recoveryStatus === "NOT_SENT").length,
-    recovered: initialCarts.filter((cart) => cart.recoveryStatus === "RECOVERED").length,
-    totalValue: initialCarts.reduce((acc, cart) => acc + cart.subtotal - cart.discountTotal + cart.shippingEstimate, 0),
+    visible: summary.total_count,
+    inRecovery: summary.in_recovery_count,
+    potentialRevenue: summary.potential_revenue_cents,
+    recovered: summary.recovered_count,
+  };
+
+  function navigateWithParams(
+    nextPage: number,
+    nextSearch: string,
+    nextRecovery: string,
+    nextLimit?: number,
+  ) {
+    const limit = parseAbandonedCartPageLimit(nextLimit ?? selectedLimit);
+    const params = new URLSearchParams();
+    if (nextPage > 1) params.set("page", String(nextPage));
+    if (limit !== 20) params.set("limit", String(limit));
+    if (nextSearch.trim().length > 0) params.set("q", nextSearch.trim());
+    if (nextRecovery !== "all") params.set("recovery_status", nextRecovery);
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname);
+    router.refresh();
+  }
+
+  function applyPageLimit(nextLimit: number) {
+    setSelectedLimit(nextLimit);
+    navigateWithParams(1, search, recoveryFilter, nextLimit);
+  }
+
+  function handleSearchSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    navigateWithParams(1, search, recoveryFilter);
   }
 
   return (
-    <AdminPage>
-      <AdminHero
-        icon={RotateCcw}
-        eyebrow="Pedidos"
-        title="Carrinhos abandonados"
-        description={`${stats.total} carrinhos aguardando acompanhamento • ${formatCurrency(stats.totalValue)} em potencial`}
-      />
+    <div className="space-y-6 p-6 lg:p-8 [&_button:not(:disabled)]:cursor-pointer [&_select:not(:disabled)]:cursor-pointer [&_[role='button']:not([aria-disabled='true'])]:cursor-pointer">
+      <div className="rounded-2xl border border-border/40 bg-linear-to-br from-card via-card to-muted/30 p-5 shadow-sm">
+        <div className="flex flex-col gap-4">
+          <div>
+            <div className="inline-flex items-center gap-2 rounded-full border border-border/50 bg-background/80 px-3 py-1 text-xs font-medium text-muted-foreground">
+              <Package className="h-3.5 w-3.5" />
+              Recuperação de carrinhos
+            </div>
+            <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold tracking-tight text-foreground">
+              <ShoppingCart className="h-6 w-6 text-primary" />
+              Carrinhos Abandonados
+            </h1>
+            <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+              Clientes que iniciaram a compra, mas nao finalizaram o pedido.
+            </p>
+          </div>
+        </div>
+      </div>
 
-      <AdminStatGrid>
-        <AdminStatCard icon={ShoppingBag} label="Carrinhos" value={stats.total} hint="Com produtos adicionados" />
-        <AdminStatCard icon={Clock} label="Aguardando" value={stats.pending} hint="Sem disparo ainda" tone="warning" />
-        <AdminStatCard icon={CheckCircle2} label="Recuperados" value={stats.recovered} hint="Convertidos em pedido" tone="success" />
-        <AdminStatCard icon={ArrowUpRight} label="Potencial" value={formatCurrency(stats.totalValue)} hint="Valor nos carrinhos" tone="info" />
-      </AdminStatGrid>
+      {/* KPI Cards */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-2xl border border-border/40 bg-card p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-[11px] font-medium tracking-[0.18em] text-muted-foreground uppercase">Carrinhos</p>
+              <p className="mt-2 text-2xl font-semibold leading-none">{stats.visible}</p>
+            </div>
+            <div className="rounded-full bg-amber-100 p-2 text-amber-700">
+              <ShoppingCart className="h-4 w-4" />
+            </div>
+          </div>
+          <div className="mt-4 h-1.5 rounded-full bg-linear-to-r from-amber-300 to-amber-500" />
+        </div>
 
-      <AdminToolbar>
-        <div className="space-y-3">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              placeholder="Buscar por cliente, empresa, telefone ou e-mail..."
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              className="min-h-12 rounded-2xl pl-9 pr-9"
-            />
-            {search ? (
-              <button
-                type="button"
-                onClick={() => setSearch("")}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                aria-label="Limpar busca"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            ) : null}
+        <div className="rounded-2xl border border-border/40 bg-card p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-[11px] font-medium tracking-[0.18em] text-muted-foreground uppercase">Em recuperação</p>
+              <p className="mt-2 text-2xl font-semibold leading-none">{stats.inRecovery}</p>
+            </div>
+            <div className="rounded-full bg-sky-100 p-2 text-sky-700">
+              <TrendingUp className="h-4 w-4" />
+            </div>
+          </div>
+          <div className="mt-4 h-1.5 rounded-full bg-linear-to-r from-sky-300 to-sky-500" />
+        </div>
+
+        <div className="rounded-2xl border border-border/40 bg-card p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-[11px] font-medium tracking-[0.18em] text-muted-foreground uppercase">Valor em risco</p>
+              <p className="mt-2 text-2xl font-semibold leading-none">{formatBRL(stats.potentialRevenue)}</p>
+            </div>
+            <div className="rounded-full bg-emerald-100 p-2 text-emerald-700">
+              <TrendingUp className="h-4 w-4" />
+            </div>
+          </div>
+          <div className="mt-4 h-1.5 rounded-full bg-linear-to-r from-emerald-300 to-emerald-500" />
+        </div>
+
+        <div className="rounded-2xl border border-border/40 bg-card p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-[11px] font-medium tracking-[0.18em] text-muted-foreground uppercase">Recuperados</p>
+              <p className="mt-2 text-2xl font-semibold leading-none">{stats.recovered}</p>
+            </div>
+            <div className="rounded-full bg-emerald-100 p-2 text-emerald-700">
+              <CheckCircle2 className="h-4 w-4" />
+            </div>
+          </div>
+          <div className="mt-4 h-1.5 rounded-full bg-linear-to-r from-emerald-300 to-sky-500" />
+        </div>
+      </div>
+
+      {/* Filtros */}
+      <form className="rounded-2xl border border-border/40 bg-card p-4 shadow-sm" onSubmit={handleSearchSubmit}>
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Buscar por cliente, empresa, telefone ou e-mail"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="h-10 rounded-full pl-10"
+              />
+            </div>
+            <Button type="submit" size="sm" variant="outline" className="h-10 shrink-0 rounded-full px-5">
+              Buscar
+            </Button>
           </div>
 
-          <div className="-mx-4 overflow-x-auto px-4 md:mx-0 md:px-0">
-            <div className="flex w-max gap-1.5 md:w-auto md:flex-wrap">
-              {[
-                { value: "all" as const, label: "Todos", dot: null },
-                ...Object.entries(RECOVERY_STATUS).map(([value, config]) => ({
-                  value: value as AbandonedCartRecoveryStatus,
-                  label: config.shortLabel,
-                  dot: config.dot,
-                })),
-              ].map(({ value, label, dot }) => {
-                const count = value === "all"
-                  ? filteredCarts.length
-                  : initialCarts.filter((cart) => cart.recoveryStatus === value).length
-                const isActive = statusFilter === value
+          <div className="flex flex-wrap items-center gap-3">
+            <Select
+              value={recoveryFilter}
+              onValueChange={(value) => {
+                setRecoveryFilter(value)
+                navigateWithParams(1, search, value)
+              }}
+            >
+              <SelectTrigger className="h-10 w-full rounded-full sm:w-auto xl:w-72">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todos os status</SelectItem>
+                <SelectItem value="not_sent">Não disparado</SelectItem>
+                <SelectItem value="sent_whatsapp">Mensagem Enviada (WhatsApp)</SelectItem>
+                <SelectItem value="sent_email">Mensagem Enviada (E-mail)</SelectItem>
+                <SelectItem value="recovered">Recuperado</SelectItem>
+              </SelectContent>
+            </Select>
+
+            <Select
+              value={String(selectedLimit)}
+              onValueChange={(value) => {
+                const nextLimit = Number.parseInt(value, 10);
+                if (!Number.isFinite(nextLimit)) return;
+                applyPageLimit(nextLimit);
+              }}
+            >
+              <SelectTrigger className="h-10 w-full rounded-full sm:w-auto xl:w-40">
+                <SelectValue placeholder="Itens/pagina" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="20">20 por pagina</SelectItem>
+                <SelectItem value="50">50 por pagina</SelectItem>
+                <SelectItem value="100">100 por pagina</SelectItem>
+              </SelectContent>
+            </Select>
+
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="h-10 w-10 shrink-0 rounded-full"
+              title="Limpar filtros"
+              aria-label="Limpar filtros"
+              onClick={() => {
+                setSearch("")
+                setRecoveryFilter("all")
+                navigateWithParams(1, "", "all")
+              }}
+            >
+              <FilterX className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      </form>
+
+      {/* Tabela */}
+      <div className="rounded-2xl border border-border/40 bg-card shadow-sm overflow-hidden">
+        <Table>
+          <TableHeader>
+            <TableRow className="bg-muted/60">
+              <TableHead>Carrinho</TableHead>
+              <TableHead>Cliente</TableHead>
+              <TableHead>Contato</TableHead>
+              <TableHead>Produtos</TableHead>
+              <TableHead className="text-right">Total</TableHead>
+              <TableHead>Atualizado</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Ações</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {carts.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
+                  <AlertCircle className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                  <p>Nenhum carrinho abandonado encontrado</p>
+                </TableCell>
+              </TableRow>
+            ) : (
+              carts.map((cart) => {
+                const recoveryStatus = getRecoveryStatus(cart);
+                const statusConfig = RECOVERY_STATUS_LABELS[recoveryStatus];
+                const canGenerateRecoveryLink = recoveryStatus !== "RECOVERED" && Number(cart.client_id || 0) > 0;
 
                 return (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setStatusFilter(value)}
-                    className={`flex shrink-0 items-center gap-1.5 rounded-full border px-3.5 py-2 text-sm font-medium transition-colors ${
-                      isActive
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-border bg-background text-muted-foreground hover:bg-muted"
-                    }`}
+                  <TableRow
+                    key={cart.id}
+                    className="hover:bg-muted/40 align-top cursor-pointer"
+                    onClick={(event) => {
+                      const target = event.target as HTMLElement;
+                      if (target.closest("button,a,[role='menuitem']")) return;
+                      openCartDetails(cart.id);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        const target = event.target as HTMLElement;
+                        if (target.closest("button,a,[role='menuitem']")) return;
+                        event.preventDefault();
+                        openCartDetails(cart.id);
+                      }
+                    }}
+                    tabIndex={0}
+                    aria-label={`Abrir carrinho ${cart.id}`}
                   >
-                    {dot && !isActive ? <span className={`h-2 w-2 rounded-full ${dot} shrink-0`} /> : null}
-                    {label}
-                    <span className={`text-xs tabular-nums ${isActive ? "opacity-70" : "text-muted-foreground"}`}>
-                      {count}
-                    </span>
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        </div>
-      </AdminToolbar>
-
-      <MobileCardList>
-        {paginatedCarts.length === 0 ? (
-          <AdminPanel>
-            <div className="py-8 text-center">
-              <ShoppingBag className="mx-auto mb-3 h-10 w-10 text-muted-foreground" />
-              <p className="font-medium text-muted-foreground">Nenhum carrinho encontrado</p>
-              <p className="text-sm text-muted-foreground">Tente ajustar a busca ou o status</p>
-            </div>
-          </AdminPanel>
-        ) : (
-          paginatedCarts.map((cart) => {
-            const status = RECOVERY_STATUS[cart.recoveryStatus]
-            const total = cart.subtotal - cart.discountTotal + cart.shippingEstimate
-            const itemCount = cart.items.reduce((acc, item) => acc + item.quantity, 0)
-
-            return (
-              <AdminPanel key={cart.id} className="overflow-hidden p-0">
-                <div
-                  className="cursor-pointer space-y-4 p-4 transition-colors hover:bg-muted/30"
-                  onClick={() => router.push(`/orders/abandoned-carts/${cart.id}`)}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 space-y-1">
-                      <p className="font-mono text-sm font-semibold text-primary">#{cart.id.replace("cart-", "").toUpperCase()}</p>
-                      <p className="truncate text-base font-semibold text-foreground">{cart.companyName}</p>
-                      <p className="text-sm text-muted-foreground">{cart.customerName} • {formatPhone(cart.phone)}</p>
-                    </div>
-                    <span className={`mt-1 h-3 w-3 shrink-0 rounded-full ${status.dot}`} />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3 text-sm">
-                    <div>
-                      <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Valor</p>
-                      <p className="font-semibold text-foreground">{formatCurrency(total)}</p>
-                    </div>
-                    <div>
-                      <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Produtos</p>
-                      <p className="font-semibold text-foreground">{itemCount} pecas • {cart.items.length} SKUs</p>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    <Badge variant={status.badge}>{status.label}</Badge>
-                    <Badge variant="outline">{formatDateTime(cart.abandonedAt)}</Badge>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 border-t border-border/50">
-                  <a
-                    href={buildWhatsAppUrl(cart)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={(event) => event.stopPropagation()}
-                    className="flex h-12 items-center justify-center gap-2 border-r border-border/50 text-sm font-semibold text-emerald-600 transition-colors hover:bg-emerald-50 dark:hover:bg-emerald-950/30"
-                  >
-                    <MessageCircle className="h-4 w-4" />
-                    WhatsApp
-                  </a>
-                  <button
-                    type="button"
-                    onClick={() => router.push(`/orders/abandoned-carts/${cart.id}`)}
-                    className="flex h-12 items-center justify-center gap-2 text-sm font-semibold text-primary transition-colors hover:bg-primary/5"
-                  >
-                    Ver detalhes
-                  </button>
-                </div>
-              </AdminPanel>
-            )
-          })
-        )}
-      </MobileCardList>
-
-      <DesktopOnly>
-        <div className="overflow-hidden rounded-[24px] border border-border/60 bg-card/95 shadow-sm">
-          <Table>
-            <TableHeader>
-              <TableRow className="border-border/20">
-                <TableHead className="w-14 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/90">Status</TableHead>
-                <TableHead className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/90">Abandono</TableHead>
-                <TableHead className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/90">Cliente</TableHead>
-                <TableHead className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/90">Contato</TableHead>
-                <TableHead className="text-right text-[11px] font-medium uppercase tracking-wide text-muted-foreground/90">Valor</TableHead>
-                <TableHead className="text-right text-[11px] font-medium uppercase tracking-wide text-muted-foreground/90">Produtos</TableHead>
-                <TableHead className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/90">Recuperação</TableHead>
-                <TableHead className="text-right text-[11px] font-medium uppercase tracking-wide text-muted-foreground/90">Ações</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {paginatedCarts.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={8} className="py-12 text-center">
-                    <ShoppingBag className="mx-auto mb-3 h-12 w-12 text-muted-foreground" />
-                    <p className="font-medium text-muted-foreground">Nenhum carrinho encontrado</p>
-                    <p className="text-sm text-muted-foreground">Tente ajustar a busca ou o status</p>
-                  </TableCell>
-                </TableRow>
-              ) : (
-                paginatedCarts.map((cart) => {
-                  const status = RECOVERY_STATUS[cart.recoveryStatus]
-                  const total = cart.subtotal - cart.discountTotal + cart.shippingEstimate
-                  const itemCount = cart.items.reduce((acc, item) => acc + item.quantity, 0)
-
-                  return (
-                    <TableRow
-                      key={cart.id}
-                      className="cursor-pointer border-border/20 transition-colors hover:bg-muted/40"
-                      onClick={() => router.push(`/orders/abandoned-carts/${cart.id}`)}
-                    >
-                      <TableCell>
-                        <span className={`inline-block h-2.5 w-2.5 rounded-full ${status.dot}`} />
-                      </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">{formatDateTime(cart.abandonedAt)}</TableCell>
-                      <TableCell>
-                        <div>
-                          <p className="font-medium">{cart.companyName}</p>
-                          <p className="text-sm text-muted-foreground">{cart.customerName}</p>
+                    <TableCell className="font-mono text-sm">
+                      #{cart.id.slice(0, 8).toUpperCase()}
+                    </TableCell>
+                    <TableCell>
+                      <div className="text-sm">
+                        <p className="font-medium">{cart.customer_name || "N/A"}</p>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {cart.customer_email && (
+                        <p className="truncate">{cart.customer_email}</p>
+                      )}
+                      {cart.customer_phone && (
+                        <p className="text-muted-foreground text-xs">
+                          {cart.customer_phone}
+                        </p>
+                      )}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      <div className="flex items-center gap-3">
+                        <div className="text-sm font-semibold leading-none text-foreground">
+                          {cart.total_items}
                         </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="text-sm">
-                          <p>{formatPhone(cart.phone)}</p>
-                          <p className="text-muted-foreground">{cart.email}</p>
+                        <div className="inline-flex items-center rounded-full border border-border/40 bg-muted/60 px-2.5 py-1 text-sm font-medium leading-none text-muted-foreground">
+                          {getSkuCount(cart)} SKUs
                         </div>
-                      </TableCell>
-                      <TableCell className="text-right font-medium">{formatCurrency(total)}</TableCell>
-                      <TableCell className="text-right">
-                        <span className="font-medium">{itemCount}</span>
-                        <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                          {cart.items.length} SKUs
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={status.badge} className="justify-center">
-                          {status.label}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-2">
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right font-semibold">
+                      {formatBRL(cart.total_cents)}
+                    </TableCell>
+                    <TableCell className="text-sm text-muted-foreground">
+                      {formatDateTime(cart.updated_at)}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className={`rounded-full px-2.5 py-1 font-medium ${statusConfig.chipClassName}`}>
+                        {statusConfig.label}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
                           <Button
-                            variant="outline"
                             size="sm"
-                            className="rounded-xl"
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              window.open(buildWhatsAppUrl(cart), "_blank", "noopener,noreferrer")
-                            }}
+                            variant="outline"
+                            className="h-8 w-8 p-0"
+                            aria-label="Ações do carrinho"
                           >
-                            <MessageCircle className="h-4 w-4" />
-                            WhatsApp
+                            <MoreHorizontal className="h-4 w-4" />
                           </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  )
-                })
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </DesktopOnly>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-52">
+                          <DropdownMenuItem
+                            onClick={() => openCartDetails(cart.id)}
+                            className="gap-2 cursor-pointer"
+                          >
+                            <Eye className="h-4 w-4" />
+                            Ver detalhes
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => {
+                              if (canGenerateRecoveryLink && !generatingLinkCartId) {
+                                void handleGenerateRecoveryLink(cart)
+                              }
+                            }}
+                            disabled={!!generatingLinkCartId || !canGenerateRecoveryLink}
+                            className="gap-2"
+                          >
+                            {generatingLinkCartId === cart.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <>
+                                <Link2 className="h-4 w-4 text-sky-600" />
+                                <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+                              </>
+                            )}
+                            Gerar link
+                          </DropdownMenuItem>
+                          {canSendMessages ? (
+                            <DropdownMenuItem
+                              onClick={() => {
+                                if (!dispatchingCartId) {
+                                  void handleDispatchWhatsApp(cart)
+                                }
+                              }}
+                              disabled={!!dispatchingCartId}
+                              className="gap-2"
+                            >
+                              {dispatchingCartId === cart.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <MessageCircle className="h-4 w-4 text-green-600" />
+                              )}
+                              WhatsApp
+                            </DropdownMenuItem>
+                          ) : null}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+      </div>
 
-      {filteredCarts.length > 0 ? (
+      {totalCount > 0 ? (
         <AdminPaginationControls
-          currentPage={safeCurrentPage}
+          currentPage={currentPage}
           totalPages={totalPages}
-          onPageChange={setCurrentPage}
+          onPageChange={(page) => navigateWithParams(page, search, recoveryFilter)}
           showing={{
-            start: pageStart,
-            end: pageEnd,
-            total: filteredCarts.length,
+            start: totalCount === 0 ? 0 : (currentPage - 1) * selectedLimit + 1,
+            end: Math.min(totalCount, (currentPage - 1) * selectedLimit + carts.length),
+            total: totalCount,
           }}
         />
       ) : null}
-    </AdminPage>
-  )
+
+    </div>
+  );
 }

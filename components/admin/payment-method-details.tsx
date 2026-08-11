@@ -18,6 +18,47 @@ interface PaymentMethodDetailsProps {
   paymentMethod?: string;
 }
 
+interface CopyableCodeProps {
+  label: string;
+  value: string;
+  copyLabel: string;
+  buttonClassName?: string;
+}
+
+function CopyableCode({ label, value, copyLabel, buttonClassName }: CopyableCodeProps) {
+  const [copied, setCopied] = useState(false);
+
+  const copyToClipboard = async () => {
+    await navigator.clipboard.writeText(value);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="space-y-1">
+      <p className="text-xs font-medium text-blue-700">{label}</p>
+      <div className="flex min-w-0 items-center gap-2">
+        <code
+          className="min-w-0 flex-1 truncate rounded border border-blue-100 bg-white p-2 font-mono text-xs whitespace-nowrap"
+          title={value}
+        >
+          {value}
+        </code>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={copyToClipboard}
+          className={buttonClassName || "h-auto px-2 py-1"}
+          aria-label={copyLabel}
+          title={copyLabel}
+        >
+          {copied ? <CheckCircle2 className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function getNestedString(value: unknown): string | undefined {
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -64,11 +105,57 @@ function inferPaymentCodeFromPayload(payload?: Record<string, any>): "PIX" | "BO
   return "UNKNOWN";
 }
 
-function normalizeProvider(provider?: string): "PAGBANK" | "MERCADO_PAGO" | "UNKNOWN" {
+function normalizeProvider(provider?: string): "PAGBANK" | "MERCADO_PAGO" | "GETNET" | "UNKNOWN" {
   const normalized = String(provider || "").trim().toUpperCase();
   if (normalized === "PAGBANK" || normalized === "PAGSEGURO") return "PAGBANK";
-  if (normalized === "MERCADO_PAGO") return "MERCADO_PAGO";
+  if (normalized === "MERCADO_PAGO" || normalized === "MERCADOPAGO" || normalized === "MERCADO-PAGO") return "MERCADO_PAGO";
+  if (normalized === "GETNET") return "GETNET";
   return "UNKNOWN";
+}
+
+function findFirstStringByKeys(
+  value: unknown,
+  keys: string[],
+  options?: { shouldLookLikeUrl?: boolean },
+): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+
+  const wantedKeys = new Set(keys.map((entry) => entry.trim().toLowerCase()));
+  const stack: unknown[] = [value];
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current || typeof current !== "object") continue;
+
+    if (Array.isArray(current)) {
+      for (const item of current) stack.push(item);
+      continue;
+    }
+
+    for (const [rawKey, rawValue] of Object.entries(current as Record<string, unknown>)) {
+      const normalizedKey = rawKey.trim().toLowerCase();
+
+      if (wantedKeys.has(normalizedKey)) {
+        const candidate = getNestedString(rawValue);
+        if (!candidate) {
+          stack.push(rawValue);
+          continue;
+        }
+
+        if (options?.shouldLookLikeUrl) {
+          if (/^https?:\/\//i.test(candidate)) return candidate;
+        } else {
+          return candidate;
+        }
+      }
+
+      if (rawValue && typeof rawValue === "object") {
+        stack.push(rawValue);
+      }
+    }
+  }
+
+  return undefined;
 }
 
 function getFirstArrayEntry(value: unknown): Record<string, unknown> | undefined {
@@ -94,8 +181,46 @@ function getLinkByMedia(entry: unknown, media: string): string | undefined {
   return undefined;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
+function collectGetnetTimelineItems(value: unknown, out: Record<string, unknown>[]) {
+  const entry = asRecord(value);
+  if (!entry) return;
+
+  const items = entry.items;
+  if (!Array.isArray(items)) return;
+
+  for (const item of items) {
+    const itemRecord = asRecord(item);
+    if (!itemRecord) continue;
+
+    const contentRecord = asRecord(itemRecord.content);
+    if (contentRecord) {
+      out.push(contentRecord);
+    } else {
+      out.push(itemRecord);
+    }
+
+    collectGetnetTimelineItems(itemRecord, out);
+  }
+}
+
+function getLastGetnetPayloadSource(payload: Record<string, any>): Record<string, unknown> {
+  const timeline: Record<string, unknown>[] = [];
+  collectGetnetTimelineItems(payload, timeline);
+
+  if (timeline.length > 0) {
+    return timeline[timeline.length - 1];
+  }
+
+  return payload as Record<string, unknown>;
+}
+
 function extractDetailsByProvider(
-  provider: "PAGBANK" | "MERCADO_PAGO" | "UNKNOWN",
+  provider: "PAGBANK" | "MERCADO_PAGO" | "GETNET" | "UNKNOWN",
   payload: Record<string, any>,
 ) {
   if (provider === "PAGBANK") {
@@ -130,6 +255,49 @@ function extractDetailsByProvider(
       payerEmail,
       payerDoc,
       inferredCode: pixQrCode ? "PIX" : barcode || boletoUrl ? "BOLETO" : "UNKNOWN",
+    };
+  }
+
+  if (provider === "GETNET") {
+    const source = getLastGetnetPayloadSource(payload);
+
+    const boletoUrl =
+      findFirstStringByKeys(source, [
+        "ticket_url",
+        "boleto_url",
+        "bank_slip_url",
+        "payment_url",
+        "link",
+        "pdf",
+        "href",
+      ], { shouldLookLikeUrl: true }) ||
+      getNestedString(source.ticket_url || source.boleto_url || source.payment_url || source.link);
+
+    const barcode =
+      findFirstStringByKeys(source, [
+        "digitable_line",
+        "linha_digitavel",
+        "barcode",
+        "bar_code",
+        "codigo_barras",
+        "codigo_de_barras",
+      ]) ||
+      getNestedString(source.digitable_line || source.linha_digitavel || source.barcode);
+
+    const payer = (source.customer || source.payer || payload.customer || payload.payer) as Record<string, unknown> | undefined;
+    const payerName = getNestedString(payer?.name);
+    const payerEmail = getNestedString(payer?.email);
+    const payerDoc = getNestedString(payer?.tax_id || payer?.document || (payer?.identification as Record<string, unknown> | undefined)?.number);
+
+    return {
+      pixQrCode: undefined,
+      boletoUrl,
+      barcode,
+      qrImageUrl: "",
+      payerName,
+      payerEmail,
+      payerDoc,
+      inferredCode: barcode || boletoUrl ? "BOLETO" : "UNKNOWN",
     };
   }
 
@@ -172,7 +340,6 @@ function extractDetailsByProvider(
 }
 
 export function PaymentMethodDetails({ event, provider, paymentMethod }: PaymentMethodDetailsProps) {
-  const [copied, setCopied] = useState(false);
   const [qrImageUrl, setQrImageUrl] = useState<string>("");
 
   const payload = event.payload_json;
@@ -206,12 +373,6 @@ export function PaymentMethodDetails({ event, provider, paymentMethod }: Payment
   const payerEmail = extracted.payerEmail;
   const payerDoc = extracted.payerDoc;
 
-  const copyToClipboard = async (text: string) => {
-    await navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
   return (
     <div className="space-y-3 mt-3 pt-3 border-t border-border/20">
       {/* PIX Section */}
@@ -230,22 +391,12 @@ export function PaymentMethodDetails({ event, provider, paymentMethod }: Payment
           )}
 
           {/* Código PIX para copiar */}
-          <div className="space-y-1">
-            <p className="text-xs font-medium text-blue-700">Código PIX (copia e cola):</p>
-            <div className="flex gap-2">
-              <code className="flex-1 text-xs bg-white p-2 border border-blue-100 rounded font-mono break-all">
-                {pixQrCode}
-              </code>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => copyToClipboard(pixQrCode)}
-                className="h-auto py-1 px-2"
-              >
-                {copied ? <CheckCircle2 className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-              </Button>
-            </div>
-          </div>
+          <CopyableCode
+            label="Código PIX (copia e cola):"
+            value={pixQrCode}
+            copyLabel="Copiar código PIX"
+            buttonClassName="h-auto px-2 py-1"
+          />
 
         </div>
       )}
@@ -259,33 +410,31 @@ export function PaymentMethodDetails({ event, provider, paymentMethod }: Payment
           </div>
 
           {barcode && (
-            <div className="space-y-1">
-              <p className="text-xs font-medium text-amber-700">Código de Barras:</p>
-              <div className="flex gap-2">
-                <code className="flex-1 text-xs bg-white p-2 border border-amber-100 rounded font-mono">
-                  {barcode}
-                </code>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => copyToClipboard(barcode)}
-                  className="h-auto py-1 px-2"
-                >
-                  {copied ? <CheckCircle2 className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                </Button>
-              </div>
-            </div>
+            <CopyableCode
+              label="Código de Barras:"
+              value={barcode}
+              copyLabel="Copiar código de barras"
+              buttonClassName="h-auto px-2 py-1"
+            />
           )}
 
           {boletoUrl && (
-            <Button
-              size="sm"
-              variant="outline"
-              className="w-full text-xs"
-              onClick={() => window.open(boletoUrl, "_blank")}
-            >
-              Visualizar Boleto
-            </Button>
+            <>
+              <CopyableCode
+                label="Link do Boleto:"
+                value={boletoUrl}
+                copyLabel="Copiar link do boleto"
+                buttonClassName="h-auto px-2 py-1"
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                className="w-full text-xs"
+                onClick={() => window.open(boletoUrl, "_blank")}
+              >
+                Visualizar Boleto
+              </Button>
+            </>
           )}
         </div>
       )}

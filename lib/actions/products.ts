@@ -3,22 +3,32 @@
 import { revalidatePath } from 'next/cache'
 import { cookies } from 'next/headers'
 import { getSession, canManageProducts, getAdminStoreIdFromToken } from '@/lib/auth'
+import { buildAdminCookieHeader } from '@/lib/actions/auth'
+import { assertManualProductCreationAllowed, getStoreErpIntegrationStatus } from '@/lib/actions/erp-integration'
 import { getAttributesWithValuesByStore } from '@/lib/actions/attributes'
 import { productSchema, productVariantSchema } from '@/lib/validations'
-import type { ApiResponse, Category, Product, ProductVariant, ProductWithVariants } from '@/lib/types'
+import { getValidationErrorMessage } from '@/lib/utils/validation-error'
+import type { ApiResponse, Category, PaginatedResponse, Product, ProductVariant, ProductWithVariants, StockMode } from '@/lib/types'
+import { resolveAvailableQtyByStockMode } from '@/lib/stock-mode'
+import { getSiteSettingsAction } from '@/lib/actions/settings'
 
 type SubmittedVariant = {
+  variantId?: string | null
   variantSku?: string
   color?: string
   size?: string
+  ncm?: string | null
+  weightGrams?: number | null
   active?: boolean
   isHighlighted?: boolean
+  preferredSellableLocationIds?: number[]
   stock?: number
   basePrice?: number | null
   cost?: number | null
   priceOverride?: number | null
   images?: string[]
   attribute_values?: number[]
+  barcode?: string | null
 }
 
 type SubmittedColor = {
@@ -32,6 +42,96 @@ type ImageGroupingType = 'product' | 'attributes' | 'full_sku'
 type SubmittedImageGroupingRule = {
   type: ImageGroupingType
   attribute_ids?: number[]
+}
+
+type SubmittedVideoGroupingRule = {
+  type: ImageGroupingType
+  attribute_ids?: number[]
+}
+
+function buildSubmittedVariantKey(variant: SubmittedVariant): string {
+  const attributeValueIds = Array.isArray(variant.attribute_values)
+    ? variant.attribute_values
+        .map((value) => Number(value))
+        .filter((value) => Number.isInteger(value) && value > 0)
+    : []
+
+  if (attributeValueIds.length > 0) {
+    return [...attributeValueIds].sort((a, b) => a - b).join('|')
+  }
+
+  return '_default'
+}
+
+function buildExistingVariantKey(variant: ProductVariant): string {
+  const attributeValueIds = Array.isArray(variant.attributeValueIds)
+    ? variant.attributeValueIds.filter((value) => Number.isInteger(value) && value > 0)
+    : []
+
+  if (attributeValueIds.length > 0) {
+    return [...attributeValueIds].sort((a, b) => a - b).join('|')
+  }
+
+  if (variant.isSimpleProduct || variant.combinationKey === '_default') {
+    return '_default'
+  }
+
+  const color = String(variant.color || '').trim().toUpperCase()
+  const size = String(variant.size || '').trim().toUpperCase()
+  if (color && size) {
+    return `${color}|${size}`
+  }
+
+  return `${variant.color}-${variant.size}`
+}
+
+function buildSubmittedColorSizeKey(variant: SubmittedVariant): string {
+  const color = String(variant.color || '').trim().toUpperCase()
+  const size = String(variant.size || '').trim().toUpperCase()
+  if (!color || !size) return ''
+  return `${color}|${size}`
+}
+
+function preserveErpSkusOnUpdate(
+  submittedVariants: SubmittedVariant[],
+  existing?: ProductWithVariants,
+): SubmittedVariant[] {
+  if (!existing?.variants?.length) return submittedVariants
+
+  const skuByVariantId = new Map<string, string>()
+  const skuByAttributeKey = new Map<string, string>()
+  const skuByColorSize = new Map<string, string>()
+
+  existing.variants.forEach((variant) => {
+    const sku = String(variant.variantSku || '').trim()
+    if (!sku) return
+
+    if (variant.id) {
+      skuByVariantId.set(String(variant.id), sku)
+    }
+
+    skuByAttributeKey.set(buildExistingVariantKey(variant), sku)
+
+    const colorSizeKey = buildSubmittedColorSizeKey({
+      color: variant.color,
+      size: variant.size,
+    })
+    if (colorSizeKey) {
+      skuByColorSize.set(colorSizeKey, sku)
+    }
+  })
+
+  return submittedVariants.map((variant) => {
+    const submittedVariantId = variant.variantId ? String(variant.variantId).trim() : ''
+    const erpSku = (submittedVariantId ? skuByVariantId.get(submittedVariantId) : undefined)
+      ?? skuByAttributeKey.get(buildSubmittedVariantKey(variant))
+      ?? skuByColorSize.get(buildSubmittedColorSizeKey(variant))
+
+    return {
+      ...variant,
+      variantSku: erpSku ?? '',
+    }
+  })
 }
 
 function getFormField(formData: FormData, key: string): string | null {
@@ -57,6 +157,47 @@ function getFormJson<T>(formData: FormData, key: string, fallback: T): T {
   } catch {
     return fallback
   }
+}
+
+function normalizeAttributeValuesByAttributeMap(raw: unknown): Record<number, number[]> {
+  if (!raw || typeof raw !== 'object') return {}
+
+  const normalized: Record<number, number[]> = {}
+
+  for (const [attributeIdRaw, valueIdsRaw] of Object.entries(raw as Record<string, unknown>)) {
+    const attributeId = Number(attributeIdRaw)
+    if (!Number.isInteger(attributeId) || attributeId <= 0) continue
+
+    if (!Array.isArray(valueIdsRaw)) continue
+
+    const valueIds = Array.from(
+      new Set(
+        valueIdsRaw
+          .map((value) => Number(value))
+          .filter((value) => Number.isInteger(value) && value > 0),
+      ),
+    )
+
+    if (valueIds.length > 0) {
+      normalized[attributeId] = valueIds
+    }
+  }
+
+  return normalized
+}
+
+function mergeMetaWithAttributeSelectionOrder(
+  baseMeta: Record<string, unknown>,
+  attributeValuesByAttribute: Record<number, number[]>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...(baseMeta || {}) }
+
+  if (Object.keys(attributeValuesByAttribute).length === 0) {
+    return merged
+  }
+
+  merged.attribute_values_by_attribute = attributeValuesByAttribute
+  return merged
 }
 
 function toCents(value: number | null | undefined): number {
@@ -101,15 +242,159 @@ function buildProductSlug(code: string | null | undefined, name: string | null |
     .replace(/^-|-$/g, '')
 }
 
-async function isProductsAuthorized(session: Awaited<ReturnType<typeof getSession>>): Promise<boolean> {
-  if (session && canManageProducts(session.role)) {
-    return true
+const productTopLevelLabels: Record<string, string> = {
+  name: 'Nome',
+  slug: 'Slug',
+  sku: 'SKU',
+  basePrice: 'Preço base',
+  cost: 'Custo',
+  categoryId: 'Categoria',
+}
+
+const productNestedLabels: Record<string, string> = {
+  variants: 'Variantes',
+  variantSku: 'SKU da variante',
+  attribute_values: 'Valores de atributo',
+  basePrice: 'Preço base',
+  priceOverride: 'Preço promocional',
+  stock: 'Estoque',
+  size: 'Tamanho',
+  color: 'Cor',
+  images: 'Imagens',
+  categoryIds: 'Categorias',
+  categoryId: 'Categoria',
+  tags: 'Tags',
+  sizes: 'Tamanhos',
+  colors: 'Cores',
+}
+
+function formatProductValidationError(validationError: unknown): string {
+  return getValidationErrorMessage(validationError, {
+    fallbackMessage: 'Dados do produto inválidos',
+    topLevelLabels: productTopLevelLabels,
+    nestedLabels: productNestedLabels,
+  })
+}
+
+function normalizeBackendErrorMessage(raw: string | null | undefined, fallback: string): string {
+  const text = String(raw || '').trim()
+  if (!text) return fallback
+
+  let parsedMessage = text
+  try {
+    const parsed = JSON.parse(text)
+    if (typeof parsed === 'string') {
+      parsedMessage = parsed
+    } else if (parsed && typeof parsed === 'object') {
+      parsedMessage = String(
+        (parsed as any).error
+          || (parsed as any).message
+          || (parsed as any).details
+          || text,
+      )
+    }
+  } catch {
+    parsedMessage = text
   }
 
+  const compact = parsedMessage.replace(/\s+/g, ' ').trim()
+  if (!compact || /^<!doctype html/i.test(compact) || /^<html/i.test(compact)) {
+    return fallback
+  }
+
+  if (/category_ids|categoria|category/i.test(compact)) {
+    return 'Selecione pelo menos uma categoria válida para o produto.'
+  }
+
+  if (/price_cents|basePrice|preço|price.*positive|must be positive|deve ser positivo/i.test(compact)) {
+    return 'Informe um preço maior que zero para o produto/variantes.'
+  }
+
+  if (/\bsku\b/i.test(compact) && /(already exists|duplicate|já existe|existe|conflict)/i.test(compact)) {
+    const duplicatedSku = compact.match(/sku\s*(?:já\s*existente|já\s*existe|already\s*exists|exists|duplicate|conflict)?\s*[:\-]?\s*([a-z0-9._\/-]+)/i)?.[1]
+    if (duplicatedSku) {
+      return `SKU ${duplicatedSku} já está em uso. Informe um SKU diferente.`
+    }
+    return 'Este SKU já está em uso. Informe um SKU diferente.'
+  }
+
+  if (/slug/i.test(compact) && /(already exists|duplicate|já existe|existe)/i.test(compact)) {
+    return 'Já existe produto com esse slug. Ajuste o nome/SKU e tente novamente.'
+  }
+
+  if (/product_variant_values_variant_id_attribute_id_key/i.test(compact)) {
+    return 'Uma variante está com mais de um valor para o mesmo atributo (ex.: duas cores ou dois tamanhos na mesma variante). Revise os atributos das variantes e tente novamente.'
+  }
+
+  return compact
+}
+
+function formatThrownError(error: unknown, fallback: string): string {
+  if (error instanceof Error) {
+    return normalizeBackendErrorMessage(error.message, fallback)
+  }
+  return fallback
+}
+
+type BulkDiscountPayload = {
+  mode: string
+  value: number | null
+}
+
+type BulkUpdateProductsPayload = {
+  product_ids: number[]
+  category_ids?: number[]
+  add_category_ids?: number[]
+  remove_category_ids?: number[]
+  add_tags?: string[]
+  remove_tags?: string[]
+  measurement_table_id?: number
+  active?: boolean
+  discount?: BulkDiscountPayload
+  ncm?: string
+  weight_grams?: number
+}
+
+type BulkUpdateProductsResponse = {
+  requested_count?: number
+  updated_count?: number
+  updated_product_ids?: number[]
+  updated_products?: Array<{ id: number; name: string }>
+  message?: string
+}
+
+async function hasProductPermission(permissionCode: string): Promise<boolean> {
   const cookieStore = await cookies()
   const adminToken = cookieStore.get('adminAuthToken')?.value
+  if (!adminToken) {
+    return false
+  }
 
-    return Boolean(adminToken)
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return false
+  }
+
+  try {
+    const permissionUrl = new URL('/permissions/check', base)
+    permissionUrl.searchParams.set('code', permissionCode)
+
+    const permissionResponse = await fetch(permissionUrl, {
+      headers: {
+        cookie: `adminAuthToken=${adminToken}`,
+      },
+      cache: 'no-store',
+    })
+
+    if (!permissionResponse.ok) {
+      return false
+    }
+
+    const payload = await permissionResponse.json() as { has_permission?: boolean }
+    return payload?.has_permission === true
+  } catch {
+    return false
+  }
 }
 
 async function getRustStoreId(_base: string): Promise<number | null> {
@@ -135,39 +420,83 @@ async function getStoreAttributes(storeId: number) {
   return attrsResult.data
 }
 
-async function resolveVariantAttributeValueIds(
-  variant: SubmittedVariant,
-  existingIds: number[] = [],
-  context?: {
-    attributes?: Array<{ code?: string | null; values: Array<{ id: number; name?: string | null; code?: string | null }> }>
-  },
-): Promise<number[]> {
-  const attributes = context?.attributes
-  if (!attributes || attributes.length === 0) return existingIds
+function buildVariantAttributeLookupContext(
+  attributes?: Array<{ code?: string | null; values: Array<{ id: number; name?: string | null; code?: string | null }> }>,
+) {
+  const validValueIds = new Set<number>()
+  const colorValueByNorm = new Map<string, number>()
+  const sizeValueByNorm = new Map<string, number>()
+
+  if (!Array.isArray(attributes) || attributes.length === 0) {
+    return {
+      validValueIds,
+      colorValueByNorm,
+      sizeValueByNorm,
+    }
+  }
 
   const colorAttr = attributes.find((a) => normalizeText(a.code) === 'color')
   const sizeAttr = attributes.find((a) => normalizeText(a.code) === 'size')
+
+  for (const attribute of attributes) {
+    for (const value of attribute.values || []) {
+      if (Number.isInteger(value.id) && value.id > 0) {
+        validValueIds.add(value.id)
+      }
+    }
+  }
+
+  for (const value of colorAttr?.values || []) {
+    if (!Number.isInteger(value.id) || value.id <= 0) continue
+    const normalizedName = normalizeText(value.name)
+    const normalizedCode = normalizeText(value.code)
+    if (normalizedName) colorValueByNorm.set(normalizedName, value.id)
+    if (normalizedCode) colorValueByNorm.set(normalizedCode, value.id)
+  }
+
+  for (const value of sizeAttr?.values || []) {
+    if (!Number.isInteger(value.id) || value.id <= 0) continue
+    const normalizedName = normalizeText(value.name)
+    const normalizedCode = normalizeText(value.code)
+    if (normalizedName) sizeValueByNorm.set(normalizedName, value.id)
+    if (normalizedCode) sizeValueByNorm.set(normalizedCode, value.id)
+  }
+
+  return {
+    validValueIds,
+    colorValueByNorm,
+    sizeValueByNorm,
+  }
+}
+
+function resolveVariantAttributeValueIds(
+  variant: SubmittedVariant,
+  existingIds: number[] = [],
+  context: {
+    colorValueByNorm: Map<string, number>
+    sizeValueByNorm: Map<string, number>
+  },
+): number[] {
+  if (context.colorValueByNorm.size === 0 && context.sizeValueByNorm.size === 0) {
+    return existingIds
+  }
 
   const colorNorm = normalizeText(variant.color)
   const sizeNorm = normalizeText(variant.size)
 
   const resolved = [...existingIds]
 
-  if (colorNorm && colorNorm !== 'unico' && colorNorm !== 'único' && colorAttr) {
-    const colorValue = colorAttr.values.find((value) => {
-      return normalizeText(value.name) === colorNorm || normalizeText(value.code) === colorNorm
-    })
-    if (colorValue && !resolved.includes(colorValue.id)) {
-      resolved.push(colorValue.id)
+  if (colorNorm && colorNorm !== 'unico' && colorNorm !== 'único') {
+    const colorValueId = context.colorValueByNorm.get(colorNorm)
+    if (typeof colorValueId === 'number' && !resolved.includes(colorValueId)) {
+      resolved.push(colorValueId)
     }
   }
 
-  if (sizeNorm && sizeNorm !== 'unico' && sizeNorm !== 'único' && sizeAttr) {
-    const sizeValue = sizeAttr.values.find((value) => {
-      return normalizeText(value.name) === sizeNorm || normalizeText(value.code) === sizeNorm
-    })
-    if (sizeValue && !resolved.includes(sizeValue.id)) {
-      resolved.push(sizeValue.id)
+  if (sizeNorm && sizeNorm !== 'unico' && sizeNorm !== 'único') {
+    const sizeValueId = context.sizeValueByNorm.get(sizeNorm)
+    if (typeof sizeValueId === 'number' && !resolved.includes(sizeValueId)) {
+      resolved.push(sizeValueId)
     }
   }
 
@@ -176,20 +505,11 @@ async function resolveVariantAttributeValueIds(
 
 function sanitizeExistingAttributeValueIds(
   existingIds: number[] = [],
-  attributes?: Array<{ values: Array<{ id: number }> }>,
+  validValueIds?: Set<number>,
 ): number[] {
   if (!Array.isArray(existingIds) || existingIds.length === 0) return []
-  if (!attributes || attributes.length === 0) {
+  if (!validValueIds || validValueIds.size === 0) {
     return Array.from(new Set(existingIds.filter((id) => Number.isInteger(id) && id > 0)))
-  }
-
-  const validValueIds = new Set<number>()
-  for (const attribute of attributes) {
-    for (const value of attribute.values || []) {
-      if (Number.isInteger(value.id) && value.id > 0) {
-        validValueIds.add(value.id)
-      }
-    }
   }
 
   return Array.from(
@@ -258,6 +578,8 @@ async function syncProductBundleToRust(data: {
   description?: string
   materials?: string
   measures?: string
+  measurementTableId?: string
+  weightGrams?: number | null
   isActive: boolean
   categoryId: string
   categoryIds?: string[]
@@ -267,7 +589,10 @@ async function syncProductBundleToRust(data: {
   colors: SubmittedColor[]
   variants: SubmittedVariant[]
   tags: string[]
+  meta?: Record<string, unknown>
   imageGroupingRule?: SubmittedImageGroupingRule
+  videoGroupingRule?: SubmittedVideoGroupingRule
+  erpIntegrated?: boolean
 }) {
   const base = (process.env.NEXT_PUBLIC_RUST_URL ?? '').replace(/\/$/, '')
   if (!base) {
@@ -288,8 +613,8 @@ async function syncProductBundleToRust(data: {
   // Encontrar o ID do atributo de cores
   let colorAttributeId: number | null = null
   if (storeAttributes && Array.isArray(storeAttributes)) {
-    const colorAttr = storeAttributes.find((attr: any) => 
-      attr.code?.toLowerCase() === 'color' || 
+    const colorAttr = storeAttributes.find((attr: any) =>
+      attr.code?.toLowerCase() === 'color' ||
       attr.code?.toLowerCase() === 'cores' ||
       attr.name?.toLowerCase().includes('cor')
     )
@@ -330,6 +655,41 @@ async function syncProductBundleToRust(data: {
     return { type: 'product' as const }
   })()
 
+  const videoGroupingRule = (() => {
+    const selectedType = data.videoGroupingRule?.type
+    const selectedAttributes = Array.isArray(data.videoGroupingRule?.attribute_ids)
+      ? data.videoGroupingRule!.attribute_ids!.filter((id) => Number.isInteger(id) && id > 0)
+      : []
+
+    if (selectedType === 'attributes') {
+      if (selectedAttributes.length > 0) {
+        return {
+          type: 'attributes' as const,
+          attribute_ids: selectedAttributes,
+        }
+      }
+
+      if (colorAttributeId) {
+        return {
+          type: 'attributes' as const,
+          attribute_ids: [colorAttributeId],
+        }
+      }
+
+      return { type: 'product' as const }
+    }
+
+    if (selectedType === 'full_sku') {
+      return { type: 'full_sku' as const }
+    }
+
+    if (selectedType === 'product') {
+      return { type: 'product' as const }
+    }
+
+    return imageGroupingRule
+  })()
+
   const numericCategoryIds = resolveNumericCategoryIds(data.categoryId, data.categoryIds)
   const fallbackImages = (Array.isArray(data.images) ? data.images : [])
     .filter((url): url is string => typeof url === 'string')
@@ -346,14 +706,20 @@ async function syncProductBundleToRust(data: {
         priceOverride: null,
       }]
 
+  const variantLookupContext = buildVariantAttributeLookupContext(storeAttributes ?? undefined)
+
   const variantPayloadByCombination = new Map<string, {
     sku: string
     price_cents: number
     cost_cents: number
     promo_cents: number
+    ncm: string | null
+    weight_grams: number | null
     stock_qty: number
+    barcode: string | null
     active: boolean
     is_highlighted: boolean
+    meta: Record<string, unknown>
     attribute_values: number[]
     tags: string[]
     images: string[]
@@ -362,35 +728,77 @@ async function syncProductBundleToRust(data: {
   for (const variant of variantsToSync) {
     const sanitizedExistingAttributeValues = sanitizeExistingAttributeValueIds(
       Array.isArray(variant.attribute_values) ? variant.attribute_values : [],
-      storeAttributes ?? undefined,
+      variantLookupContext.validValueIds,
     )
 
-    const resolvedAttributeValues = await resolveVariantAttributeValueIds(
+    const resolvedAttributeValues = resolveVariantAttributeValueIds(
       variant,
       sanitizedExistingAttributeValues,
-      { attributes: storeAttributes ?? undefined },
+      {
+        colorValueByNorm: variantLookupContext.colorValueByNorm,
+        sizeValueByNorm: variantLookupContext.sizeValueByNorm,
+      },
     )
 
     const normalizedAttributeValues = Array.from(new Set(resolvedAttributeValues)).sort((a, b) => a - b)
     const combinationKey = normalizedAttributeValues.join(',')
 
-    variantPayloadByCombination.set(combinationKey, {
-      sku: variant.variantSku || data.sku,
+    const nextVariantPayload = {
+      meta: (() => {
+        const preferredSellableLocationIds = Array.isArray(variant.preferredSellableLocationIds)
+          ? variant.preferredSellableLocationIds
+              .map((id) => Number(id))
+              .filter((id) => Number.isInteger(id) && id > 0)
+          : []
+        if (preferredSellableLocationIds.length > 0) {
+          return { preferred_sellable_location_ids: preferredSellableLocationIds }
+        }
+        return {}
+      })(),
+      sku: (() => {
+        const trimmedSku = typeof variant.variantSku === 'string' ? variant.variantSku.trim() : ''
+        if (trimmedSku) return trimmedSku
+        if (data.erpIntegrated) return null
+        return data.sku
+      })(),
       price_cents: toCents(variant.basePrice ?? data.basePrice),
       cost_cents: toCents(variant.cost ?? data.cost),
       promo_cents: toCents(variant.priceOverride),
+      ncm: typeof variant.ncm === 'string' ? (variant.ncm.trim() || null) : null,
+      barcode: typeof variant.barcode === 'string' ? (variant.barcode.trim() || null) : null,
+      weight_grams: typeof variant.weightGrams === 'number' ? variant.weightGrams : null,
       stock_qty: typeof variant.stock === 'number' ? variant.stock : 0,
       active: variant.active !== false,
       is_highlighted: variant.isHighlighted === true,
       attribute_values: normalizedAttributeValues,
       tags: data.tags,
-      images: data.variants.length > 0
-        ? resolveVariantImagesNoFallback(variant)
-        : resolveVariantImages(variant, fallbackImages),
-    })
+      images: imageGroupingRule.type === 'product'
+        ? fallbackImages
+        : normalizedAttributeValues.length === 0
+          ? resolveVariantImages(variant, fallbackImages)
+          : resolveVariantImagesNoFallback(variant),
+    }
+
+    const currentPayload = variantPayloadByCombination.get(combinationKey)
+    if (!currentPayload) {
+      variantPayloadByCombination.set(combinationKey, nextVariantPayload)
+      continue
+    }
+
+    // If the same normalized combination appears more than once,
+    // never allow an inactive entry to override an active one.
+    if (currentPayload.active && !nextVariantPayload.active) {
+      continue
+    }
+
+    variantPayloadByCombination.set(combinationKey, nextVariantPayload)
   }
 
   const variantPayloads = Array.from(variantPayloadByCombination.values())
+  const parsedMeasurementTableId = Number(data.measurementTableId)
+  const measurementTableId = Number.isInteger(parsedMeasurementTableId) && parsedMeasurementTableId > 0
+    ? parsedMeasurementTableId
+    : null
 
   const payload = {
     id: data.rustProductId,
@@ -399,14 +807,18 @@ async function syncProductBundleToRust(data: {
     slug: data.slug,
     name: data.name,
     description: data.description || null,
-    weight_grams: null,
+    weight_grams: data.weightGrams ?? null,
     active: data.isActive,
     ncm: null,
+    barcode: null,
     composition: data.materials || null,
     location: data.measures || null,
+    measurement_table_id: measurementTableId,
     category_ids: numericCategoryIds,
     tags: data.tags,
     image_grouping_rule: JSON.stringify(imageGroupingRule),
+    video_grouping_rule: JSON.stringify(videoGroupingRule),
+    meta: data.meta ?? undefined,
     variants: variantPayloads,
     prune_missing: true,
   }
@@ -420,11 +832,12 @@ async function syncProductBundleToRust(data: {
 
   if (!response.ok) {
     const errorText = await response.text()
+    const normalizedError = normalizeBackendErrorMessage(errorText, 'Falha ao sincronizar produto no backend')
     const slugConflict =
       Boolean(data.rustProductId) &&
       Boolean(data.slug) &&
-      /slug/i.test(errorText) &&
-      /(já|jÃ¡|existe|exists|duplic)/i.test(errorText)
+      /slug/i.test(normalizedError) &&
+      /(já|jÃ¡|existe|exists|duplic)/i.test(normalizedError)
 
     if (slugConflict) {
       const payloadWithoutSlug = {
@@ -444,10 +857,14 @@ async function syncProductBundleToRust(data: {
       }
 
       const retryErrorText = await retryResponse.text()
-      throw new Error(retryErrorText || errorText || 'Falha ao sincronizar produto no backend')
+      const normalizedRetryError = normalizeBackendErrorMessage(
+        retryErrorText || errorText,
+        'Falha ao sincronizar produto no backend',
+      )
+      throw new Error(normalizedRetryError)
     }
 
-    throw new Error(errorText || 'Falha ao sincronizar produto no backend')
+    throw new Error(normalizedError)
   }
 }
 
@@ -458,6 +875,7 @@ async function syncCreateProductToRust(data: {
   description?: string
   materials?: string
   measures?: string
+  measurementTableId?: string
   isActive: boolean
   categoryId: string
   categoryIds?: string[]
@@ -467,7 +885,9 @@ async function syncCreateProductToRust(data: {
   colors: SubmittedColor[]
   variants: SubmittedVariant[]
   tags: string[]
+  meta?: Record<string, unknown>
   imageGroupingRule?: SubmittedImageGroupingRule
+  videoGroupingRule?: SubmittedVideoGroupingRule
 }) {
   await syncProductBundleToRust({
     sku: data.sku,
@@ -476,6 +896,7 @@ async function syncCreateProductToRust(data: {
     description: data.description,
     materials: data.materials,
     measures: data.measures,
+    measurementTableId: data.measurementTableId,
     isActive: data.isActive,
     categoryId: data.categoryId,
     categoryIds: data.categoryIds,
@@ -485,7 +906,9 @@ async function syncCreateProductToRust(data: {
     colors: data.colors,
     variants: data.variants,
     tags: data.tags,
+    meta: data.meta,
     imageGroupingRule: data.imageGroupingRule,
+    videoGroupingRule: data.videoGroupingRule,
   })
 }
 
@@ -529,6 +952,7 @@ async function syncUpdateProductToRust(data: {
   description?: string
   materials?: string
   measures?: string
+  measurementTableId?: string
   isActive: boolean
   categoryId: string
   categoryIds?: string[]
@@ -538,7 +962,10 @@ async function syncUpdateProductToRust(data: {
   colors?: SubmittedColor[]
   variants?: SubmittedVariant[]
   tags: string[]
+  meta?: Record<string, unknown>
   imageGroupingRule?: SubmittedImageGroupingRule
+  videoGroupingRule?: SubmittedVideoGroupingRule
+  erpIntegrated?: boolean
 }) {
   const base = (process.env.NEXT_PUBLIC_RUST_URL ?? '').replace(/\/$/, '')
   if (!base) {
@@ -559,6 +986,7 @@ async function syncUpdateProductToRust(data: {
     description: data.description,
     materials: data.materials,
     measures: data.measures,
+    measurementTableId: data.measurementTableId,
     isActive: data.isActive,
     categoryId: data.categoryId,
     categoryIds: data.categoryIds,
@@ -568,7 +996,10 @@ async function syncUpdateProductToRust(data: {
     colors: data.colors || [],
     variants: data.variants || [],
     tags: data.tags,
+    meta: data.meta,
     imageGroupingRule: data.imageGroupingRule,
+    videoGroupingRule: data.videoGroupingRule,
+    erpIntegrated: data.erpIntegrated,
   })
 }
 
@@ -613,6 +1044,63 @@ export async function getProductsAction(filters?: {
   search?: string
   ids?: string[]
 }): Promise<ApiResponse<Product[]>> {
+  if (Array.isArray(filters?.ids) && filters.ids.length > 0) {
+    const uniqueIds = Array.from(new Set(filters.ids.map((id) => String(id).trim()).filter(Boolean)))
+
+    const settled = await Promise.allSettled(
+      uniqueIds.map(async (id) => {
+        const numericId = Number.parseInt(id, 10)
+        if (!Number.isInteger(numericId) || numericId <= 0) {
+          return null
+        }
+
+        const byIdResult = await getStoreProductWithVariantsAction(String(numericId))
+        if (!byIdResult.success || !byIdResult.data) {
+          return null
+        }
+
+        return byIdResult.data as Product
+      })
+    )
+
+    const products: Product[] = []
+    for (const item of settled) {
+      if (item.status === 'fulfilled' && item.value) {
+        products.push(item.value)
+      }
+    }
+
+    let filtered = products
+
+    if (filters?.categoryId) {
+      const selectedCategoryId = filters.categoryId
+      filtered = filtered.filter((product) => {
+        const categoryIds = Array.isArray(product.categoryIds) ? product.categoryIds : []
+        return product.categoryId === selectedCategoryId || categoryIds.includes(selectedCategoryId)
+      })
+    }
+
+    if (typeof filters?.isFeatured === 'boolean') {
+      filtered = filtered.filter((product) => product.isFeatured === filters.isFeatured)
+    }
+
+    if (typeof filters?.isActive === 'boolean') {
+      filtered = filtered.filter((product) => product.isActive === filters.isActive)
+    }
+
+    const searchTerm = String(filters?.search || '').trim().toLowerCase()
+    if (searchTerm) {
+      filtered = filtered.filter((product) => {
+        return (
+          product.name.toLowerCase().includes(searchTerm) ||
+          product.sku.toLowerCase().includes(searchTerm)
+        )
+      })
+    }
+
+    return { success: true, data: filtered }
+  }
+
   const result = await getStoreProductsAction({
     isActive: filters?.isActive,
     search: filters?.search,
@@ -630,11 +1118,6 @@ export async function getProductsAction(filters?: {
       const categoryIds = Array.isArray(product.categoryIds) ? product.categoryIds : []
       return product.categoryId === selectedCategoryId || categoryIds.includes(selectedCategoryId)
     })
-  }
-
-  if (Array.isArray(filters?.ids) && filters!.ids!.length > 0) {
-    const selectedIds = new Set(filters!.ids!.map(String))
-    products = products.filter((product) => selectedIds.has(String(product.id)))
   }
 
   if (typeof filters?.isFeatured === 'boolean') {
@@ -681,8 +1164,10 @@ type RustProductListItem = {
   slug?: string | null
   name?: string
   description?: string | null
+  measurement_table_id?: number | null
   active?: boolean
   tags?: string[] | null
+  meta?: Record<string, unknown> | null
   category_ids?: number[]
   variants?: RustProductListVariant[]
 }
@@ -694,8 +1179,10 @@ type RustProductFullResponse = {
     slug?: string | null
     name?: string
     description?: string | null
+    measurement_table_id?: number | null
     active?: boolean
     tags?: string[] | null
+    meta?: Record<string, unknown> | null
     category_ids?: number[]
   }
   variants?: Array<{
@@ -703,11 +1190,19 @@ type RustProductFullResponse = {
     product_id?: number
     sku?: string | null
     price_cents?: number
+    cost_cents?: number
     promo_cents?: number
     stock_qty?: number
+    reserved_qty?: number
+    combination_key?: string | null
     active?: boolean
     is_highlighted?: boolean
+    ncm?: string | null
+    barcode?: string | null
+    weight_grams?: number | null
+    meta?: Record<string, unknown> | null
     attribute_values?: Array<{
+      value_id?: number
       attribute_code?: string
       value_name?: string
       value_meta?: Record<string, unknown> | null
@@ -761,6 +1256,12 @@ function toStoreProduct(item: RustProductListItem): Product {
     description: item.description ? String(item.description) : null,
     materials: null,
     measures: null,
+    measurementTableId: item.measurement_table?.id
+      ? String(item.measurement_table.id)
+      : (Number.isInteger(item.measurement_table_id) ? String(item.measurement_table_id) : null),
+    measurementTableName: item.measurement_table?.name
+      ? String(item.measurement_table.name)
+      : null,
     basePrice: (minPriceCents > 0 ? minPriceCents : 0) / 100,
     cost: null,
     isActive: item.active !== false,
@@ -768,6 +1269,7 @@ function toStoreProduct(item: RustProductListItem): Product {
     categoryId: String(item.category_ids?.[0] || ''),
     categoryIds: Array.isArray(item.category_ids) ? item.category_ids.map((value) => String(value)) : [],
     tags: Array.isArray(item.tags) ? item.tags : [],
+    meta: item.meta && typeof item.meta === 'object' ? item.meta : null,
     images,
     sizes: [],
     colors: Array.from(colorsMap.values()),
@@ -803,26 +1305,53 @@ export async function getStoreProductsAction(filters?: {
     const adminToken = cookieStore.get('adminAuthToken')?.value
     const storeId = await getRustStoreId(base)
 
-    const url = new URL('/products', base)
-    if (storeId) {
-      url.searchParams.set('store_id', String(storeId))
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(adminToken ? { cookie: `adminAuthToken=${adminToken}` } : {}),
     }
 
-    const response = await fetch(url.toString(), {
-      headers: {
-        'Content-Type': 'application/json',
-        ...(adminToken ? { cookie: `adminAuthToken=${adminToken}` } : {}),
-      },
-      cache: 'no-store',
-    })
+    const limitPerPage = 200
+    let page = 1
+    let totalCount = 0
+    const items: RustProductListItem[] = []
 
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => '')
-      return { success: false, error: errorText || 'Erro ao listar produtos da loja' }
-    }
+    do {
+      const url = new URL('/products', base)
+      url.searchParams.set('page', String(page))
+      url.searchParams.set('limit', String(limitPerPage))
 
-    const payload = (await response.json()) as RustProductListItem[]
-    let mapped = (Array.isArray(payload) ? payload : []).map(toStoreProduct)
+      if (storeId) {
+        url.searchParams.set('store_id', String(storeId))
+      }
+
+      const response = await fetch(url.toString(), {
+        headers,
+        cache: 'no-store',
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '')
+        return { success: false, error: errorText || 'Erro ao listar produtos da loja' }
+      }
+
+      const payload = (await response.json()) as RustProductListItem[]
+      const pageItems = Array.isArray(payload) ? payload : []
+      items.push(...pageItems)
+
+      const totalHeader = response.headers.get('x-total-count')
+      const parsedTotal = Number(totalHeader)
+      totalCount = Number.isFinite(parsedTotal) && parsedTotal > 0
+        ? parsedTotal
+        : items.length
+
+      if (pageItems.length === 0) {
+        break
+      }
+
+      page += 1
+    } while (items.length < totalCount)
+
+    let mapped = items.map(toStoreProduct)
 
     if (filters?.isActive === true) {
       mapped = mapped.filter((product) => product.isActive)
@@ -839,6 +1368,171 @@ export async function getStoreProductsAction(filters?: {
     }
 
     return { success: true, data: mapped }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao listar produtos da loja',
+    }
+  }
+}
+
+export async function getStoreProductsPageAction(filters?: {
+  page?: number
+  limit?: number
+  isActive?: boolean
+  search?: string
+}): Promise<ApiResponse<PaginatedResponse<Product>>> {
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'Backend URL não configurado' }
+  }
+
+  try {
+    const cookieStore = await cookies()
+    const adminToken = cookieStore.get('adminAuthToken')?.value
+    const storeId = await getRustStoreId(base)
+
+    const page = Math.max(1, Number(filters?.page ?? 1) || 1)
+    const pageSize = Math.min(100, Math.max(1, Number(filters?.limit ?? 30) || 30))
+
+    const url = new URL('/products', base)
+    url.searchParams.set('page', String(page))
+    url.searchParams.set('limit', String(pageSize))
+
+    if (storeId) {
+      url.searchParams.set('store_id', String(storeId))
+    }
+
+    const searchTerm = String(filters?.search || '').trim()
+    if (searchTerm) {
+      url.searchParams.set('search', searchTerm)
+    }
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminToken ? { cookie: `adminAuthToken=${adminToken}` } : {}),
+      },
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao listar produtos da loja' }
+    }
+
+    const payload = (await response.json()) as RustProductListItem[]
+    let items = Array.isArray(payload) ? payload.map(toStoreProduct) : []
+
+    if (filters?.isActive === true) {
+      items = items.filter((product) => product.isActive)
+    } else if (filters?.isActive === false) {
+      items = items.filter((product) => !product.isActive)
+    }
+
+    const totalHeader = response.headers.get('x-total-count')
+    const parsedTotal = Number(totalHeader)
+    const total = Number.isFinite(parsedTotal) && parsedTotal >= 0
+      ? parsedTotal
+      : ((page - 1) * pageSize) + items.length
+    const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+    return {
+      success: true,
+      data: {
+        items,
+        total,
+        page,
+        pageSize,
+        totalPages,
+      },
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro ao listar produtos da loja',
+    }
+  }
+}
+
+type RustPaginatedProductListResponse = {
+  total?: number
+  page?: number
+  limit?: number
+  items?: RustProductListItem[]
+}
+
+export async function getPaginatedStoreProductsAction(filters?: {
+  page?: number
+  limit?: number
+  isActive?: boolean
+  search?: string
+  categoryId?: string
+}): Promise<ApiResponse<PaginatedResponse<Product>>> {
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'Backend URL não configurado' }
+  }
+
+  try {
+    const cookieStore = await cookies()
+    const adminToken = cookieStore.get('adminAuthToken')?.value
+    const storeId = await getRustStoreId(base)
+    const page = Math.max(1, Number(filters?.page ?? 1) || 1)
+    const pageSize = Math.min(100, Math.max(1, Number(filters?.limit ?? 24) || 24))
+
+    const url = new URL('/products-paginated', base)
+    url.searchParams.set('page', String(page))
+    url.searchParams.set('limit', String(pageSize))
+    url.searchParams.set('summary', 'false')
+
+    if (storeId) {
+      url.searchParams.set('store_id', String(storeId))
+    }
+
+    if (filters?.isActive === true) {
+      url.searchParams.set('status', 'active')
+    } else if (filters?.isActive === false) {
+      url.searchParams.set('status', 'inactive')
+    }
+
+    const search = String(filters?.search || '').trim()
+    if (search) {
+      url.searchParams.set('search', search)
+    }
+
+    const categoryId = String(filters?.categoryId || '').trim()
+    if (categoryId && categoryId !== 'all') {
+      url.searchParams.set('category_id', categoryId)
+    }
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminToken ? { cookie: `adminAuthToken=${adminToken}` } : {}),
+      },
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return { success: false, error: errorText || 'Erro ao listar produtos da loja' }
+    }
+
+    const payload = (await response.json()) as RustPaginatedProductListResponse
+    const items = Array.isArray(payload.items) ? payload.items.map(toStoreProduct) : []
+    const total = Number.isFinite(Number(payload.total)) ? Number(payload.total) : items.length
+
+    return {
+      success: true,
+      data: {
+        items,
+        total,
+        page,
+        pageSize,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      },
+    }
   } catch (error) {
     return {
       success: false,
@@ -885,6 +1579,18 @@ export async function getStoreProductWithVariantsAction(
       return { success: false, error: 'Produto inválido no backend' }
     }
 
+    let stockMode: StockMode = 'FANTASY'
+    let variantMaxQty = 999
+    try {
+      const settingsResult = await getSiteSettingsAction()
+      if (settingsResult.success && settingsResult.data) {
+        stockMode = settingsResult.data.stockMode || 'FANTASY'
+        variantMaxQty = Math.max(1, Number(settingsResult.data.variantMaxQty || 999))
+      }
+    } catch {
+      // keep defaults
+    }
+
     const variants: ProductVariant[] = variantPayload.map((entry) => {
       const attrs = Array.isArray(entry.attribute_values) ? entry.attribute_values : []
       const colorAttr = attrs.find((attr) => {
@@ -900,6 +1606,8 @@ export async function getStoreProductWithVariantsAction(
         ?? colorAttr?.value_meta?.hex
         ?? colorAttr?.value_meta?.color,
       )
+      const stockQty = Number(entry.stock_qty || 0)
+      const reservedQty = Number(entry.reserved_qty || 0)
 
       return {
         id: String(entry.id || ''),
@@ -907,15 +1615,35 @@ export async function getStoreProductWithVariantsAction(
         color: String(colorAttr?.value_name || ''),
         size: String(sizeAttr?.value_name || ''),
         variantSku: String(entry.sku || ''),
+        combinationKey: typeof entry.combination_key === 'string' ? entry.combination_key : null,
+        attributeValueIds: attrs
+          .map((attr) => Number(attr?.value_id))
+          .filter((valueId) => Number.isInteger(valueId) && valueId > 0),
+        isSimpleProduct:
+          attrs.length === 0
+          || (typeof entry.combination_key === 'string' && entry.combination_key.trim().toLowerCase() === '_default'),
         isHighlighted: entry.is_highlighted === true,
+        preferredSellableLocationIds: Array.isArray(entry.meta?.preferred_sellable_location_ids)
+          ? entry.meta.preferred_sellable_location_ids
+              .map((id) => Number(id))
+              .filter((id) => Number.isInteger(id) && id > 0)
+          : [],
         attribute_value_hexa: attributeValueHexa,
-        stock: Number(entry.stock_qty || 0),
+        stock: resolveAvailableQtyByStockMode({
+          stockMode,
+          variantMaxQty,
+          stockQty,
+          reservedQty,
+        }),
         priceOverride:
           typeof entry.promo_cents === 'number' && entry.promo_cents > 0
             ? Number(entry.promo_cents) / 100
             : typeof entry.price_cents === 'number'
             ? Number(entry.price_cents) / 100
             : null,
+        ncm: typeof entry.ncm === 'string' ? entry.ncm : null,
+        barcode: typeof entry.barcode === 'string' ? entry.barcode : null,
+        weightGrams: typeof entry.weight_grams === 'number' ? entry.weight_grams : null,
         createdAt: new Date(),
       }
     })
@@ -926,16 +1654,21 @@ export async function getStoreProductWithVariantsAction(
       slug: productPayload.slug || null,
       name: String(productPayload.name || ''),
       description: productPayload.description || null,
+      measurement_table_id: productPayload.measurement_table_id ?? null,
       active: productPayload.active !== false,
       tags: productPayload.tags || [],
+      meta: productPayload.meta ?? null,
       variants: [],
-      category_ids: [],
+      category_ids: Array.isArray(productPayload.category_ids) ? productPayload.category_ids : [],
     })
 
     return {
       success: true,
       data: {
         ...baseProduct,
+        measurementTableName: payload.measurement_table_name
+          ? String(payload.measurement_table_name)
+          : baseProduct.measurementTableName,
         variants,
       },
     }
@@ -963,10 +1696,20 @@ export async function getProductWithVariantsAction(idOrSlug: string): Promise<Ap
 
 export async function createProductAction(formData: FormData): Promise<ApiResponse<Product>> {
   const session = await getSession()
-  if (!(await isProductsAuthorized(session))) {
+  if (!(await hasProductPermission('products.create'))) {
     return { success: false, error: 'Não autorizado' }
   }
+
+  const erpGuard = await assertManualProductCreationAllowed()
+  if (!erpGuard.allowed) {
+    return { success: false, error: erpGuard.error }
+  }
+
   const actorUserId = session?.id || 'store-session'
+
+  const normalizedAttributeValuesByAttribute = normalizeAttributeValuesByAttributeMap(
+    getFormJson<Record<string, unknown>>(formData, 'attributeValuesByAttribute', {}),
+  )
 
   const data = {
     name: getFormField(formData, 'name') ?? '',
@@ -975,6 +1718,7 @@ export async function createProductAction(formData: FormData): Promise<ApiRespon
     description: getFormField(formData, 'description') || undefined,
     materials: getFormField(formData, 'materials') || undefined,
     measures: getFormField(formData, 'measures') || undefined,
+    measurementTableId: getFormField(formData, 'measurementTableId') || undefined,
     basePrice: parseFloat(getFormField(formData, 'basePrice') ?? '0'),
     cost: getFormField(formData, 'cost') ? parseFloat(getFormField(formData, 'cost') as string) : null,
     isActive: getFormField(formData, 'isActive') === 'true',
@@ -986,19 +1730,19 @@ export async function createProductAction(formData: FormData): Promise<ApiRespon
     sizes: getFormJson<string[]>(formData, 'sizes', []),
     colors: normalizeSubmittedColors(getFormJson<SubmittedColor[]>(formData, 'colors', [])),
     variants: getFormJson<SubmittedVariant[]>(formData, 'variants', []),
+    meta: mergeMetaWithAttributeSelectionOrder(
+      getFormJson<Record<string, unknown>>(formData, 'meta', {}),
+      normalizedAttributeValuesByAttribute,
+    ),
     imageGroupingType: (getFormField(formData, 'imageGroupingType') as ImageGroupingType | null) || 'attributes',
     imageGroupingAttributeIds: getFormJson<number[]>(formData, 'imageGroupingAttributeIds', []),
+    videoGroupingType: (getFormField(formData, 'videoGroupingType') as ImageGroupingType | null) || 'attributes',
+    videoGroupingAttributeIds: getFormJson<number[]>(formData, 'videoGroupingAttributeIds', []),
   }
 
   const validation = productSchema.safeParse(data)
   if (!validation.success) {
-    return { success: false, error: validation.error.errors[0].message }
-  }
-
-  // Check for duplicate slug in Rust store products
-  const existing = await findStoreProductBySlug(data.slug)
-  if (existing) {
-    return { success: false, error: 'Slug ja existe' }
+    return { success: false, error: formatProductValidationError(validation.error) }
   }
 
   try {
@@ -1009,6 +1753,7 @@ export async function createProductAction(formData: FormData): Promise<ApiRespon
       description: data.description,
       materials: data.materials,
       measures: data.measures,
+      measurementTableId: data.measurementTableId,
       isActive: data.isActive,
       categoryId: data.categoryId,
       categoryIds: data.categoryIds,
@@ -1018,26 +1763,31 @@ export async function createProductAction(formData: FormData): Promise<ApiRespon
       colors: data.colors,
       variants: data.variants,
       tags: data.tags,
+      meta: data.meta,
       imageGroupingRule: {
         type: data.imageGroupingType,
         attribute_ids: data.imageGroupingType === 'attributes'
           ? data.imageGroupingAttributeIds
           : undefined,
       },
+      videoGroupingRule: {
+        type: data.videoGroupingType,
+        attribute_ids: data.videoGroupingType === 'attributes'
+          ? data.videoGroupingAttributeIds
+          : undefined,
+      },
     })
   } catch (error) {
     console.error('Rust sync (create) failed:', error)
-    return { success: false, error: error instanceof Error ? error.message : 'Falha ao sincronizar com backend' }
+    return { success: false, error: formatThrownError(error, 'Falha ao sincronizar com backend') }
   }
 
   revalidatePath('/products')
   revalidatePath('/app/products')
 
-  const created = (await findStoreProductBySlug(data.slug)) ?? (await findStoreProductBySku(data.sku))
-
   return {
     success: true,
-    data: created ?? {
+    data: {
       id: data.sku,
       name: validation.data.name,
       slug: validation.data.slug,
@@ -1045,6 +1795,7 @@ export async function createProductAction(formData: FormData): Promise<ApiRespon
       description: validation.data.description ?? null,
       materials: validation.data.materials ?? null,
       measures: validation.data.measures ?? null,
+      measurementTableId: data.measurementTableId ?? null,
       basePrice: validation.data.basePrice,
       cost: validation.data.cost ?? null,
       isActive: validation.data.isActive,
@@ -1052,6 +1803,7 @@ export async function createProductAction(formData: FormData): Promise<ApiRespon
       categoryId: validation.data.categoryId ?? '',
       categoryIds: data.categoryIds,
       tags: validation.data.tags,
+      meta: data.meta,
       images: validation.data.images,
       sizes: validation.data.sizes,
       colors: validation.data.colors,
@@ -1063,10 +1815,14 @@ export async function createProductAction(formData: FormData): Promise<ApiRespon
 
 export async function updateProductAction(id: string, formData: FormData): Promise<ApiResponse<Product>> {
   const session = await getSession()
-  if (!(await isProductsAuthorized(session))) {
+  if (!(await hasProductPermission('products.edit'))) {
     return { success: false, error: 'Não autorizado' }
   }
   const _actorUserId = session?.id || 'store-session'
+
+  const normalizedAttributeValuesByAttribute = normalizeAttributeValuesByAttributeMap(
+    getFormJson<Record<string, unknown>>(formData, 'attributeValuesByAttribute', {}),
+  )
 
   const data = {
     name: getFormField(formData, 'name') ?? '',
@@ -1075,6 +1831,7 @@ export async function updateProductAction(id: string, formData: FormData): Promi
     description: getFormField(formData, 'description') || undefined,
     materials: getFormField(formData, 'materials') || undefined,
     measures: getFormField(formData, 'measures') || undefined,
+    measurementTableId: getFormField(formData, 'measurementTableId') || undefined,
     basePrice: parseFloat(getFormField(formData, 'basePrice') ?? '0'),
     cost: getFormField(formData, 'cost') ? parseFloat(getFormField(formData, 'cost') as string) : null,
     isActive: getFormField(formData, 'isActive') === 'true',
@@ -1086,32 +1843,34 @@ export async function updateProductAction(id: string, formData: FormData): Promi
     sizes: getFormJson<string[]>(formData, 'sizes', []),
     colors: normalizeSubmittedColors(getFormJson<SubmittedColor[]>(formData, 'colors', [])),
     variants: getFormJson<SubmittedVariant[]>(formData, 'variants', []),
+    meta: mergeMetaWithAttributeSelectionOrder(
+      getFormJson<Record<string, unknown>>(formData, 'meta', {}),
+      normalizedAttributeValuesByAttribute,
+    ),
     imageGroupingType: (getFormField(formData, 'imageGroupingType') as ImageGroupingType | null) || 'attributes',
     imageGroupingAttributeIds: getFormJson<number[]>(formData, 'imageGroupingAttributeIds', []),
+    videoGroupingType: (getFormField(formData, 'videoGroupingType') as ImageGroupingType | null) || 'attributes',
+    videoGroupingAttributeIds: getFormJson<number[]>(formData, 'videoGroupingAttributeIds', []),
   }
 
   const existingResult = await getStoreProductWithVariantsAction(id)
   const existing = existingResult.success ? existingResult.data : undefined
 
-  const validation = productSchema.safeParse(data)
-  if (!validation.success) {
-    return { success: false, error: validation.error.errors[0].message }
+  const erpStatus = await getStoreErpIntegrationStatus()
+  if (erpStatus.integrated && existing) {
+    data.sku = existing.sku
+    data.variants = preserveErpSkusOnUpdate(data.variants, existing)
   }
 
-  // Check for duplicate slug (excluding current)
-  const slugExists = await findStoreProductBySlug(data.slug)
-  const slugBelongsToOther = slugExists &&
-    String(slugExists.id) !== String(id) &&
-    String(slugExists.sku) !== String(data.sku) &&
-    (!existing || String(slugExists.id) !== String(existing.id))
-  if (slugBelongsToOther) {
-    return { success: false, error: 'Slug ja existe' }
+  const validation = productSchema.safeParse(data)
+  if (!validation.success) {
+    return { success: false, error: formatProductValidationError(validation.error) }
   }
 
   try {
     const numericRustId = Number.parseInt(id, 10)
     const rustProductId = Number.isFinite(numericRustId) ? numericRustId : undefined
-    
+
     await syncUpdateProductToRust({
       lookupCode: existing?.sku ?? data.sku,
       rustProductId,
@@ -1121,6 +1880,7 @@ export async function updateProductAction(id: string, formData: FormData): Promi
       description: data.description,
       materials: data.materials,
       measures: data.measures,
+      measurementTableId: data.measurementTableId,
       isActive: data.isActive,
       categoryId: data.categoryId,
       categoryIds: data.categoryIds,
@@ -1130,16 +1890,24 @@ export async function updateProductAction(id: string, formData: FormData): Promi
       colors: data.colors,
       variants: data.variants,
       tags: data.tags,
+      meta: data.meta,
+      erpIntegrated: erpStatus.integrated,
       imageGroupingRule: {
         type: data.imageGroupingType,
         attribute_ids: data.imageGroupingType === 'attributes'
           ? data.imageGroupingAttributeIds
           : undefined,
       },
+      videoGroupingRule: {
+        type: data.videoGroupingType,
+        attribute_ids: data.videoGroupingType === 'attributes'
+          ? data.videoGroupingAttributeIds
+          : undefined,
+      },
     })
   } catch (error) {
     console.error('Rust sync (update) failed:', error)
-    return { success: false, error: error instanceof Error ? error.message : 'Falha ao sincronizar com backend' }
+    return { success: false, error: formatThrownError(error, 'Falha ao sincronizar com backend') }
   }
 
   revalidatePath('/products')
@@ -1162,6 +1930,7 @@ export async function updateProductAction(id: string, formData: FormData): Promi
       description: validation.data.description ?? null,
       materials: validation.data.materials ?? null,
       measures: validation.data.measures ?? null,
+      measurementTableId: data.measurementTableId ?? null,
       basePrice: validation.data.basePrice,
       cost: validation.data.cost ?? null,
       isActive: validation.data.isActive,
@@ -1169,6 +1938,7 @@ export async function updateProductAction(id: string, formData: FormData): Promi
       categoryId: validation.data.categoryId ?? '',
       categoryIds: data.categoryIds,
       tags: validation.data.tags,
+      meta: data.meta,
       images: validation.data.images,
       sizes: validation.data.sizes,
       colors: validation.data.colors,
@@ -1178,217 +1948,13 @@ export async function updateProductAction(id: string, formData: FormData): Promi
   }
 }
 
-export type BulkProductDiscountInput = {
-  type: 'fixed' | 'percent'
-  value: number
-}
-
-export type BulkUpdateProductsInput = {
-  productIds: string[]
-  categoryIds?: string[]
-  tags?: string[]
-  measures?: string
-  status?: 'active' | 'inactive'
-  discount?: BulkProductDiscountInput | null
-}
-
-function applyBulkProductDiscount(price: number, discount?: BulkProductDiscountInput | null) {
-  const normalizedPrice = Number.isFinite(price) ? Math.max(0, price) : 0
-  if (!discount || !Number.isFinite(discount.value) || discount.value <= 0) {
-    return normalizedPrice
-  }
-
-  if (discount.type === 'percent') {
-    const percentage = Math.min(100, Math.max(0, discount.value))
-    return Math.max(0, Number((normalizedPrice * (1 - percentage / 100)).toFixed(2)))
-  }
-
-  return Math.max(0, Number((normalizedPrice - discount.value).toFixed(2)))
-}
-
-function parseSubmittedImageGroupingRule(raw: unknown): SubmittedImageGroupingRule | undefined {
-  if (!raw) return undefined
-  try {
-    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
-    const type = String((parsed as any)?.type || '').trim()
-    if (type !== 'product' && type !== 'attributes' && type !== 'full_sku') return undefined
-
-    return {
-      type,
-      attribute_ids: Array.isArray((parsed as any)?.attribute_ids)
-        ? (parsed as any).attribute_ids
-            .map((value: unknown) => Number(value))
-            .filter((value: number) => Number.isInteger(value) && value > 0)
-        : undefined,
-    }
-  } catch {
-    return undefined
-  }
-}
-
-export async function bulkUpdateProductsAction(
-  input: BulkUpdateProductsInput
-): Promise<ApiResponse<{ updated: number }>> {
-  const session = await getSession()
-  if (!(await isProductsAuthorized(session))) {
-    return { success: false, error: 'Não autorizado' }
-  }
-
-  const productIds = Array.from(new Set((input.productIds || []).map(String).filter(Boolean)))
-  if (productIds.length === 0) {
-    return { success: false, error: 'Selecione ao menos um produto' }
-  }
-
-  const nextCategoryIds = Array.isArray(input.categoryIds)
-    ? input.categoryIds.map(String).filter(Boolean)
-    : undefined
-  const nextTags = Array.isArray(input.tags)
-    ? input.tags.map((tag) => String(tag).trim()).filter(Boolean)
-    : undefined
-  const nextMeasures = typeof input.measures === 'string' && input.measures.trim().length > 0
-    ? input.measures.trim()
-    : undefined
-  const nextStatus = input.status === 'active' || input.status === 'inactive'
-    ? input.status
-    : undefined
-  const nextDiscount = input.discount && input.discount.value > 0
-    ? input.discount
-    : null
-
-  if (
-    (!nextCategoryIds || nextCategoryIds.length === 0) &&
-    (!nextTags || nextTags.length === 0) &&
-    !nextMeasures &&
-    !nextStatus &&
-    !nextDiscount
-  ) {
-    return { success: false, error: 'Informe pelo menos uma alteração' }
-  }
-
-  const base = (process.env.NEXT_PUBLIC_RUST_URL ?? '').replace(/\/$/, '')
-  if (!base) {
-    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
-  }
-
-  const cookieStore = await cookies()
-  const adminToken = cookieStore.get('adminAuthToken')?.value
-  const headers: HeadersInit = {
-    'Content-Type': 'application/json',
-    ...(adminToken ? { cookie: `adminAuthToken=${adminToken}` } : {}),
-  }
-
-  let updated = 0
-
-  for (const productId of productIds) {
-    const response = await fetch(`${base}/products/${productId}/full`, {
-      headers,
-      cache: 'no-store',
-    })
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => '')
-      return { success: false, error: errorText || `Falha ao carregar produto ${productId}` }
-    }
-
-    const fullData = await response.json()
-    const productInfo = fullData?.product || {}
-    const variants = Array.isArray(fullData?.variants) ? fullData.variants : []
-    const imageGroups = Array.isArray(fullData?.image_groups) ? fullData.image_groups : []
-
-    const imagesByVariantId = new Map<number, string[]>()
-    imageGroups.forEach((group: any) => {
-      const urls = Array.isArray(group?.images)
-        ? group.images
-            .map((img: any) => img?.image_url || img)
-            .filter((url: unknown): url is string => typeof url === 'string' && url.length > 0)
-        : []
-
-      if (!Array.isArray(group?.variants) || urls.length === 0) return
-      group.variants.forEach((variantRef: any) => {
-        const variantId = Number(variantRef?.variant_id ?? variantRef?.id)
-        if (Number.isInteger(variantId) && variantId > 0) {
-          imagesByVariantId.set(variantId, urls)
-        }
-      })
-    })
-
-    const existingTags = Array.isArray(productInfo.tags)
-      ? productInfo.tags.map((tag: unknown) => String(tag).trim()).filter(Boolean)
-      : []
-    const tags = nextTags && nextTags.length > 0
-      ? Array.from(new Set([...existingTags, ...nextTags]))
-      : existingTags
-
-    const categoryIds = nextCategoryIds && nextCategoryIds.length > 0
-      ? nextCategoryIds
-      : Array.isArray(productInfo.category_ids)
-        ? productInfo.category_ids.map((id: unknown) => String(id)).filter(Boolean)
-        : []
-
-    const submittedVariants: SubmittedVariant[] = variants.map((entry: any) => {
-      const variantInfo = entry?.variant || entry || {}
-      const variantId = Number(variantInfo.id ?? entry?.id)
-      const basePrice = Number(variantInfo.price_cents || 0) / 100
-      const promoCents = Number(variantInfo.promo_cents || 0)
-
-      return {
-        variantSku: String(variantInfo.sku || ''),
-        active: variantInfo.active !== false,
-        isHighlighted: variantInfo.is_highlighted === true,
-        stock: Number(variantInfo.stock_qty || 0),
-        basePrice: applyBulkProductDiscount(basePrice, nextDiscount),
-        cost: typeof variantInfo.cost_cents === 'number' ? Number(variantInfo.cost_cents) / 100 : null,
-        priceOverride: promoCents > 0 ? promoCents / 100 : null,
-        attribute_values: Array.isArray(entry?.attribute_values)
-          ? entry.attribute_values
-              .map((attr: any) => Number(attr?.value_id ?? attr?.value?.id ?? attr?.id))
-              .filter((value: number) => Number.isInteger(value) && value > 0)
-          : [],
-        images: imagesByVariantId.get(variantId) || (Array.isArray(entry?.images) ? entry.images : []),
-      }
-    })
-
-    const firstVariant = submittedVariants[0]
-    const firstRawVariant = variants[0]?.variant || variants[0] || {}
-    const fallbackBasePrice = Number(firstRawVariant.price_cents || 0) / 100
-
-    await syncUpdateProductToRust({
-      lookupCode: String(productInfo.code || ''),
-      rustProductId: Number(productInfo.id || productId),
-      sku: String(productInfo.code || ''),
-      slug: productInfo.slug || undefined,
-      name: String(productInfo.name || ''),
-      description: productInfo.description || undefined,
-      materials: productInfo.composition || undefined,
-      measures: nextMeasures || productInfo.location || undefined,
-      isActive: nextStatus ? nextStatus === 'active' : productInfo.active !== false,
-      categoryId: categoryIds[0] || '',
-      categoryIds,
-      basePrice: firstVariant?.basePrice ?? applyBulkProductDiscount(fallbackBasePrice, nextDiscount),
-      cost: firstVariant?.cost ?? null,
-      images: Array.from(new Set(submittedVariants.flatMap((variant) => variant.images || []))),
-      colors: [],
-      variants: submittedVariants,
-      tags,
-      imageGroupingRule: parseSubmittedImageGroupingRule(productInfo.image_grouping_rule),
-    })
-
-    updated += 1
-  }
-
-  revalidatePath('/products')
-  revalidatePath('/app/products')
-
-  return { success: true, data: { updated } }
-}
-
 export async function deleteProductAction(id: string): Promise<ApiResponse<void>> {
   const session = await getSession()
-  if (!(await isProductsAuthorized(session))) {
+  if (!(await hasProductPermission('products.delete'))) {
     return { success: false, error: 'Não autorizado' }
   }
   const _actorUserId = session?.id || 'store-session'
-  
+
   // Tentar deletar do Rust backend
   try {
     await syncDeleteProductToRust({
@@ -1397,13 +1963,75 @@ export async function deleteProductAction(id: string): Promise<ApiResponse<void>
     })
   } catch (error) {
     console.error('Rust sync (delete) failed:', error)
-    return { success: false, error: error instanceof Error ? error.message : 'Falha ao sincronizar com backend' }
+    return { success: false, error: formatThrownError(error, 'Falha ao sincronizar com backend') }
   }
 
   revalidatePath('/products')
   revalidatePath('/app/products')
-  
+
   return { success: true }
+}
+
+export async function bulkUpdateProductsAction(
+  payload: BulkUpdateProductsPayload,
+): Promise<ApiResponse<BulkUpdateProductsResponse>> {
+  const base = resolveBackendBaseUrl()
+  if (!base) {
+    return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  }
+
+  if (!(await hasProductPermission('products.edit'))) {
+    return { success: false, error: 'Não autorizado' }
+  }
+
+  if (!Array.isArray(payload.product_ids) || payload.product_ids.length === 0) {
+    return { success: false, error: 'product_ids é obrigatório' }
+  }
+
+  const cookieHeader = await buildAdminCookieHeader()
+  if (!cookieHeader) {
+    return { success: false, error: 'admin auth token inválido ou ausente' }
+  }
+
+  const adminAuthToken = cookieHeader.replace(/^adminAuthToken=/, '')
+
+  try {
+    const response = await fetch(new URL('/products/bulk-update', base), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        cookie: cookieHeader,
+        Authorization: `Bearer ${adminAuthToken}`,
+      },
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+    })
+
+    const rawText = await response.text()
+    let result: BulkUpdateProductsResponse | null = null
+    if (rawText.trim()) {
+      try {
+        result = JSON.parse(rawText) as BulkUpdateProductsResponse
+      } catch {
+        result = { message: rawText }
+      }
+    }
+
+    if (!response.ok) {
+      const message = result?.message || rawText || 'Falha ao aplicar atualização em lote'
+      return { success: false, error: message }
+    }
+
+    revalidatePath('/products')
+    revalidatePath('/app/products')
+
+    return {
+      success: true,
+      data: result || {},
+    }
+  } catch (error) {
+    return { success: false, error: formatThrownError(error, 'Falha ao aplicar atualização em lote') }
+  }
 }
 
 // Variant actions
@@ -1424,7 +2052,7 @@ export async function createVariantAction(formData: FormData): Promise<ApiRespon
 
   const validation = productVariantSchema.safeParse(data)
   if (!validation.success) {
-    return { success: false, error: validation.error.errors[0].message }
+    return { success: false, error: formatProductValidationError(validation.error) }
   }
 
   return { success: false, error: 'Operação de variante isolada desativada. Edite variantes no formulário de produto.' }
@@ -1460,8 +2088,13 @@ export async function getCategoriesAction(): Promise<ApiResponse<Category[]>> {
       return { success: false, error: 'Backend URL não configurado' }
     }
 
-    const cookieStore = await cookies()
-    const adminToken = cookieStore.get('adminAuthToken')?.value
+    let adminToken: string | undefined
+    try {
+      const cookieStore = await cookies()
+      adminToken = cookieStore.get('adminAuthToken')?.value
+    } catch {
+      adminToken = undefined
+    }
 
     const response = await fetch(new URL('/categories', base), {
       headers: {
@@ -1477,23 +2110,34 @@ export async function getCategoriesAction(): Promise<ApiResponse<Category[]>> {
     }
 
     const payload = (await response.json()) as Array<{ id?: number; name?: string; slug?: string | null; active?: boolean }>
-    const categories: Category[] = (Array.isArray(payload) ? payload : []).map((category) => ({
-      id: String(category.id || ''),
-      name: String(category.name || ''),
-      slug: String(category.slug || ''),
-      description: null,
-      parentId: null,
-      imageUrl: null,
-      isActive: category.active !== false,
-      isFeatured: false,
-      sortOrder: 0,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    }))
+    const categories: Category[] = (Array.isArray(payload) ? payload : [])
+      .filter((category) => Number.isInteger(category.id) && Number(category.id) > 0)
+      .map((category) => ({
+        id: String(category.id),
+        name: String(category.name || ''),
+        slug: String(category.slug || ''),
+        description: null,
+        parentId: null,
+        imageUrl: null,
+        isActive: category.active !== false,
+        isFeatured: false,
+        sortOrder: 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }))
 
     return { success: true, data: categories }
   } catch (error) {
-    console.error('Error in getCategoriesAction:', error)
+    const isHangingPrerender =
+      typeof error === 'object' &&
+      error !== null &&
+      'digest' in error &&
+      (error as { digest?: string }).digest === 'HANGING_PROMISE_REJECTION'
+
+    if (!isHangingPrerender) {
+      console.error('Error in getCategoriesAction:', error)
+    }
+
     return { success: false, error: 'Erro ao carregar categorias' }
   }
 }
@@ -1507,7 +2151,7 @@ export async function getProductBySlugAction(slug: string): Promise<ApiResponse<
     return { success: false, error: 'Erro ao carregar produto' }
   }
 }
-  
+
 export async function getProductVariantsAction(productId: string): Promise<ApiResponse<ProductVariant[]>> {
   try {
     const result = await getStoreProductWithVariantsAction(productId)
@@ -1558,6 +2202,7 @@ export async function getOrderProductVariantsCatalogAction(search?: string): Pro
 
     const url = new URL('/product/variants', base)
     url.searchParams.set('limit', '100')
+    url.searchParams.set('include_unavailable', 'true')
     if (search?.trim()) {
       url.searchParams.set('search', search.trim())
     }

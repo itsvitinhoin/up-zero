@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -28,8 +29,14 @@ import {
   Trash2,
   ChevronUp,
   ChevronDown,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  Eye,
+  EyeOff,
 } from "lucide-react";
-import type { SiteSettings, ShippingSettings, DefaultPackageConfig, CorreiosConfig, RegionalOfferType, RegionalShippingOffer, CustomShippingMethod, CorreiosService } from "@/lib/types";
+import { testCorreiosConnectionAction } from "@/lib/actions/settings";
+import type { SiteSettings, ShippingSettings, DefaultPackageConfig, CorreiosConfig, MelhorEnvioConfig, MandaeConfig, RegionalOfferType, RegionalShippingOffer, CustomShippingMethod, CorreiosService } from "@/lib/types";
 import { tAdmin } from "@/lib/i18n/admin";
 
 export function getDefaultShippingSettings(): ShippingSettings {
@@ -47,6 +54,7 @@ export function getDefaultShippingSettings(): ShippingSettings {
     },
     defaultOriginCep: "",
     defaultPackageWeight: 0.3,
+    checkoutMessage: "",
     showEstimatedDelivery: true,
     freeShippingEnabled: false,
     freeShippingMinValue: 0,
@@ -54,10 +62,32 @@ export function getDefaultShippingSettings(): ShippingSettings {
     regionalOffers: [],
     correios: {
       enabled: false,
+      idCorreios: null,
+      apiKey: null,
+      postcardNumber: null,
       contractCode: null,
       contractPassword: null,
       originCep: "",
       enabledServices: ["SEDEX", "PAC"],
+      markupPercent: 0,
+      markupFixed: 0,
+      additionalDays: 0,
+      declareValue: true,
+    },
+    melhorEnvio: {
+      enabled: false,
+      token: null,
+      originCep: "",
+      serviceIds: [],
+      document: null,
+      markupPercent: 0,
+      markupFixed: 0,
+      additionalDays: 0,
+    },
+    mandae: {
+      enabled: false,
+      apiKey: null,
+      originCep: "",
       markupPercent: 0,
       markupFixed: 0,
       additionalDays: 0,
@@ -76,6 +106,32 @@ interface ShippingTabProps {
 }
 
 export function ShippingTab({ locale = "en", settings, setSettings, isSaving, onSave }: ShippingTabProps) {
+  const getPricingTypeLabel = (pricingType: CustomShippingMethod["pricingType"]) => {
+    switch (pricingType) {
+      case "FREE":
+        return "Gratis";
+      case "FIXED":
+        return "Valor Fixo";
+      case "NEGOTIATED":
+        return "A Combinar";
+      case "BY_WEIGHT":
+        return "Por Peso";
+      case "BY_VALUE":
+        return "Por Valor do Pedido";
+      case "BY_REGION":
+        return "Por Regiao";
+      default:
+        return pricingType;
+    }
+  };
+
+  const formatPricingBadge = (method: CustomShippingMethod) => {
+    if (method.pricingType === "FREE") return "Gratis";
+    if (method.pricingType === "FIXED") return `R$ ${method.fixedPrice?.toFixed(2) ?? "0.00"}`;
+    if (method.pricingType === "NEGOTIATED") return "A Combinar";
+    return getPricingTypeLabel(method.pricingType);
+  };
+
   function updateShippingSettings(updates: Partial<ShippingSettings>) {
     setSettings({
       ...settings,
@@ -96,14 +152,54 @@ export function ShippingTab({ locale = "en", settings, setSettings, isSaving, on
     updateShippingSettings({ correios: { ...current.correios, ...updates } });
   }
 
+  function updateMelhorEnvioConfig(updates: Partial<MelhorEnvioConfig>) {
+    const current = settings.shippingSettings || getDefaultShippingSettings();
+    const melhorEnvio = current.melhorEnvio ?? { enabled: false, token: null, originCep: "", serviceIds: [], document: null, markupPercent: 0, markupFixed: 0, additionalDays: 0 };
+    updateShippingSettings({ melhorEnvio: { ...melhorEnvio, ...updates } });
+  }
+
+  function updateMandaeConfig(updates: Partial<MandaeConfig>) {
+    const current = settings.shippingSettings || getDefaultShippingSettings();
+    const mandae = current.mandae ?? { enabled: false, apiKey: null, originCep: "", markupPercent: 0, markupFixed: 0, additionalDays: 0, declareValue: true };
+    updateShippingSettings({ mandae: { ...mandae, ...updates } });
+  }
+
+  const correios = settings.shippingSettings?.correios;
+  const correiosMissingRequired = !!correios?.enabled && (
+    !correios?.idCorreios?.trim()
+    || !correios?.apiKey?.trim()
+    || !correios?.postcardNumber?.trim()
+  );
+
+  const [correiosTest, setCorreiosTest] = useState<{
+    status: "idle" | "loading" | "success" | "error";
+    message: string;
+  }>({ status: "idle", message: "" });
+  const [showCorreiosApiKey, setShowCorreiosApiKey] = useState(false);
+
+  async function handleTestCorreiosConnection() {
+    setCorreiosTest({ status: "loading", message: "" });
+
+    const result = await testCorreiosConnectionAction({
+      idCorreios: correios?.idCorreios,
+      apiKey: correios?.apiKey,
+      postcardNumber: correios?.postcardNumber,
+      originCep: correios?.originCep || settings.shippingSettings?.defaultOriginCep,
+    });
+
+    if (result.success && result.data) {
+      setCorreiosTest({ status: "success", message: result.data.message });
+      return;
+    }
+
+    setCorreiosTest({
+      status: "error",
+      message: result.error || "Falha ao testar integração Correios.",
+    });
+  }
+
   return (
     <div className="space-y-4 lg:space-y-6">
-      <div className="flex justify-end">
-        <Button onClick={onSave} disabled={isSaving} className="h-12 lg:h-10 text-base lg:text-sm w-full lg:w-auto">
-          <Save className="mr-2 h-5 w-5 lg:h-4 lg:w-4" />
-          {isSaving ? tAdmin(locale, "admin.common.saving", "Saving...") : tAdmin(locale, "admin.shipping.save", "Save Shipping Settings")}
-        </Button>
-      </div>
 
       <div className="grid gap-4 lg:gap-6">
         {/* Default Package */}
@@ -209,6 +305,17 @@ export function ShippingTab({ locale = "en", settings, setSettings, isSaving, on
                   </div>
                 </div>
               </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>{tAdmin(locale, "admin.shipping.general.checkoutMessage", "Checkout shipping message")}</Label>
+              <Textarea
+                value={settings.shippingSettings?.checkoutMessage || ""}
+                onChange={(e) => updateShippingSettings({ checkoutMessage: e.target.value })}
+                placeholder={tAdmin(locale, "admin.shipping.general.checkoutMessage.placeholder", "Example: Delivery times may vary during holiday periods.")}
+                rows={3}
+              />
+              <p className="text-xs text-muted-foreground">{tAdmin(locale, "admin.shipping.general.checkoutMessage.help", "Shown to customers in checkout and product shipping calculation results.")}</p>
             </div>
 
             <Separator />
@@ -480,13 +587,39 @@ export function ShippingTab({ locale = "en", settings, setSettings, isSaving, on
               <>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label>Codigo do Contrato (opcional)</Label>
-                    <Input value={settings.shippingSettings?.correios?.contractCode || ""} onChange={(e) => updateCorreiosConfig({ contractCode: e.target.value || null })} placeholder="Codigo administrativo" />
-                    <p className="text-xs text-muted-foreground">Deixe vazio para usar tabela publica</p>
+                    <Label>ID Correios *</Label>
+                    <Input value={settings.shippingSettings?.correios?.idCorreios || ""} onChange={(e) => updateCorreiosConfig({ idCorreios: e.target.value || null })} placeholder="Ex: veriamodas" />
                   </div>
                   <div className="space-y-2">
-                    <Label>Senha do Contrato</Label>
-                    <Input type="password" value={settings.shippingSettings?.correios?.contractPassword || ""} onChange={(e) => updateCorreiosConfig({ contractPassword: e.target.value || null })} placeholder="Senha do contrato" />
+                    <Label>Chave de API *</Label>
+                    <div className="relative">
+                      <Input
+                        type={showCorreiosApiKey ? "text" : "password"}
+                        value={settings.shippingSettings?.correios?.apiKey || ""}
+                        onChange={(e) => updateCorreiosConfig({ apiKey: e.target.value || null })}
+                        placeholder="Token/chave de API dos Correios"
+                        className="pr-10"
+                      />
+                      <button
+                        type="button"
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 cursor-pointer text-muted-foreground hover:text-foreground"
+                        onClick={() => setShowCorreiosApiKey((value) => !value)}
+                        aria-label={showCorreiosApiKey ? "Ocultar chave de API" : "Mostrar chave de API"}
+                      >
+                        {showCorreiosApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>Número do Cartão de Postagem *</Label>
+                    <Input value={settings.shippingSettings?.correios?.postcardNumber || ""} onChange={(e) => updateCorreiosConfig({ postcardNumber: e.target.value || null })} placeholder="Ex: 0075101440" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Codigo do Contrato (opcional)</Label>
+                    <Input value={settings.shippingSettings?.correios?.contractCode || ""} onChange={(e) => updateCorreiosConfig({ contractCode: e.target.value || null })} placeholder="Opcional" />
                   </div>
                 </div>
 
@@ -494,6 +627,45 @@ export function ShippingTab({ locale = "en", settings, setSettings, isSaving, on
                   <Label>CEP de Origem (Remetente)</Label>
                   <Input value={settings.shippingSettings?.correios?.originCep || ""} onChange={(e) => updateCorreiosConfig({ originCep: e.target.value })} placeholder="00000-000" maxLength={9} />
                 </div>
+
+                {correiosMissingRequired && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                    Preencha os campos obrigatórios para consulta na API dos Correios: ID Correios, Chave de API e Número do Cartão de Postagem.
+                  </div>
+                )}
+
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={correiosMissingRequired || correiosTest.status === "loading"}
+                    onClick={handleTestCorreiosConnection}
+                  >
+                    {correiosTest.status === "loading" ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="mr-2 h-4 w-4" />
+                    )}
+                    Testar conexão Correios
+                  </Button>
+                  <p className="text-xs text-muted-foreground">
+                    Valida ID, chave de API e cartão de postagem na API dos Correios.
+                  </p>
+                </div>
+
+                {correiosTest.status === "success" && (
+                  <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-800 flex items-start gap-2">
+                    <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0" />
+                    <span>{correiosTest.message}</span>
+                  </div>
+                )}
+
+                {correiosTest.status === "error" && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 flex items-start gap-2">
+                    <XCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                    <span className="break-all">{correiosTest.message}</span>
+                  </div>
+                )}
 
                 <div className="space-y-3">
                   <Label>Servicos Habilitados</Label>
@@ -538,6 +710,135 @@ export function ShippingTab({ locale = "en", settings, setSettings, isSaving, on
                   <div>
                     <Label className="cursor-pointer">Declarar Valor</Label>
                     <p className="text-xs text-muted-foreground">Inclui seguro baseado no valor do pedido</p>
+                  </div>
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Melhor Envio Integration */}
+        <Card id="melhorenvio-integration">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Truck className="h-5 w-5 text-blue-600" />
+              Melhor Envio
+            </CardTitle>
+            <CardDescription>Cotação automática via Melhor Envio (Correios, JADLOG, Latam Cargo e outros)</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="flex items-center justify-between p-4 border rounded-lg bg-muted/30">
+              <div className="flex items-center gap-3">
+                <div className={`p-2 rounded-full ${settings.shippingSettings?.melhorEnvio?.enabled ? "bg-blue-100" : "bg-muted"}`}>
+                  <Truck className={`h-5 w-5 ${settings.shippingSettings?.melhorEnvio?.enabled ? "text-blue-600" : "text-muted-foreground"}`} />
+                </div>
+                <div>
+                  <p className="font-medium">Melhor Envio API v2</p>
+                  <p className="text-sm text-muted-foreground">{settings.shippingSettings?.melhorEnvio?.enabled ? "Integração ativa" : "Integração desabilitada"}</p>
+                </div>
+              </div>
+              <Switch checked={settings.shippingSettings?.melhorEnvio?.enabled ?? false} onCheckedChange={(checked) => updateMelhorEnvioConfig({ enabled: checked })} />
+            </div>
+
+            {settings.shippingSettings?.melhorEnvio?.enabled && (
+              <>
+                <div className="space-y-2">
+                  <Label>Token OAuth2 (Bearer)</Label>
+                  <Input type="password" value={settings.shippingSettings?.melhorEnvio?.token || ""} onChange={(e) => updateMelhorEnvioConfig({ token: e.target.value || null })} placeholder="Token de acesso do Melhor Envio" />
+                  <p className="text-xs text-muted-foreground">Gere em melhorenvio.com.br → Integrações → API</p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>CEP de Origem</Label>
+                    <Input value={settings.shippingSettings?.melhorEnvio?.originCep || ""} onChange={(e) => updateMelhorEnvioConfig({ originCep: e.target.value })} placeholder="00000-000" maxLength={9} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>CPF/CNPJ do Remetente</Label>
+                    <Input value={settings.shippingSettings?.melhorEnvio?.document || ""} onChange={(e) => updateMelhorEnvioConfig({ document: e.target.value || null })} placeholder="Obrigatório pela API ME" />
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="space-y-2">
+                    <Label>Margem sobre Frete (%)</Label>
+                    <Input type="number" step="0.1" min="0" value={settings.shippingSettings?.melhorEnvio?.markupPercent || 0} onChange={(e) => updateMelhorEnvioConfig({ markupPercent: Number(e.target.value) || 0 })} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Valor Fixo Adicional (R$)</Label>
+                    <Input type="number" step="0.01" min="0" value={settings.shippingSettings?.melhorEnvio?.markupFixed || 0} onChange={(e) => updateMelhorEnvioConfig({ markupFixed: Number(e.target.value) || 0 })} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Dias Adicionais ao Prazo</Label>
+                    <Input type="number" min="0" value={settings.shippingSettings?.melhorEnvio?.additionalDays || 0} onChange={(e) => updateMelhorEnvioConfig({ additionalDays: Number(e.target.value) || 0 })} />
+                  </div>
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Mandaê Integration */}
+        <Card id="mandae-integration">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Timer className="h-5 w-5 text-purple-600" />
+              Mandaê
+            </CardTitle>
+            <CardDescription>Integração com a Mandaê para entregas expressas via rede própria</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="flex items-center justify-between p-4 border rounded-lg bg-muted/30">
+              <div className="flex items-center gap-3">
+                <div className={`p-2 rounded-full ${settings.shippingSettings?.mandae?.enabled ? "bg-purple-100" : "bg-muted"}`}>
+                  <Timer className={`h-5 w-5 ${settings.shippingSettings?.mandae?.enabled ? "text-purple-600" : "text-muted-foreground"}`} />
+                </div>
+                <div>
+                  <p className="font-medium">Mandaê API v2</p>
+                  <p className="text-sm text-muted-foreground">{settings.shippingSettings?.mandae?.enabled ? "Integração ativa" : "Integração desabilitada"}</p>
+                </div>
+              </div>
+              <Switch checked={settings.shippingSettings?.mandae?.enabled ?? false} onCheckedChange={(checked) => updateMandaeConfig({ enabled: checked })} />
+            </div>
+
+            {settings.shippingSettings?.mandae?.enabled && (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>API Key</Label>
+                    <Input type="password" value={settings.shippingSettings?.mandae?.apiKey || ""} onChange={(e) => updateMandaeConfig({ apiKey: e.target.value || null })} placeholder="Sua API key da Mandaê" />
+                    <p className="text-xs text-muted-foreground">Obtida no painel da Mandaê → Conta → Chaves API</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>CEP de Origem</Label>
+                    <Input value={settings.shippingSettings?.mandae?.originCep || ""} onChange={(e) => updateMandaeConfig({ originCep: e.target.value })} placeholder="00000-000" maxLength={9} />
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="space-y-2">
+                    <Label>Margem sobre Frete (%)</Label>
+                    <Input type="number" step="0.1" min="0" value={settings.shippingSettings?.mandae?.markupPercent || 0} onChange={(e) => updateMandaeConfig({ markupPercent: Number(e.target.value) || 0 })} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Valor Fixo Adicional (R$)</Label>
+                    <Input type="number" step="0.01" min="0" value={settings.shippingSettings?.mandae?.markupFixed || 0} onChange={(e) => updateMandaeConfig({ markupFixed: Number(e.target.value) || 0 })} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Dias Adicionais ao Prazo</Label>
+                    <Input type="number" min="0" value={settings.shippingSettings?.mandae?.additionalDays || 0} onChange={(e) => updateMandaeConfig({ additionalDays: Number(e.target.value) || 0 })} />
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 p-3 border rounded-lg">
+                  <Switch checked={settings.shippingSettings?.mandae?.declareValue ?? true} onCheckedChange={(checked) => updateMandaeConfig({ declareValue: checked })} />
+                  <div>
+                    <Label className="cursor-pointer">Declarar Valor</Label>
+                    <p className="text-xs text-muted-foreground">Inclui valor declarado para seguro</p>
                   </div>
                 </div>
               </>
@@ -592,7 +893,7 @@ export function ShippingTab({ locale = "en", settings, setSettings, isSaving, on
                           <div className="flex items-center gap-2">
                             <p className="font-medium text-sm">{method.name || <span className="text-muted-foreground italic">Sem nome</span>}</p>
                             <Badge variant="outline" className="text-xs">
-                              {method.pricingType === "FREE" ? tAdmin(locale, "admin.shipping.offer.free", "Free") : method.pricingType === "FIXED" ? `R$ ${method.fixedPrice?.toFixed(2)}` : method.pricingType}
+                              {formatPricingBadge(method)}
                             </Badge>
                           </div>
                           {method.description && <p className="text-xs text-muted-foreground truncate">{method.description}</p>}
@@ -618,10 +919,11 @@ export function ShippingTab({ locale = "en", settings, setSettings, isSaving, on
                           </div>
                           <div className="space-y-1.5">
                             <Label className="text-xs">Tipo de Preco</Label>
-                            <Select value={method.pricingType} onValueChange={(v: "FIXED" | "BY_WEIGHT" | "BY_VALUE" | "BY_REGION" | "FREE") => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id ? { ...m, pricingType: v } : m) })}>
+                            <Select value={method.pricingType} onValueChange={(v: "FIXED" | "BY_WEIGHT" | "BY_VALUE" | "BY_REGION" | "FREE" | "NEGOTIATED") => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id ? { ...m, pricingType: v, fixedPrice: v === "FREE" || v === "NEGOTIATED" ? 0 : m.fixedPrice, freeAboveValue: v === "NEGOTIATED" ? null : m.freeAboveValue } : m) })}>
                               <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
                               <SelectContent>
                                 <SelectItem value="FREE">Gratis</SelectItem>
+                                <SelectItem value="NEGOTIATED">A Combinar</SelectItem>
                                 <SelectItem value="FIXED">Valor Fixo</SelectItem>
                                 <SelectItem value="BY_WEIGHT">Por Peso</SelectItem>
                                 <SelectItem value="BY_VALUE">Por Valor do Pedido</SelectItem>
@@ -671,7 +973,8 @@ export function ShippingTab({ locale = "en", settings, setSettings, isSaving, on
                         <Separator />
 
                         <div className="space-y-3">
-                          <div className="flex items-center gap-3">
+                          <div className="rounded-lg border bg-muted/20 p-3 space-y-3">
+                            <div className="flex items-center gap-3">
                             <Switch
                               checked={method.isPickup ?? false}
                               onCheckedChange={(checked) =>
@@ -694,104 +997,152 @@ export function ShippingTab({ locale = "en", settings, setSettings, isSaving, on
                               <Label className="cursor-pointer font-medium text-sm">Retirada no Local</Label>
                               <p className="text-xs text-muted-foreground">Permite ao cliente agendar uma data e horario para retirar o pedido</p>
                             </div>
-                          </div>
+                            </div>
 
-                          {method.isPickup && (
-                            <div className="space-y-4 pl-11">
-                              <div className="space-y-1.5">
-                                <Label className="text-xs flex items-center gap-1.5">
-                                  <MapPin className="h-3 w-3" />
-                                  Endereco de Retirada
-                                </Label>
-                                <Input value={method.pickupAddress || ""} onChange={(e) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id ? { ...m, pickupAddress: e.target.value || null } : m) })} placeholder="Rua, numero, bairro, cidade, CEP" className="text-sm" />
-                              </div>
+                            {method.isPickup && <Separator />}
 
-                              <div className="rounded-lg border bg-card p-4 space-y-4">
-                                <div className="flex items-center justify-between">
-                                  <div className="flex items-center gap-2">
-                                    <Timer className="h-4 w-4 text-muted-foreground" />
-                                    <span className="text-sm font-medium">Agendamento de Retirada</span>
-                                  </div>
-                                  <Switch
-                                    checked={method.pickupSchedule?.enabled ?? false}
-                                    onCheckedChange={(checked) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, enabled: checked } } : m) })}
-                                  />
+                            {method.isPickup && (
+                              <div className="space-y-4">
+                                <div className="space-y-1.5">
+                                  <Label className="text-xs flex items-center gap-1.5">
+                                    <MapPin className="h-3 w-3" />
+                                    Endereco de Retirada
+                                  </Label>
+                                  <Input value={method.pickupAddress || ""} onChange={(e) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id ? { ...m, pickupAddress: e.target.value || null } : m) })} placeholder="Rua, numero, bairro, cidade, CEP" className="text-sm" />
                                 </div>
 
-                                {method.pickupSchedule?.enabled && (
-                                  <div className="space-y-4">
-                                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                                      <div className="space-y-1.5">
-                                        <Label className="text-xs">Preparo Minimo (horas)</Label>
-                                        <Input type="number" min="0" value={method.pickupSchedule?.prepMinHours ?? 4} onChange={(e) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, prepMinHours: Number(e.target.value) || 0 } } : m) })} className="h-8 text-sm" />
-                                      </div>
-                                      <div className="space-y-1.5">
-                                        <Label className="text-xs">Duracao do Slot (min)</Label>
-                                        <Select value={String(method.pickupSchedule?.slotDurationMinutes ?? 60)} onValueChange={(v) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, slotDurationMinutes: Number(v) } } : m) })}>
-                                          <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
-                                          <SelectContent>
-                                            <SelectItem value="15">15 minutos</SelectItem>
-                                            <SelectItem value="30">30 minutos</SelectItem>
-                                            <SelectItem value="60">1 hora</SelectItem>
-                                            <SelectItem value="120">2 horas</SelectItem>
-                                          </SelectContent>
-                                        </Select>
-                                      </div>
-                                      <div className="space-y-1.5">
-                                        <Label className="text-xs">Maximo de dias a frente</Label>
-                                        <Input type="number" min="1" value={method.pickupSchedule?.maxDaysAhead ?? 14} onChange={(e) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, maxDaysAhead: Number(e.target.value) || 14 } } : m) })} className="h-8 text-sm" />
-                                      </div>
+                                <div className="rounded-lg border bg-card p-4 space-y-4">
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
+                                      <Timer className="h-4 w-4 text-muted-foreground" />
+                                      <span className="text-sm font-medium">Agendamento de Retirada</span>
                                     </div>
-
-                                    <div className="grid grid-cols-2 gap-3">
-                                      <div className="space-y-1.5">
-                                        <Label className="text-xs">Abertura</Label>
-                                        <Input type="time" value={method.pickupSchedule?.openTime ?? "09:00"} onChange={(e) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, openTime: e.target.value } } : m) })} className="h-8 text-sm" />
-                                      </div>
-                                      <div className="space-y-1.5">
-                                        <Label className="text-xs">Fechamento</Label>
-                                        <Input type="time" value={method.pickupSchedule?.closeTime ?? "18:00"} onChange={(e) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, closeTime: e.target.value } } : m) })} className="h-8 text-sm" />
-                                      </div>
-                                      <div className="space-y-1.5">
-                                        <Label className="text-xs">Inicio do Almoco</Label>
-                                        <Input type="time" value={method.pickupSchedule?.lunchBreakStart ?? ""} onChange={(e) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, lunchBreakStart: e.target.value || null } } : m) })} placeholder={tAdmin(locale, "admin.common.noBreak", "No break")} className="h-8 text-sm" />
-                                      </div>
-                                      <div className="space-y-1.5">
-                                        <Label className="text-xs">Fim do Almoco</Label>
-                                        <Input type="time" value={method.pickupSchedule?.lunchBreakEnd ?? ""} onChange={(e) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, lunchBreakEnd: e.target.value || null } } : m) })} placeholder={tAdmin(locale, "admin.common.noBreak", "No break")} className="h-8 text-sm" />
-                                      </div>
-                                    </div>
-
-                                    <div className="space-y-2">
-                                      <Label className="text-xs">Dias de Atendimento</Label>
-                                      <div className="flex flex-wrap gap-2">
-                                        {[{ value: 0, label: "Dom" }, { value: 1, label: "Seg" }, { value: 2, label: "Ter" }, { value: 3, label: "Qua" }, { value: 4, label: "Qui" }, { value: 5, label: "Sex" }, { value: 6, label: "Sab" }].map((day) => {
-                                          const isSelected = (method.pickupSchedule?.availableDays ?? []).includes(day.value);
-                                          return (
-                                            <button key={day.value} type="button"
-                                              onClick={() => {
-                                                const current = method.pickupSchedule?.availableDays ?? [];
-                                                const next = isSelected ? current.filter((d) => d !== day.value) : [...current, day.value].sort();
-                                                updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, availableDays: next } } : m) });
-                                              }}
-                                              className={`h-8 w-10 rounded-md text-xs font-medium border transition-colors ${isSelected ? "bg-primary text-primary-foreground border-primary" : "bg-background text-muted-foreground border-border hover:border-primary/50"}`}
-                                            >
-                                              {day.label}
-                                            </button>
-                                          );
-                                        })}
-                                      </div>
-                                    </div>
-
-                                    <div className="space-y-1.5">
-                                      <Label className="text-xs">Limite de Pedidos por Slot</Label>
-                                      <Input type="number" min="1" value={method.pickupSchedule?.maxSimultaneous ?? ""} onChange={(e) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, maxSimultaneous: e.target.value ? Number(e.target.value) : null } } : m) })} placeholder="Ilimitado" className="h-8 text-sm max-w-40" />
-                                    </div>
+                                    <Switch
+                                      checked={method.pickupSchedule?.enabled ?? false}
+                                      onCheckedChange={(checked) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, enabled: checked } } : m) })}
+                                    />
                                   </div>
-                                )}
+
+                                  {method.pickupSchedule?.enabled && (
+                                    <div className="space-y-4">
+                                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                                        <div className="space-y-1.5">
+                                          <Label className="text-xs">Preparo Minimo (horas)</Label>
+                                          <Input type="number" min="0" value={method.pickupSchedule?.prepMinHours ?? 4} onChange={(e) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, prepMinHours: Number(e.target.value) || 0 } } : m) })} className="h-8 text-sm" />
+                                        </div>
+                                        <div className="space-y-1.5">
+                                          <Label className="text-xs">Duracao do Slot (min)</Label>
+                                          <Select value={String(method.pickupSchedule?.slotDurationMinutes ?? 60)} onValueChange={(v) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, slotDurationMinutes: Number(v) } } : m) })}>
+                                            <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
+                                            <SelectContent>
+                                              <SelectItem value="15">15 minutos</SelectItem>
+                                              <SelectItem value="30">30 minutos</SelectItem>
+                                              <SelectItem value="60">1 hora</SelectItem>
+                                              <SelectItem value="120">2 horas</SelectItem>
+                                            </SelectContent>
+                                          </Select>
+                                        </div>
+                                        <div className="space-y-1.5">
+                                          <Label className="text-xs">Maximo de dias a frente</Label>
+                                          <Input type="number" min="1" value={method.pickupSchedule?.maxDaysAhead ?? 14} onChange={(e) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, maxDaysAhead: Number(e.target.value) || 14 } } : m) })} className="h-8 text-sm" />
+                                        </div>
+                                      </div>
+
+                                      <div className="grid grid-cols-2 gap-3">
+                                        <div className="space-y-1.5">
+                                          <Label className="text-xs">Abertura</Label>
+                                          <Input type="time" value={method.pickupSchedule?.openTime ?? "09:00"} onChange={(e) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, openTime: e.target.value } } : m) })} className="h-8 text-sm" />
+                                        </div>
+                                        <div className="space-y-1.5">
+                                          <Label className="text-xs">Fechamento</Label>
+                                          <Input type="time" value={method.pickupSchedule?.closeTime ?? "18:00"} onChange={(e) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, closeTime: e.target.value } } : m) })} className="h-8 text-sm" />
+                                        </div>
+                                        <div className="space-y-1.5">
+                                          <Label className="text-xs">Inicio do Almoco</Label>
+                                          <Input type="time" value={method.pickupSchedule?.lunchBreakStart ?? ""} onChange={(e) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, lunchBreakStart: e.target.value || null } } : m) })} placeholder={tAdmin(locale, "admin.common.noBreak", "No break")} className="h-8 text-sm" />
+                                        </div>
+                                        <div className="space-y-1.5">
+                                          <Label className="text-xs">Fim do Almoco</Label>
+                                          <Input type="time" value={method.pickupSchedule?.lunchBreakEnd ?? ""} onChange={(e) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, lunchBreakEnd: e.target.value || null } } : m) })} placeholder={tAdmin(locale, "admin.common.noBreak", "No break")} className="h-8 text-sm" />
+                                        </div>
+                                      </div>
+
+                                      <div className="space-y-2">
+                                        <Label className="text-xs">Dias de Atendimento</Label>
+                                        <div className="flex flex-wrap gap-2">
+                                          {[{ value: 0, label: "Dom" }, { value: 1, label: "Seg" }, { value: 2, label: "Ter" }, { value: 3, label: "Qua" }, { value: 4, label: "Qui" }, { value: 5, label: "Sex" }, { value: 6, label: "Sab" }].map((day) => {
+                                            const isSelected = (method.pickupSchedule?.availableDays ?? []).includes(day.value);
+                                            return (
+                                              <button key={day.value} type="button"
+                                                onClick={() => {
+                                                  const current = method.pickupSchedule?.availableDays ?? [];
+                                                  const next = isSelected ? current.filter((d) => d !== day.value) : [...current, day.value].sort();
+                                                  updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, availableDays: next } } : m) });
+                                                }}
+                                                className={`h-8 w-10 rounded-md text-xs font-medium border transition-colors ${isSelected ? "bg-primary text-primary-foreground border-primary" : "bg-background text-muted-foreground border-border hover:border-primary/50"}`}
+                                              >
+                                                {day.label}
+                                              </button>
+                                            );
+                                          })}
+                                        </div>
+                                      </div>
+
+                                      <div className="space-y-1.5">
+                                        <Label className="text-xs">Limite de Pedidos por Slot</Label>
+                                        <Input type="number" min="1" value={method.pickupSchedule?.maxSimultaneous ?? ""} onChange={(e) => updateShippingSettings({ customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) => m.id === method.id && m.pickupSchedule ? { ...m, pickupSchedule: { ...m.pickupSchedule, maxSimultaneous: e.target.value ? Number(e.target.value) : null } } : m) })} placeholder="Ilimitado" className="h-8 text-sm max-w-40" />
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
                               </div>
+                            )}
+                          </div>
+
+                          <div className="rounded-lg border bg-muted/20 p-3 space-y-3">
+                            <div className="flex items-center gap-3">
+                            <Switch
+                              checked={method.allowCustomerNotes ?? false}
+                              onCheckedChange={(checked) =>
+                                updateShippingSettings({
+                                  customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) =>
+                                    m.id === method.id
+                                      ? {
+                                          ...m,
+                                          allowCustomerNotes: checked,
+                                          customerNoteInstruction: checked ? (m.customerNoteInstruction ?? "") : null,
+                                        }
+                                      : m
+                                  ),
+                                })
+                              }
+                            />
+                            <div>
+                              <Label className="cursor-pointer font-medium text-sm">Permitir observacoes do cliente</Label>
+                              <p className="text-xs text-muted-foreground">Exibe um campo no checkout para o cliente escrever instrucoes para este metodo</p>
+                            </div>
+                          </div>
+
+                          {method.allowCustomerNotes && (
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">Instrucao para o Cliente</Label>
+                              <Input
+                                value={method.customerNoteInstruction || ""}
+                                onChange={(e) =>
+                                  updateShippingSettings({
+                                    customMethods: (settings.shippingSettings?.customMethods ?? []).map((m) =>
+                                      m.id === method.id
+                                        ? { ...m, customerNoteInstruction: e.target.value || null }
+                                        : m
+                                    ),
+                                  })
+                                }
+                                placeholder="Ex: Escrever o nome e o horario de quem vai retirar"
+                                className="h-8 text-sm"
+                              />
                             </div>
                           )}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -802,7 +1153,7 @@ export function ShippingTab({ locale = "en", settings, setSettings, isSaving, on
             <Button variant="outline" className="w-full"
               onClick={() => {
                 const maxOrder = Math.max(0, ...(settings.shippingSettings?.customMethods ?? []).map((m) => m.sortOrder));
-                const newMethod: CustomShippingMethod = { id: `ship_${Date.now()}`, name: "", description: null, isActive: true, sortOrder: maxOrder + 1, isPickup: false, pickupAddress: null, pickupSchedule: null, pricingType: "FIXED", fixedPrice: 0, freeAboveValue: null, minDays: 1, maxDays: 3, minOrderValue: null, maxOrderValue: null, maxWeight: null, regions: [] };
+                const newMethod: CustomShippingMethod = { id: `ship_${Date.now()}`, name: "", description: null, isActive: true, sortOrder: maxOrder + 1, isPickup: false, pickupAddress: null, pickupSchedule: null, allowCustomerNotes: false, customerNoteInstruction: null, pricingType: "FIXED", fixedPrice: 0, freeAboveValue: null, minDays: 1, maxDays: 3, minOrderValue: null, maxOrderValue: null, maxWeight: null, regions: [] };
                 updateShippingSettings({ customMethods: [...(settings.shippingSettings?.customMethods ?? []), newMethod] });
               }}>
               <Plus className="mr-2 h-4 w-4" />
@@ -848,7 +1199,13 @@ export function ShippingTab({ locale = "en", settings, setSettings, isSaving, on
                       <td className="p-3"><div className="flex items-center gap-2"><Truck className="h-4 w-4 text-blue-600" />{method.name || tAdmin(locale, "admin.common.unnamed", "Unnamed")}</div></td>
                       <td className="p-3 text-muted-foreground">Personalizado</td>
                       <td className="p-3">
-                        {method.pricingType === "FREE" ? <span className="text-green-600 font-medium">Gratis</span> : method.pricingType === "FIXED" ? `R$ ${method.fixedPrice?.toFixed(2)}` : <span className="text-muted-foreground">{method.pricingType}</span>}
+                        {method.pricingType === "FREE"
+                          ? <span className="text-green-600 font-medium">Gratis</span>
+                          : method.pricingType === "FIXED"
+                            ? `R$ ${method.fixedPrice?.toFixed(2) ?? "0.00"}`
+                            : method.pricingType === "NEGOTIATED"
+                              ? <span className="font-medium">A Combinar</span>
+                              : <span className="text-muted-foreground">{getPricingTypeLabel(method.pricingType)}</span>}
                       </td>
                       <td className="p-3">{method.minDays === method.maxDays ? `${method.minDays} dia(s)` : `${method.minDays}-${method.maxDays} dias`}</td>
                       <td className="p-3 text-center">{method.isActive ? <Badge className="bg-green-100 text-green-700">Ativo</Badge> : <Badge variant="secondary">Inativo</Badge>}</td>
@@ -863,6 +1220,17 @@ export function ShippingTab({ locale = "en", settings, setSettings, isSaving, on
           </CardContent>
         </Card>
       </div>
+
+      <Button
+        onClick={onSave}
+        disabled={isSaving || correiosMissingRequired}
+        className="fixed sm:bottom-6 bottom-20 right-6 z-50 h-12 rounded-full px-4 shadow-lg"
+        aria-label="Salvar"
+        title="Salvar"
+      >
+        <Save className="mr-2 h-5 w-5" />
+        Salvar
+      </Button>
     </div>
   );
 }

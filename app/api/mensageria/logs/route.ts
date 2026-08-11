@@ -1,22 +1,35 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { clearLogs, getLogs } from '@/lib/whatsapp/store'
+import { getState, updateState } from '@/lib/whatsapp/store'
+import { checkUserPermission } from '@/lib/actions/permissions'
+import type { LogStatus, WhatsAppLogType } from '@/lib/whatsapp/types'
 
-export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url)
-  const status = searchParams.get('status')
-  const ruleId = searchParams.get('ruleId')
-  const limit = Math.min(Number(searchParams.get('limit') ?? '200'), 500)
+  const permission = await checkUserPermission('messaging.view').catch(() => null)
+  if (permission?.has_permission !== true) {
+    return NextResponse.json({ error: 'Você não tem permissão para visualizar mensageria' }, { status: 403 })
+  }
 
-  let result = getLogs()
-  if (status) result = result.filter((l) => l.status === status)
-  if (ruleId) result = result.filter((l) => l.ruleId === ruleId)
+  const params = new URL(req.url).searchParams
+  const status = params.get('status') as LogStatus | null
+  const type = params.get('type') as WhatsAppLogType | null
+  const limit = Math.min(Number(params.get('limit') ?? '300'), 1000)
+  let logs = getState().logs
 
-  return NextResponse.json(result.slice(0, limit))
+  if (status) logs = logs.filter((log) => log.status === status)
+  if (type) logs = logs.filter((log) => log.type === type)
+
+  return NextResponse.json(logs.slice(0, limit))
 }
 
 export async function DELETE() {
-  clearLogs()
+  const permission = await checkUserPermission('messaging.manage_settings').catch(() => null)
+  if (permission?.has_permission !== true) {
+    return NextResponse.json({ error: 'Você não tem permissão para gerenciar configurações de mensageria' }, { status: 403 })
+  }
+
+  updateState((state) => {
+    state.logs = []
+  })
   return NextResponse.json({ ok: true })
 }

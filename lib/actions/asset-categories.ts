@@ -3,7 +3,17 @@
 import { cookies } from 'next/headers'
 import { revalidatePath } from 'next/cache'
 import { getAdminStoreIdFromToken } from '@/lib/auth'
+import { checkUserPermission } from '@/lib/actions/permissions'
 import type { ApiResponse, Category } from '@/lib/types'
+
+async function hasAssetPermission(permissionCode: string): Promise<boolean> {
+  try {
+    const result = await checkUserPermission(permissionCode)
+    return result?.has_permission === true
+  } catch {
+    return false
+  }
+}
 
 function parseStoreIdInput(value: unknown): number | null {
   const parsed = Number(value)
@@ -27,6 +37,10 @@ function mapCategory(category: any): Category {
 }
 
 export async function createAssetCategoryAction(formData: FormData): Promise<ApiResponse<Category>> {
+  if (!(await hasAssetPermission('assets.create'))) {
+    return { success: false, error: 'Você não tem permissão para criar assets' }
+  }
+
   try {
     const name = String(formData.get('name') || '').trim()
     const status = String(formData.get('isActive') || 'true') === 'true'
@@ -81,6 +95,10 @@ export async function createAssetCategoryAction(formData: FormData): Promise<Api
 }
 
 export async function updateAssetCategoryAction(id: string, formData: FormData): Promise<ApiResponse<Category>> {
+  if (!(await hasAssetPermission('assets.edit'))) {
+    return { success: false, error: 'Você não tem permissão para editar assets' }
+  }
+
   try {
     const name = String(formData.get('name') || '').trim()
     const status = String(formData.get('isActive') || 'true') === 'true'
@@ -131,6 +149,10 @@ export async function updateAssetCategoryAction(id: string, formData: FormData):
 }
 
 export async function deleteAssetCategoryAction(id: string): Promise<ApiResponse<void>> {
+  if (!(await hasAssetPermission('assets.delete'))) {
+    return { success: false, error: 'Você não tem permissão para excluir assets' }
+  }
+
   try {
     const base = process.env.NEXT_PUBLIC_RUST_URL
     if (!base) {
@@ -167,6 +189,10 @@ export async function deleteAssetCategoryAction(id: string): Promise<ApiResponse
 }
 
 export async function getAssetCategoriesAction(storeId?: number | string): Promise<ApiResponse<Category[]>> {
+  if (!(await hasAssetPermission('assets.view'))) {
+    return { success: false, error: 'Você não tem permissão para visualizar assets', data: [] }
+  }
+
   try {
     const base = process.env.NEXT_PUBLIC_RUST_URL
     if (!base) {

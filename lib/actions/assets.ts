@@ -3,6 +3,7 @@
 import { cookies } from 'next/headers'
 import { revalidatePath } from 'next/cache'
 import { getSession, canManageProducts, getAdminStoreIdFromToken } from '@/lib/auth'
+import { checkUserPermission } from '@/lib/actions/permissions'
 import type { Asset } from '@/lib/types'
 
 type AssetMetaInput = {
@@ -65,6 +66,15 @@ async function isAuthorized(): Promise<boolean> {
   const cookieStore = await cookies()
   const adminToken = cookieStore.get('adminAuthToken')?.value
   return Boolean(adminToken)
+}
+
+async function hasAssetPermission(permissionCode: string): Promise<boolean> {
+  try {
+    const result = await checkUserPermission(permissionCode)
+    return result?.has_permission === true
+  } catch {
+    return false
+  }
 }
 
 async function getStoreIdFromEnv(): Promise<number | null> {
@@ -444,7 +454,7 @@ function mapBackendAsset(item: any): Asset {
 }
 
 export async function getAssetsAction(
-  params?: { page?: number; limit?: number },
+  params?: { page?: number; limit?: number; q?: string; categoryId?: string; productId?: string; sort?: 'sort' | 'newest' | 'name-asc' | 'name-desc' },
 ): Promise<{
   success: boolean
   data?: Asset[]
@@ -456,6 +466,9 @@ export async function getAssetsAction(
   try {
     if (!(await isAuthorized())) {
       return { success: false, error: 'Não autorizado' }
+    }
+    if (!(await hasAssetPermission('assets.view'))) {
+      return { success: false, error: 'Você não tem permissão para visualizar assets' }
     }
 
     const base = process.env.NEXT_PUBLIC_RUST_URL
@@ -475,6 +488,19 @@ export async function getAssetsAction(
     const limit = Number.isFinite(params?.limit) ? Math.max(1, Number(params?.limit)) : 25
     url.searchParams.set('page', String(page))
     url.searchParams.set('limit', String(limit))
+    if (typeof params?.q === 'string' && params.q.trim().length > 0) {
+      url.searchParams.set('q', params.q.trim())
+    }
+    if (typeof params?.categoryId === 'string' && /^\d+$/.test(params.categoryId)) {
+      url.searchParams.set('category_id', params.categoryId)
+    }
+    if (typeof params?.productId === 'string' && /^\d+$/.test(params.productId)) {
+      url.searchParams.set('product_id', params.productId)
+    }
+    const sort = (params?.sort || 'newest').trim()
+    if (sort.length > 0) {
+      url.searchParams.set('sort', sort)
+    }
 
     const response = await fetch(url, {
       method: 'GET',
@@ -503,7 +529,7 @@ export async function getAssetsAction(
   }
 }
 
-export async function getAssetsSummaryAction(): Promise<{
+export async function getAssetsSummaryAction(params?: { q?: string; categoryId?: string; productId?: string }): Promise<{
   success: boolean
   data?: { assets: number; skus: number; images: number }
   error?: string
@@ -511,6 +537,9 @@ export async function getAssetsSummaryAction(): Promise<{
   try {
     if (!(await isAuthorized())) {
       return { success: false, error: 'Não autorizado' }
+    }
+    if (!(await hasAssetPermission('assets.view'))) {
+      return { success: false, error: 'Você não tem permissão para visualizar assets' }
     }
 
     const base = process.env.NEXT_PUBLIC_RUST_URL
@@ -525,6 +554,15 @@ export async function getAssetsSummaryAction(): Promise<{
     const url = new URL('/assets/summary', base)
     if (storeId) {
       url.searchParams.set('store_id', String(storeId))
+    }
+    if (typeof params?.q === 'string' && params.q.trim().length > 0) {
+      url.searchParams.set('q', params.q.trim())
+    }
+    if (typeof params?.categoryId === 'string' && /^\d+$/.test(params.categoryId)) {
+      url.searchParams.set('category_id', params.categoryId)
+    }
+    if (typeof params?.productId === 'string' && /^\d+$/.test(params.productId)) {
+      url.searchParams.set('product_id', params.productId)
     }
 
     const response = await fetch(url, {
@@ -559,6 +597,9 @@ export async function createAssetAction(formData: FormData): Promise<{ success: 
   try {
     if (!(await isAuthorized())) {
       return { success: false, error: 'Não autorizado' }
+    }
+    if (!(await hasAssetPermission('assets.create'))) {
+      return { success: false, error: 'Você não tem permissão para criar assets' }
     }
 
     const base = process.env.NEXT_PUBLIC_RUST_URL
@@ -641,6 +682,9 @@ export async function updateAssetAction(assetId: string, formData: FormData): Pr
   try {
     if (!(await isAuthorized())) {
       return { success: false, error: 'Não autorizado' }
+    }
+    if (!(await hasAssetPermission('assets.edit'))) {
+      return { success: false, error: 'Você não tem permissão para editar assets' }
     }
 
     const base = process.env.NEXT_PUBLIC_RUST_URL
@@ -728,6 +772,9 @@ export async function deleteAssetAction(assetId: string): Promise<{ success: boo
   try {
     if (!(await isAuthorized())) {
       return { success: false, error: 'Não autorizado' }
+    }
+    if (!(await hasAssetPermission('assets.delete'))) {
+      return { success: false, error: 'Você não tem permissão para excluir assets' }
     }
 
     const base = process.env.NEXT_PUBLIC_RUST_URL

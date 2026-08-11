@@ -8,6 +8,7 @@ export interface AdminStoreInfo {
   name?: string
   slug?: string
   email?: string
+  maintenanceMode?: boolean
 }
 
 interface AdminStoreContextValue {
@@ -15,6 +16,7 @@ interface AdminStoreContextValue {
   store: AdminStoreInfo | null
   isLoggedIn: boolean
   categories: Category[]
+  storefrontUrl: string
 }
 
 const AdminStoreContext = createContext<AdminStoreContextValue | undefined>(undefined)
@@ -25,6 +27,7 @@ interface AdminStoreProviderProps {
   store: AdminStoreInfo | null
   isLoggedIn: boolean
   initialCategories?: Category[]
+  storefrontUrl?: string
 }
 
 export function AdminStoreProvider({
@@ -33,12 +36,14 @@ export function AdminStoreProvider({
   store,
   isLoggedIn,
   initialCategories = [],
+  storefrontUrl = '/',
 }: AdminStoreProviderProps) {
   const value: AdminStoreContextValue = {
     session,
     store,
     isLoggedIn,
     categories: initialCategories,
+    storefrontUrl,
   }
 
   return <AdminStoreContext.Provider value={value}>{children}</AdminStoreContext.Provider>

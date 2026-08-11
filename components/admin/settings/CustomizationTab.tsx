@@ -1,8 +1,11 @@
 "use client";
 
+import { useMemo } from "react";
+
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import IntegerInput from "@/components/form/IntegerInput";
 import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
@@ -15,9 +18,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Inter, Montserrat, Poppins, Zen_Kaku_Gothic_New } from "next/font/google";
-import { Save, Megaphone, AlertCircle, ImageIcon, Palette, Check, ChevronDown, ChevronUp, Plus, Smartphone, Trash2 } from "lucide-react";
+import { Save, Megaphone, AlertCircle, ImageIcon, Palette, Check, ChevronDown, ChevronUp, Plus, Smartphone, TicketPercent, Trash2, Menu, Package } from "lucide-react";
 import { ImageUpload } from "@/components/ui/image-upload";
-import type { SiteSettings, Category, SiteCustomization, BannerConfig, CategoryBannerConfig, InfoBannerConfig, HomeCategoryConfig } from "@/lib/types";
+import type { SiteSettings, Category, SiteCustomization, BannerConfig, CategoryBannerConfig, InfoBannerConfig, HomeCategoryConfig, ProductCustomField } from "@/lib/types";
 import { tAdmin } from "@/lib/i18n/admin";
 
 const inter = Inter({ subsets: ["latin"], weight: ["400", "600"] });
@@ -25,13 +28,13 @@ const poppins = Poppins({ subsets: ["latin"], weight: ["400", "600"] });
 const montserrat = Montserrat({ subsets: ["latin"], weight: ["400", "600"] });
 const zenKaku = Zen_Kaku_Gothic_New({ subsets: ["latin"], weight: ["400", "700"] });
 
-function getDefaultAnnouncementBar() {
+function getDefaultAnnouncementBar(locale = "en") {
   return {
     enabled: true,
     items: [
-      "Frete gratis para compras acima de R$ 1000",
-      "Novidades toda semana",
-      "Atacado exclusivo para lojistas",
+      tAdmin(locale, "admin.appearance.defaults.announcement.item1", "Frete gratis para compras acima de R$ 1000"),
+      tAdmin(locale, "admin.appearance.defaults.announcement.item2", "Novidades toda semana"),
+      tAdmin(locale, "admin.appearance.defaults.announcement.item3", "Atacado exclusivo para lojistas"),
     ],
     separator: "|",
     backgroundColor: "#1a1a1a",
@@ -41,12 +44,41 @@ function getDefaultAnnouncementBar() {
   };
 }
 
-function getDefaultInfoBanners() {
+function getDefaultInfoBanners(locale = "en") {
   return {
-    pedidoMinimo: { isActive: true, icon: "package" as const, title: "Pedido Minimo", description: "A partir de 6 pecas" },
-    entrega: { isActive: true, icon: "truck" as const, title: "Entrega", description: "Para todo o Brasil" },
-    pagamento: { isActive: true, icon: "credit-card" as const, title: "Pagamento", description: "Ate 6x sem juros" },
-    atendimento: { isActive: true, icon: "users" as const, title: "Atendimento", description: "Vendedora exclusiva" },
+    pedidoMinimo: {
+      isActive: true,
+      icon: "package" as const,
+      title: tAdmin(locale, "admin.appearance.defaults.info.pedidoMinimo.title", "Pedido Minimo"),
+      description: tAdmin(locale, "admin.appearance.defaults.info.pedidoMinimo.description", "A partir de 6 pecas"),
+    },
+    entrega: {
+      isActive: true,
+      icon: "truck" as const,
+      title: tAdmin(locale, "admin.appearance.defaults.info.entrega.title", "Entrega"),
+      description: tAdmin(locale, "admin.appearance.defaults.info.entrega.description", "Para todo o Brasil"),
+    },
+    pagamento: {
+      isActive: true,
+      icon: "credit-card" as const,
+      title: tAdmin(locale, "admin.appearance.defaults.info.pagamento.title", "Pagamento"),
+      description: tAdmin(locale, "admin.appearance.defaults.info.pagamento.description", "Ate 6x sem juros"),
+    },
+    atendimento: {
+      isActive: true,
+      icon: "users" as const,
+      title: tAdmin(locale, "admin.appearance.defaults.info.atendimento.title", "Atendimento"),
+      description: tAdmin(locale, "admin.appearance.defaults.info.atendimento.description", "Vendedora exclusiva"),
+    },
+  };
+}
+
+function getDefaultPopupCoupon() {
+  return {
+    enabled: false,
+    imageUrl: null,
+    couponCode: "",
+    applyButtonText: "Aplicar cupom",
   };
 }
 
@@ -94,17 +126,27 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
   function updateAnnouncementBar(updates: Partial<SiteCustomization["announcementBar"]>) {
     updateCustomization({
       announcementBar: {
-        ...(settings.customization.announcementBar || getDefaultAnnouncementBar()),
+        ...(settings.customization.announcementBar || getDefaultAnnouncementBar(locale)),
         ...updates,
       },
     });
   }
 
-  const currentAnnouncementBar = settings.customization.announcementBar || getDefaultAnnouncementBar();
+  function updatePopupCoupon(updates: Partial<NonNullable<SiteCustomization["popupCoupon"]>>) {
+    updateCustomization({
+      popupCoupon: {
+        ...(settings.customization.popupCoupon || getDefaultPopupCoupon()),
+        ...updates,
+      },
+    });
+  }
+
+  const currentAnnouncementBar = settings.customization.announcementBar || getDefaultAnnouncementBar(locale);
+  const currentPopupCoupon = settings.customization.popupCoupon || getDefaultPopupCoupon();
   const announcementItems = Array.isArray(currentAnnouncementBar.items)
     ? currentAnnouncementBar.items
-    : getDefaultAnnouncementBar().items;
-  const announcementSeparator = (currentAnnouncementBar.separator || getDefaultAnnouncementBar().separator).trim() || "|";
+    : getDefaultAnnouncementBar(locale).items;
+  const announcementSeparator = (currentAnnouncementBar.separator || getDefaultAnnouncementBar(locale).separator).trim() || "|";
   const announcementPreviewText = announcementItems.join(` ${announcementSeparator} `);
 
   function addAnnouncementItem() {
@@ -129,7 +171,7 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
   }
 
   function updateInfoBanner(key: "pedidoMinimo" | "entrega" | "pagamento" | "atendimento", updates: Partial<InfoBannerConfig>) {
-    const currentInfoBanners = settings.customization.infoBanners || getDefaultInfoBanners();
+    const currentInfoBanners = settings.customization.infoBanners || getDefaultInfoBanners(locale);
     updateCustomization({
       infoBanners: { ...currentInfoBanners, [key]: { ...currentInfoBanners[key], ...updates } },
     });
@@ -215,15 +257,128 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
     updateCustomization({ homeCategories: next });
   }
 
+  const selectedHomeCategories = Array.isArray(settings.customization.homeCategories)
+    ? settings.customization.homeCategories
+    : [];
+
+  const selectedHomeCategoryIds = useMemo(
+    () => new Set(selectedHomeCategories.map((entry) => entry.categoryId)),
+    [selectedHomeCategories],
+  );
+
+  const categoryNodes = useMemo(() => {
+    const byParent = new Map<string, Category[]>();
+    const byId = new Map(categories.map((cat) => [cat.id, cat]));
+
+    for (const category of categories) {
+      const parentId = category.parentId && byId.has(category.parentId) ? category.parentId : "__root__";
+      const siblings = byParent.get(parentId) || [];
+      siblings.push(category);
+      byParent.set(parentId, siblings);
+    }
+
+    const sortCategories = (items: Category[]) => {
+      return [...items].sort((a, b) => {
+        const orderDelta = (a.sortOrder || 0) - (b.sortOrder || 0);
+        if (orderDelta !== 0) return orderDelta;
+        return a.name.localeCompare(b.name, "pt-BR", { sensitivity: "base" });
+      });
+    };
+
+    const buildTree = (parentId: string, depth: number): Array<{ category: Category; depth: number; children: Array<{ category: Category; depth: number; children: any[] }> }> => {
+      return sortCategories(byParent.get(parentId) || []).map((category) => ({
+        category,
+        depth,
+        children: buildTree(category.id, depth + 1),
+      }));
+    };
+
+    return buildTree("__root__", 0);
+  }, [categories]);
+
+  const categoryNodeColumns = useMemo(() => {
+    const left: typeof categoryNodes = [];
+    const right: typeof categoryNodes = [];
+
+    categoryNodes.forEach((node, index) => {
+      if (index % 2 === 0) {
+        left.push(node);
+      } else {
+        right.push(node);
+      }
+    });
+
+    return [left, right] as const;
+  }, [categoryNodes]);
+
+  function toggleHomeCategory(category: Category) {
+    const selectedIndex = selectedHomeCategories.findIndex((entry) => entry.categoryId === category.id);
+    if (selectedIndex >= 0) {
+      updateCustomization({
+        homeCategories: selectedHomeCategories.filter((entry) => entry.categoryId !== category.id),
+      });
+      return;
+    }
+
+    updateCustomization({
+      homeCategories: [
+        ...selectedHomeCategories,
+        {
+          categoryId: category.id,
+          title: category.name,
+          isActive: true,
+        },
+      ],
+    });
+  }
+
+  function renderCategoryNode(node: { category: Category; depth: number; children: Array<{ category: Category; depth: number; children: any[] }> }) {
+    const { category, depth, children } = node;
+    const isSelected = selectedHomeCategoryIds.has(category.id);
+
+    return (
+      <div key={`home-category-${category.id}`} className="space-y-2">
+        <div style={{ paddingLeft: `${depth * 20}px` }}>
+          <div
+            role="button"
+            tabIndex={0}
+            className={`cursor-pointer rounded-lg border p-3 transition-all ${isSelected ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'hover:border-muted-foreground/50'}`}
+            onClick={() => toggleHomeCategory(category)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                toggleHomeCategory(category);
+              }
+            }}
+          >
+            <div className="flex items-center gap-3">
+              <div className={`flex h-5 w-5 items-center justify-center rounded border-2 ${isSelected ? 'border-primary bg-primary' : 'border-muted-foreground/50'}`}>
+                {isSelected && <Check className="h-3 w-3 text-primary-foreground" />}
+              </div>
+              <p className="truncate text-sm font-medium">{category.name}</p>
+              {children.length > 0 && <Badge variant="secondary">Pai</Badge>}
+            </div>
+          </div>
+        </div>
+
+        {children.length > 0 && (
+          <div className="space-y-2">
+            {children.map((child) => renderCategoryNode(child))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   const ICON_OPTIONS = [
-    { value: "package", label: "Pacote" },
-    { value: "truck", label: "Caminhao" },
-    { value: "credit-card", label: "Cartao" },
-    { value: "users", label: "Usuarios" },
-    { value: "clock", label: "Relogio" },
-    { value: "shield", label: "Escudo" },
-    { value: "star", label: "Estrela" },
-    { value: "heart", label: "Coracao" },
+    { value: "package", label: tAdmin(locale, "admin.appearance.icon.package", "Pacote") },
+    { value: "truck", label: tAdmin(locale, "admin.appearance.icon.truck", "Caminhao") },
+    { value: "credit-card", label: tAdmin(locale, "admin.appearance.icon.creditCard", "Cartao") },
+    { value: "users", label: tAdmin(locale, "admin.appearance.icon.users", "Usuarios") },
+    { value: "clock", label: tAdmin(locale, "admin.appearance.icon.clock", "Relogio") },
+    { value: "shield", label: tAdmin(locale, "admin.appearance.icon.shield", "Escudo") },
+    { value: "star", label: tAdmin(locale, "admin.appearance.icon.star", "Estrela") },
+    { value: "heart", label: tAdmin(locale, "admin.appearance.icon.heart", "Coracao") },
   ];
 
   const mainBanners = getMainBanners();
@@ -240,16 +395,214 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
             ? zenKaku.style.fontFamily
             : "var(--font-sans), sans-serif";
 
+  const productCustomFields = useMemo(
+    () => [...(settings.productCustomFields || [])].sort((left, right) => left.order - right.order),
+    [settings.productCustomFields],
+  );
+
+  function setProductCustomFields(nextFields: ProductCustomField[]) {
+    setSettings({
+      ...settings,
+      productCustomFields: nextFields.map((field, index) => ({ ...field, order: index + 1 })),
+    });
+  }
+
+  function updateProductCustomField(fieldId: string, updates: Partial<ProductCustomField>) {
+    const next = productCustomFields.map((field) =>
+      field.id === fieldId
+        ? { ...field, ...updates }
+        : field,
+    );
+    setProductCustomFields(next);
+  }
+
+  function addProductCustomField() {
+    const baseIndex = productCustomFields.length + 1;
+    const nextId = `product_field_${baseIndex}_${Date.now()}`;
+    const next: ProductCustomField = {
+      id: nextId,
+      label: `Campo ${baseIndex}`,
+      type: 'TEXT',
+      enabled: true,
+      required: false,
+      order: baseIndex,
+      placeholder: '',
+      helpText: '',
+    };
+    setProductCustomFields([...productCustomFields, next]);
+  }
+
+  function removeProductCustomField(fieldId: string) {
+    setProductCustomFields(productCustomFields.filter((field) => field.id !== fieldId));
+  }
+
+  function moveProductCustomField(fieldId: string, direction: -1 | 1) {
+    const currentIndex = productCustomFields.findIndex((field) => field.id === fieldId);
+    const nextIndex = currentIndex + direction;
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= productCustomFields.length) return;
+
+    const next = [...productCustomFields];
+    const [item] = next.splice(currentIndex, 1);
+    next.splice(nextIndex, 0, item);
+    setProductCustomFields(next);
+  }
+
   return (
     <div className="space-y-6">
-      <div className="flex justify-end">
-        <Button onClick={onSave} disabled={isSaving}>
-          <Save className="mr-2 h-4 w-4" />
-          {isSaving ? tAdmin(locale, "admin.common.saving", "Saving...") : tAdmin(locale, "admin.appearance.save", "Save Appearance")}
-        </Button>
-      </div>
-
       <div className="grid gap-6">
+          {/* Menu */}
+          <Card id="menu">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Menu className="h-5 w-5" />
+                {tAdmin(locale, "admin.appearance.menu.title", "Menu")}
+              </CardTitle>
+              <CardDescription>{tAdmin(locale, "admin.appearance.menu.description", "Configure menu appearance and behavior")}</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label>{tAdmin(locale, "admin.appearance.menu.transparent", "Transparent Menu")}</Label>
+                  <p className="text-sm text-muted-foreground">{tAdmin(locale, "admin.appearance.menu.transparentHelp", "Menu is transparent over hero banner with white logo. Becomes fixed with dark logo when scrolling.")}</p>
+                </div>
+                <Switch
+                  checked={settings.customization.menuTransparent ?? false}
+                  onCheckedChange={(checked) => updateCustomization({ menuTransparent: checked })}
+                />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card id="product-custom-fields">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Package className="h-5 w-5" />
+                Campos Customizados de Produto
+              </CardTitle>
+              <CardDescription>
+                Configure campos próprios do produto. Esta configuração é independente do cadastro de cliente.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex justify-end">
+                <Button type="button" variant="outline" size="sm" className="gap-2" onClick={addProductCustomField}>
+                  <Plus className="h-4 w-4" />
+                  Adicionar Campo
+                </Button>
+              </div>
+
+              {productCustomFields.length === 0 && (
+                <p className="text-sm text-muted-foreground">
+                  Nenhum campo configurado. Adicione campos para aparecerem no drawer de produto.
+                </p>
+              )}
+
+              {productCustomFields.map((field, index) => (
+                <div key={field.id} className="rounded-lg border p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-medium">Campo {index + 1}</p>
+                    <div className="flex items-center gap-1">
+                      <Button type="button" variant="ghost" size="icon" onClick={() => moveProductCustomField(field.id, -1)} disabled={index === 0}>
+                        <ChevronUp className="h-4 w-4" />
+                      </Button>
+                      <Button type="button" variant="ghost" size="icon" onClick={() => moveProductCustomField(field.id, 1)} disabled={index === productCustomFields.length - 1}>
+                        <ChevronDown className="h-4 w-4" />
+                      </Button>
+                      <Button type="button" variant="ghost" size="icon" onClick={() => removeProductCustomField(field.id)}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>Rótulo</Label>
+                      <Input
+                        value={field.label}
+                        onChange={(event) => updateProductCustomField(field.id, { label: event.target.value })}
+                        placeholder="Ex.: Material principal"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>ID do Campo</Label>
+                      <Input
+                        value={field.id}
+                        onChange={(event) => updateProductCustomField(field.id, { id: event.target.value })}
+                        placeholder="Ex.: material_principal"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Tipo</Label>
+                      <Select value={field.type} onValueChange={(value) => updateProductCustomField(field.id, { type: value as ProductCustomField['type'] })}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="TEXT">Texto</SelectItem>
+                          <SelectItem value="LONG_TEXT">Texto Longo</SelectItem>
+                          <SelectItem value="RICH_TEXT">Rich Text Editor</SelectItem>
+                          <SelectItem value="NUMBER">Número</SelectItem>
+                          <SelectItem value="URL">URL</SelectItem>
+                          <SelectItem value="SELECT">Lista</SelectItem>
+                          <SelectItem value="MULTI_UPLOAD">Multi Upload</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Placeholder</Label>
+                      <Input
+                        value={field.placeholder || ''}
+                        onChange={(event) => updateProductCustomField(field.id, { placeholder: event.target.value })}
+                        placeholder="Texto de ajuda no input"
+                      />
+                    </div>
+                  </div>
+
+                  {field.type === 'SELECT' && (
+                    <div className="space-y-2">
+                      <Label>Opções da Lista (uma por linha: valor|rótulo)</Label>
+                      <textarea
+                        className="min-h-24 w-full rounded-md border bg-background px-3 py-2 text-sm"
+                        value={(field.options || []).map((option) => `${option.value}|${option.label}`).join('\n')}
+                        onChange={(event) => {
+                          const nextOptions = event.target.value
+                            .split('\n')
+                            .map((line) => line.trim())
+                            .filter(Boolean)
+                            .map((line) => {
+                              const [rawValue, rawLabel] = line.split('|');
+                              const value = String(rawValue || '').trim();
+                              const label = String(rawLabel || rawValue || '').trim();
+                              return { value, label };
+                            })
+                            .filter((option) => option.value.length > 0);
+                          updateProductCustomField(field.id, { options: nextOptions });
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap items-center gap-6">
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        checked={field.enabled}
+                        onCheckedChange={(checked) => updateProductCustomField(field.id, { enabled: checked })}
+                      />
+                      <Label>Ativo</Label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        checked={field.required}
+                        onCheckedChange={(checked) => updateProductCustomField(field.id, { required: checked })}
+                      />
+                      <Label>Obrigatório</Label>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+
         {/* Announcement Bar */}
         <Card id="announcement-bar">
           <CardHeader>
@@ -266,7 +619,7 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                 <p className="text-sm text-muted-foreground">{tAdmin(locale, "admin.appearance.announcement.enableHelp", "Show announcement bar at the top of storefront")}</p>
               </div>
               <Switch
-                checked={settings.customization.announcementBar?.enabled ?? getDefaultAnnouncementBar().enabled}
+                checked={settings.customization.announcementBar?.enabled ?? getDefaultAnnouncementBar(locale).enabled}
                 onCheckedChange={(checked) => updateAnnouncementBar({ enabled: checked })}
               />
             </div>
@@ -285,7 +638,7 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                     <Input
                       value={item}
                       onChange={(e) => updateAnnouncementItem(index, e.target.value)}
-                      placeholder={`Item ${index + 1} do anuncio`}
+                      placeholder={tAdmin(locale, "admin.appearance.announcement.itemPlaceholder", "Item {index} do anuncio").replace("{index}", String(index + 1))}
                     />
                     <Button
                       type="button"
@@ -293,7 +646,7 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                       size="icon"
                       onClick={() => removeAnnouncementItem(index)}
                       disabled={announcementItems.length === 1}
-                      aria-label={`Remover item ${index + 1}`}
+                      aria-label={tAdmin(locale, "admin.appearance.announcement.removeItemAria", "Remover item {index}").replace("{index}", String(index + 1))}
                     >
                       <Trash2 className="h-4 w-4" />
                     </Button>
@@ -305,15 +658,15 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
               <div className="space-y-2">
                 <Label>{tAdmin(locale, "admin.appearance.announcement.backgroundColor", "Background Color")}</Label>
                 <div className="flex gap-2">
-                  <Input type="color" value={settings.customization.announcementBar?.backgroundColor || getDefaultAnnouncementBar().backgroundColor} onChange={(e) => updateAnnouncementBar({ backgroundColor: e.target.value })} className="h-10 w-16 cursor-pointer p-1" />
-                  <Input value={settings.customization.announcementBar?.backgroundColor || getDefaultAnnouncementBar().backgroundColor} onChange={(e) => updateAnnouncementBar({ backgroundColor: e.target.value })} className="flex-1" />
+                  <Input type="color" value={settings.customization.announcementBar?.backgroundColor || getDefaultAnnouncementBar(locale).backgroundColor} onChange={(e) => updateAnnouncementBar({ backgroundColor: e.target.value })} className="h-10 w-16 cursor-pointer p-1" />
+                  <Input value={settings.customization.announcementBar?.backgroundColor || getDefaultAnnouncementBar(locale).backgroundColor} onChange={(e) => updateAnnouncementBar({ backgroundColor: e.target.value })} className="flex-1" />
                 </div>
               </div>
               <div className="space-y-2">
                 <Label>{tAdmin(locale, "admin.appearance.announcement.textColor", "Text Color")}</Label>
                 <div className="flex gap-2">
-                  <Input type="color" value={settings.customization.announcementBar?.textColor || getDefaultAnnouncementBar().textColor} onChange={(e) => updateAnnouncementBar({ textColor: e.target.value })} className="h-10 w-16 cursor-pointer p-1" />
-                  <Input value={settings.customization.announcementBar?.textColor || getDefaultAnnouncementBar().textColor} onChange={(e) => updateAnnouncementBar({ textColor: e.target.value })} className="flex-1" />
+                  <Input type="color" value={settings.customization.announcementBar?.textColor || getDefaultAnnouncementBar(locale).textColor} onChange={(e) => updateAnnouncementBar({ textColor: e.target.value })} className="h-10 w-16 cursor-pointer p-1" />
+                  <Input value={settings.customization.announcementBar?.textColor || getDefaultAnnouncementBar(locale).textColor} onChange={(e) => updateAnnouncementBar({ textColor: e.target.value })} className="flex-1" />
                 </div>
               </div>
               <div className="space-y-2">
@@ -355,6 +708,64 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
               <div className="overflow-hidden rounded-xl px-4 py-3 text-center text-sm" style={{ backgroundColor: settings.customization.announcementBar?.backgroundColor || "#1a1a1a", color: settings.customization.announcementBar?.textColor || "#ffffff" }}>
                 <p className="truncate">{announcementPreviewText || tAdmin(locale, "admin.appearance.announcement.previewEmpty", "Add items to preview the bar")}</p>
               </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card id="popup">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <TicketPercent className="h-5 w-5" />
+              Popup
+            </CardTitle>
+            <CardDescription>
+              Exibe um popup promocional no storefront. O botão de aplicar só aparece quando houver cupom.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label>Ativar popup</Label>
+                <p className="text-sm text-muted-foreground">Quando ativo, o popup aparece para os visitantes da loja.</p>
+              </div>
+              <Switch
+                checked={Boolean(currentPopupCoupon.enabled)}
+                onCheckedChange={(checked) => updatePopupCoupon({ enabled: checked })}
+              />
+            </div>
+
+            <Separator />
+
+            <div className="space-y-2">
+              <Label>Imagem do popup</Label>
+              <p className="text-sm text-muted-foreground">Recomendado: 1500x1500px para melhor qualidade.</p>
+              <ImageUpload
+                value={currentPopupCoupon.imageUrl}
+                onChange={(url) => updatePopupCoupon({ imageUrl: url })}
+                imageType="popupSquare"
+                folder="theme/popup"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="popup-coupon-code">Codigo do cupom (opcional)</Label>
+              <Input
+                id="popup-coupon-code"
+                value={currentPopupCoupon.couponCode || ""}
+                onChange={(e) => updatePopupCoupon({ couponCode: e.target.value.toUpperCase() })}
+                placeholder="EX: BEMVINDO10"
+              />
+              <p className="text-xs text-muted-foreground">Se vazio, o popup será exibido sem botão de aplicar cupom.</p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="popup-coupon-button-text">Texto do botao</Label>
+              <Input
+                id="popup-coupon-button-text"
+                value={currentPopupCoupon.applyButtonText || ""}
+                onChange={(e) => updatePopupCoupon({ applyButtonText: e.target.value })}
+                placeholder="Aplicar cupom"
+              />
             </div>
           </CardContent>
         </Card>
@@ -403,8 +814,8 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
           <CardContent className="space-y-6">
             <div className="space-y-2">
               <Label>{tAdmin(locale, "admin.appearance.storefront.displayMode", "Display Mode")}</Label>
-              <Select 
-                value={settings.customization.storefrontDisplayMode || "products"} 
+              <Select
+                value={settings.customization.storefrontDisplayMode || "products"}
                 onValueChange={(value) => updateCustomization({ storefrontDisplayMode: value as "products" | "imageLevels" })}
               >
                 <SelectTrigger>
@@ -416,6 +827,122 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                 </SelectContent>
               </Select>
             </div>
+
+            <div className="space-y-2">
+              <Label>Modo de navegar</Label>
+              <Select
+                value={settings.customization.storefrontNavigationMode || "pagination"}
+                onValueChange={(value) => updateCustomization({ storefrontNavigationMode: value as "pagination" | "infiniteScroll" })}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="pagination">Paginacao</SelectItem>
+                  <SelectItem value="infiniteScroll">Infinito Scroll</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>{tAdmin(locale, "admin.appearance.storefront.defaultSort", "Default Sort Order")}</Label>
+              <Select
+                value={settings.customization.storefrontDefaultSort || "relevance"}
+                onValueChange={(value) => updateCustomization({ storefrontDefaultSort: value as "relevance" | "price_asc" | "price_desc" | "newest" | "sku" })}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="relevance">{tAdmin(locale, "admin.appearance.storefront.defaultSort.relevance", "Relevance")}</SelectItem>
+                  <SelectItem value="price_asc">{tAdmin(locale, "admin.appearance.storefront.defaultSort.price_asc", "Lowest Price")}</SelectItem>
+                  <SelectItem value="price_desc">{tAdmin(locale, "admin.appearance.storefront.defaultSort.price_desc", "Highest Price")}</SelectItem>
+                  <SelectItem value="newest">{tAdmin(locale, "admin.appearance.storefront.defaultSort.newest", "Newest")}</SelectItem>
+                  <SelectItem value="sku">{tAdmin(locale, "admin.appearance.storefront.defaultSort.sku", "SKU")}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-center justify-between gap-4">
+              <div className="space-y-0.5">
+                <Label>Visualizar desconto do PIX</Label>
+                <p className="text-sm text-muted-foreground">
+                  Exibe o desconto do PIX no card do produto e na página do produto.
+                </p>
+              </div>
+              <Switch
+                checked={settings.customization.showPixDiscount ?? true}
+                onCheckedChange={(checked) => updateCustomization({ showPixDiscount: checked })}
+              />
+            </div>
+
+            <div className="flex items-center justify-between gap-4">
+              <div className="space-y-0.5">
+                <Label>Visualizar parcelamento nos produtos</Label>
+                <p className="text-sm text-muted-foreground">
+                  Exibe o parcelamento no card do produto e na página do produto.
+                </p>
+              </div>
+              <Switch
+                checked={settings.customization.showInstallments ?? true}
+                onCheckedChange={(checked) => updateCustomization({ showInstallments: checked })}
+              />
+            </div>
+
+            <Separator />
+
+            <div className="space-y-4">
+              <div>
+                <Label className="text-sm font-medium">Proporção de mídia (fotos e vídeos)</Label>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Escolha a proporção (largura x altura) das miniaturas de fotos e vídeos dos produtos. Arquivos com formatos diferentes serão ajustados automaticamente por recorte, preservando a proporcionalidade e sem distorção. Caso não informe um valor, será utilizada a proporção padrão (683 x 1024 px).
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <IntegerInput
+                    label="Largura de mídia"
+                    min={1}
+                    placeholder="683"
+                    value={settings.customization.mediaAspectWidth ?? null}
+                    onChange={(value) => updateCustomization({ mediaAspectWidth: value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <IntegerInput
+                    label="Altura de mídia"
+                    min={1}
+                    placeholder="1024"
+                    value={settings.customization.mediaAspectHeight ?? null}
+                    onChange={(value) => updateCustomization({ mediaAspectHeight: value })}
+                  />
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card id="login">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <ImageIcon className="h-5 w-5" />
+              Login
+            </CardTitle>
+            <CardDescription>
+              Configure a imagem lateral exibida nas telas de login e cadastro.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <Label>Imagem lateral do login</Label>
+            <p className="text-sm text-muted-foreground">
+              Recomendado: 768 x 885 px. Se não houver imagem, a tela de login mantém o visual atual.
+            </p>
+            <ImageUpload
+              value={settings.customization.loginSideImageUrl || null}
+              onChange={(url) => updateCustomization({ loginSideImageUrl: url })}
+              imageType="loginSideImage"
+              folder="theme/login"
+            />
           </CardContent>
         </Card>
 
@@ -495,8 +1022,8 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                   <div key={`main-banner-${index}`} className="space-y-4 rounded-xl border p-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="space-y-1">
-                        <p className="text-sm font-semibold">Banner {index + 1}</p>
-                        <p className="text-xs text-muted-foreground">Ordem de exibicao no slider da loja</p>
+                        <p className="text-sm font-semibold">{tAdmin(locale, "admin.appearance.mainBanners.bannerLabel", "Banner {index}").replace("{index}", String(index + 1))}</p>
+                        <p className="text-xs text-muted-foreground">{tAdmin(locale, "admin.appearance.mainBanners.orderHint", "Ordem de exibicao no slider da loja")}</p>
                       </div>
                       <div className="flex items-center gap-2">
                         <Button type="button" variant="outline" size="icon" onClick={() => moveMainBanner(index, -1)} disabled={index === 0}>
@@ -543,7 +1070,7 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                     {banner.useMobileImage && (
                       <div className="space-y-2">
                         <Label>{tAdmin(locale, "admin.appearance.mainBanners.imageMobile", "Mobile image")}</Label>
-                        <ImageUpload value={banner.mobileImageUrl || null} onChange={(url) => updateMainBanner(index, { mobileImageUrl: url || null, useMobileImage: Boolean(url) || banner.useMobileImage })} imageType="mainBanner" folder="banners/mobile" />
+                        <ImageUpload value={banner.mobileImageUrl || null} onChange={(url) => updateMainBanner(index, { mobileImageUrl: url || null, useMobileImage: Boolean(url) || banner.useMobileImage })} imageType="mainBannerMobile" folder="banners/mobile" />
                       </div>
                     )}
 
@@ -554,7 +1081,7 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                       </div>
                       <div className="space-y-2">
                         <Label>{tAdmin(locale, "admin.appearance.mainBanners.link", "Banner link (optional)")}</Label>
-                        <Input value={banner.linkUrl || ""} onChange={(e) => updateMainBanner(index, { linkUrl: e.target.value || null })} placeholder="/products ou https://..." />
+                        <Input value={banner.linkUrl || ""} onChange={(e) => updateMainBanner(index, { linkUrl: e.target.value || null })} placeholder={tAdmin(locale, "admin.appearance.mainBanners.linkPlaceholder", "/products ou https://...")} />
                       </div>
                     </div>
                   </div>
@@ -567,24 +1094,24 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
         {/* Mini Banners */}
         <Card id="mini-banners">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2"><ImageIcon className="h-5 w-5" />Mini Banners</CardTitle>
-            <CardDescription>Configure mini banners para exibir abaixo do banner principal.</CardDescription>
+            <CardTitle className="flex items-center gap-2"><ImageIcon className="h-5 w-5" />{tAdmin(locale, "admin.appearance.miniBanners.title", "Mini Banners")}</CardTitle>
+            <CardDescription>{tAdmin(locale, "admin.appearance.miniBanners.description", "Configure mini banners para exibir abaixo do banner principal.")}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
             <div className="flex items-center justify-between rounded-lg border p-4">
               <div className="space-y-1">
-                <Label className="text-base">Quantidade de mini banners</Label>
-                <p className="text-sm text-muted-foreground">A home pode usar estes banners em blocos menores.</p>
+                <Label className="text-base">{tAdmin(locale, "admin.appearance.miniBanners.count", "Quantidade de mini banners")}</Label>
+                <p className="text-sm text-muted-foreground">{tAdmin(locale, "admin.appearance.miniBanners.countHelp", "A home pode usar estes banners em blocos menores.")}</p>
               </div>
               <Button type="button" variant="outline" onClick={addMiniBanner}>
                 <Plus className="mr-2 h-4 w-4" />
-                Adicionar mini banner
+                {tAdmin(locale, "admin.appearance.miniBanners.add", "Adicionar mini banner")}
               </Button>
             </div>
 
             {miniBanners.length === 0 ? (
               <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-                Nenhum mini banner configurado. Adicione o primeiro mini banner.
+                {tAdmin(locale, "admin.appearance.miniBanners.empty", "Nenhum mini banner configurado. Adicione o primeiro mini banner.")}
               </div>
             ) : (
               <div className="space-y-6">
@@ -592,8 +1119,8 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                   <div key={`mini-banner-${index}`} className="space-y-4 rounded-xl border p-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="space-y-1">
-                        <p className="text-sm font-semibold">Mini Banner {index + 1}</p>
-                        <p className="text-xs text-muted-foreground">Ordem de exibicao na home</p>
+                        <p className="text-sm font-semibold">{tAdmin(locale, "admin.appearance.miniBanners.bannerLabel", "Mini Banner {index}").replace("{index}", String(index + 1))}</p>
+                        <p className="text-xs text-muted-foreground">{tAdmin(locale, "admin.appearance.miniBanners.orderHint", "Ordem de exibicao na home")}</p>
                       </div>
                       <div className="flex items-center gap-2">
                         <Button type="button" variant="outline" size="icon" onClick={() => moveMiniBanner(index, -1)} disabled={index === 0}>
@@ -610,8 +1137,8 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
 
                     <div className="flex items-center justify-between">
                       <div className="space-y-0.5">
-                        <Label>Mini banner ativo</Label>
-                        <p className="text-sm text-muted-foreground">Exibir este mini banner na home.</p>
+                        <Label>{tAdmin(locale, "admin.appearance.miniBanners.active", "Mini banner ativo")}</Label>
+                        <p className="text-sm text-muted-foreground">{tAdmin(locale, "admin.appearance.miniBanners.activeHelp", "Exibir este mini banner na home.")}</p>
                       </div>
                       <Switch checked={banner.isActive} onCheckedChange={(checked) => updateMiniBanner(index, { isActive: checked })} />
                     </div>
@@ -619,14 +1146,14 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                     <Separator />
 
                     <div className="space-y-2">
-                      <Label>Imagem desktop</Label>
+                      <Label>{tAdmin(locale, "admin.appearance.miniBanners.imageDesktop", "Imagem desktop")}</Label>
                       <ImageUpload value={banner.imageUrl || null} onChange={(url) => updateMiniBanner(index, { imageUrl: url || '' })} imageType="mainBanner" folder="banners/mini" />
                     </div>
 
                     <div className="flex items-center justify-between rounded-lg border bg-muted/20 px-4 py-3">
                       <div className="space-y-0.5">
-                        <Label className="flex items-center gap-2"><Smartphone className="h-4 w-4" />Usar versao mobile</Label>
-                        <p className="text-sm text-muted-foreground">Ative para subir uma imagem separada para telas pequenas.</p>
+                        <Label className="flex items-center gap-2"><Smartphone className="h-4 w-4" />{tAdmin(locale, "admin.appearance.miniBanners.useMobile", "Usar versao mobile")}</Label>
+                        <p className="text-sm text-muted-foreground">{tAdmin(locale, "admin.appearance.miniBanners.useMobileHelp", "Ative para subir uma imagem separada para telas pequenas.")}</p>
                       </div>
                       <Switch
                         checked={banner.useMobileImage}
@@ -639,19 +1166,19 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
 
                     {banner.useMobileImage && (
                       <div className="space-y-2">
-                        <Label>Imagem mobile</Label>
-                        <ImageUpload value={banner.mobileImageUrl || null} onChange={(url) => updateMiniBanner(index, { mobileImageUrl: url || null, useMobileImage: Boolean(url) || banner.useMobileImage })} imageType="mainBanner" folder="banners/mini/mobile" />
+                        <Label>{tAdmin(locale, "admin.appearance.miniBanners.imageMobile", "Imagem mobile")}</Label>
+                        <ImageUpload value={banner.mobileImageUrl || null} onChange={(url) => updateMiniBanner(index, { mobileImageUrl: url || null, useMobileImage: Boolean(url) || banner.useMobileImage })} imageType="mainBannerMobile" folder="banners/mini/mobile" />
                       </div>
                     )}
 
                     <div className="grid gap-4 md:grid-cols-2">
                       <div className="space-y-2">
-                        <Label>Texto alternativo</Label>
-                        <Input value={banner.altText || ""} onChange={(e) => updateMiniBanner(index, { altText: e.target.value })} placeholder="Descricao do mini banner" />
+                        <Label>{tAdmin(locale, "admin.appearance.miniBanners.altText", "Texto alternativo")}</Label>
+                        <Input value={banner.altText || ""} onChange={(e) => updateMiniBanner(index, { altText: e.target.value })} placeholder={tAdmin(locale, "admin.appearance.miniBanners.altPlaceholder", "Descricao do mini banner")} />
                       </div>
                       <div className="space-y-2">
-                        <Label>Link do mini banner (opcional)</Label>
-                        <Input value={banner.linkUrl || ""} onChange={(e) => updateMiniBanner(index, { linkUrl: e.target.value || null })} placeholder="/produtos ou https://..." />
+                        <Label>{tAdmin(locale, "admin.appearance.miniBanners.link", "Link do mini banner (opcional)")}</Label>
+                        <Input value={banner.linkUrl || ""} onChange={(e) => updateMiniBanner(index, { linkUrl: e.target.value || null })} placeholder={tAdmin(locale, "admin.appearance.miniBanners.linkPlaceholder", "/produtos ou https://...")} />
                       </div>
                     </div>
                   </div>
@@ -669,14 +1196,18 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
           </CardHeader>
           <CardContent className="space-y-6">
             <div className="space-y-4">
-              <Label className="text-base font-medium">Modo de Exibicao</Label>
+              <Label className="text-base font-medium">{tAdmin(locale, "admin.appearance.categoryBanners.displayMode.title", "Modo de Exibicao")}</Label>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
                 {(['auto', 'custom', 'disabled'] as const).map((mode) => {
-                  const labels = { auto: 'Automatico', custom: 'Personalizado', disabled: 'Desativado' };
+                  const labels = {
+                    auto: tAdmin(locale, "admin.appearance.categoryBanners.displayMode.auto.label", "Automatico"),
+                    custom: tAdmin(locale, "admin.appearance.categoryBanners.displayMode.custom.label", "Personalizado"),
+                    disabled: tAdmin(locale, "admin.appearance.categoryBanners.displayMode.disabled.label", "Desativado"),
+                  };
                   const descriptions = {
-                    auto: 'Usa a foto mais recente de cada categoria',
-                    custom: 'Faca upload de imagens personalizadas',
-                    disabled: 'Nao exibir banners de categoria',
+                    auto: tAdmin(locale, "admin.appearance.categoryBanners.displayMode.auto.description", "Usa a foto mais recente de cada categoria"),
+                    custom: tAdmin(locale, "admin.appearance.categoryBanners.displayMode.custom.description", "Faca upload de imagens personalizadas"),
+                    disabled: tAdmin(locale, "admin.appearance.categoryBanners.displayMode.disabled.description", "Nao exibir banners de categoria"),
                   };
                   const isSelected = (settings.customization.categoryBannerMode || 'custom') === mode;
                   return (
@@ -698,7 +1229,7 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
               <>
                 <Separator />
                 <div className="space-y-4">
-                  <Label className="text-base font-medium">Categorias Selecionadas</Label>
+                  <Label className="text-base font-medium">{tAdmin(locale, "admin.appearance.categoryBanners.selectedCategories", "Categorias Selecionadas")}</Label>
                   <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
                     {categories.map((cat) => {
                       const isSelected = settings.customization.categoryBanners.some((b) => b.categoryId === cat.id);
@@ -735,7 +1266,7 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                   <>
                     <Separator />
                     <div className="space-y-4">
-                      <Label className="text-base font-medium">Imagens Personalizadas</Label>
+                      <Label className="text-base font-medium">{tAdmin(locale, "admin.appearance.categoryBanners.customImages", "Imagens Personalizadas")}</Label>
                       {settings.customization.categoryBanners.map((banner, index) => {
                         const category = categories.find((c) => c.id === banner.categoryId);
                         if (!category) return null;
@@ -744,17 +1275,17 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-3">
                                 <span className="font-medium">{category.name}</span>
-                                <Badge variant={banner.imageUrl ? 'default' : 'secondary'}>{banner.imageUrl ? 'Imagem definida' : 'Sem imagem'}</Badge>
+                                <Badge variant={banner.imageUrl ? 'default' : 'secondary'}>{banner.imageUrl ? tAdmin(locale, "admin.appearance.categoryBanners.imageSet", "Imagem definida") : tAdmin(locale, "admin.appearance.categoryBanners.noImage", "Sem imagem")}</Badge>
                               </div>
                               <Switch checked={banner.isActive} onCheckedChange={(checked) => updateCategoryBanner(index, { isActive: checked })} />
                             </div>
                             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                               <div className="space-y-2">
-                                <Label>Imagem</Label>
+                                <Label>{tAdmin(locale, "admin.appearance.categoryBanners.imageLabel", "Imagem")}</Label>
                                 <ImageUpload value={banner.imageUrl || null} onChange={(url) => updateCategoryBanner(index, { imageUrl: url || '' })} imageType="categoryBanner" folder="banners/categories" />
                               </div>
                               <div className="space-y-2">
-                                <Label>Texto Alternativo</Label>
+                                <Label>{tAdmin(locale, "admin.appearance.categoryBanners.altTextLabel", "Texto Alternativo")}</Label>
                                 <Input value={banner.altText} onChange={(e) => updateCategoryBanner(index, { altText: e.target.value })} placeholder={tAdmin(locale, "admin.appearance.mainBanners.altTextPlaceholder", "Banner description")} />
                               </div>
                             </div>
@@ -769,7 +1300,7 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                   <>
                     <Separator />
                     <div className="rounded-lg bg-muted/50 p-4">
-                      <p className="text-sm text-muted-foreground mb-4"><strong>Modo Automatico:</strong> O sistema usara automaticamente a foto mais recente de cada categoria.</p>
+                      <p className="text-sm text-muted-foreground mb-4">{tAdmin(locale, "admin.appearance.categoryBanners.autoModeInfo", "Modo Automatico: O sistema usara automaticamente a foto mais recente de cada categoria.")}</p>
                       {settings.customization.categoryBanners.map((banner, index) => {
                         const category = categories.find((c) => c.id === banner.categoryId);
                         if (!category) return null;
@@ -796,8 +1327,13 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
           </CardHeader>
           <CardContent className="space-y-6">
             {(["pedidoMinimo", "entrega", "pagamento", "atendimento"] as const).map((key) => {
-              const labels = { pedidoMinimo: "Pedido Minimo", entrega: "Entrega", pagamento: "Pagamento", atendimento: "Atendimento" };
-              const banner = settings.customization.infoBanners?.[key] || getDefaultInfoBanners()[key];
+              const labels = {
+                pedidoMinimo: tAdmin(locale, "admin.appearance.defaults.info.pedidoMinimo.title", "Pedido Minimo"),
+                entrega: tAdmin(locale, "admin.appearance.defaults.info.entrega.title", "Entrega"),
+                pagamento: tAdmin(locale, "admin.appearance.defaults.info.pagamento.title", "Pagamento"),
+                atendimento: tAdmin(locale, "admin.appearance.defaults.info.atendimento.title", "Atendimento"),
+              };
+              const banner = settings.customization.infoBanners?.[key] || getDefaultInfoBanners(locale)[key];
               return (
                 <div key={key} className="space-y-4 rounded-lg border p-4">
                   <div className="flex items-center justify-between">
@@ -830,59 +1366,27 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
         {/* Home Categories */}
         <Card id="home-categories">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2"><ImageIcon className="h-5 w-5" />Categorias da Home</CardTitle>
-            <CardDescription>Selecione categorias para exibir carrosseis de produtos na home da vitrine.</CardDescription>
+            <CardTitle className="flex items-center gap-2"><ImageIcon className="h-5 w-5" />{tAdmin(locale, "admin.appearance.homeCategories.title", "Categorias da Home")}</CardTitle>
+            <CardDescription>{tAdmin(locale, "admin.appearance.homeCategories.description", "Selecione categorias para exibir carrosseis de produtos na home da vitrine.")}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
             <div className="space-y-4">
-              <Label className="text-base font-medium">Categorias Selecionadas</Label>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                {categories.map((cat) => {
-                  const selectedHomeCategories = Array.isArray(settings.customization.homeCategories)
-                    ? settings.customization.homeCategories
-                    : [];
-                  const selectedIndex = selectedHomeCategories.findIndex((entry) => entry.categoryId === cat.id);
-                  const isSelected = selectedIndex >= 0;
-
-                  return (
-                    <div
-                      key={`home-category-${cat.id}`}
-                      className={`cursor-pointer rounded-lg border p-3 transition-all ${isSelected ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'hover:border-muted-foreground/50'}`}
-                      onClick={() => {
-                        if (isSelected) {
-                          updateCustomization({ homeCategories: selectedHomeCategories.filter((entry) => entry.categoryId !== cat.id) });
-                        } else {
-                          updateCustomization({
-                            homeCategories: [
-                              ...selectedHomeCategories,
-                              {
-                                categoryId: cat.id,
-                                title: cat.name,
-                                isActive: true,
-                              },
-                            ],
-                          });
-                        }
-                      }}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className={`flex h-5 w-5 items-center justify-center rounded border-2 ${isSelected ? 'border-primary bg-primary' : 'border-muted-foreground/50'}`}>
-                          {isSelected && <Check className="h-3 w-3 text-primary-foreground" />}
-                        </div>
-                        <p className="truncate text-sm font-medium">{cat.name}</p>
-                      </div>
-                    </div>
-                  );
-                })}
+              <Label className="text-base font-medium">{tAdmin(locale, "admin.appearance.homeCategories.selectedCategories", "Categorias Selecionadas")}</Label>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 md:gap-6">
+                {categoryNodeColumns.map((columnNodes, columnIndex) => (
+                  <div key={`home-categories-column-${columnIndex}`} className="space-y-2">
+                    {columnNodes.map((node) => renderCategoryNode(node))}
+                  </div>
+                ))}
               </div>
             </div>
 
-            {(settings.customization.homeCategories || []).length > 0 && (
+            {selectedHomeCategories.length > 0 && (
               <>
                 <Separator />
                 <div className="space-y-4">
-                  <Label className="text-base font-medium">Configuracao das secoes</Label>
-                  {(settings.customization.homeCategories || []).map((entry, index) => {
+                  <Label className="text-base font-medium">{tAdmin(locale, "admin.appearance.homeCategories.sectionsConfig", "Configuracao das secoes")}</Label>
+                  {selectedHomeCategories.map((entry, index) => {
                     const category = categories.find((cat) => cat.id === entry.categoryId);
                     if (!category) return null;
 
@@ -891,7 +1395,7 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                         <div className="flex items-center justify-between">
                           <div className="space-y-1">
                             <p className="text-sm font-semibold">{category.name}</p>
-                            <p className="text-xs text-muted-foreground">Ordem de exibicao: {index + 1}</p>
+                            <p className="text-xs text-muted-foreground">{tAdmin(locale, "admin.appearance.homeCategories.orderHint", "Ordem de exibicao: {index}").replace("{index}", String(index + 1))}</p>
                           </div>
                           <Switch
                             checked={entry.isActive ?? true}
@@ -900,7 +1404,7 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                         </div>
 
                         <div className="space-y-2">
-                          <Label>Titulo da secao</Label>
+                          <Label>{tAdmin(locale, "admin.appearance.homeCategories.sectionTitle", "Titulo da secao")}</Label>
                           <Input
                             value={entry.title || ''}
                             onChange={(e) => updateHomeCategory(index, { title: e.target.value })}
@@ -929,13 +1433,13 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                             variant="outline"
                             size="icon"
                             onClick={() => {
-                              const selectedHomeCategories = [...(settings.customization.homeCategories || [])];
-                              if (index >= selectedHomeCategories.length - 1) return;
-                              const [moved] = selectedHomeCategories.splice(index, 1);
-                              selectedHomeCategories.splice(index + 1, 0, moved);
-                              updateCustomization({ homeCategories: selectedHomeCategories });
+                              const nextHomeCategories = [...selectedHomeCategories];
+                              if (index >= nextHomeCategories.length - 1) return;
+                              const [moved] = nextHomeCategories.splice(index, 1);
+                              nextHomeCategories.splice(index + 1, 0, moved);
+                              updateCustomization({ homeCategories: nextHomeCategories });
                             }}
-                            disabled={index >= (settings.customization.homeCategories || []).length - 1}
+                            disabled={index >= selectedHomeCategories.length - 1}
                           >
                             <ChevronDown className="h-4 w-4" />
                           </Button>
@@ -976,6 +1480,17 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
           </CardContent>
         </Card>
       </div>
+
+      <Button
+        onClick={onSave}
+        disabled={isSaving}
+        className="fixed sm:bottom-6 bottom-20 right-6 z-50 h-12 rounded-full px-4 shadow-lg"
+        aria-label="Salvar"
+        title="Salvar"
+      >
+        <Save className="mr-2 h-5 w-5" />
+        Salvar
+      </Button>
     </div>
   );
 }

@@ -20,6 +20,13 @@ import {
   ListFilter,
   Send,
   RotateCcw,
+  ContactRound,
+  CreditCard,
+  FileText,
+  Link2,
+  Boxes,
+  Receipt,
+  Truck,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
@@ -35,6 +42,7 @@ import AdminThemeSelector from '@/components/admin/admin-theme-selector'
 import type { SessionUser } from '@/lib/types'
 import { logoutAction } from '@/lib/actions/auth'
 import { useState, useEffect } from 'react'
+import { getStorefrontHref } from '@/lib/storefront-url'
 
 type AdminBottomNavProps = {
   session?: SessionUser | null
@@ -49,17 +57,51 @@ const PRIMARY_NAV = [
 ]
 
 const MORE_NAV = [
+  { name: 'Dashboard B2C', href: '/b2c', icon: ContactRound },
+  { name: 'Clientes B2C', href: '/b2c-leads', icon: Users },
+  { name: 'Pedidos B2C', href: '/b2c-orders', icon: ShoppingCart },
+  { name: 'Links de pagamento', href: '/payment-links', icon: Link2 },
   { name: 'Automações', href: '/mensageria', icon: MessageSquare },
-  { name: 'Carrinhos abandonados', href: '/orders/abandoned-carts', icon: RotateCcw },
+  { name: 'Carrinhos abandonados', href: '/carrinhos-abandonados', icon: RotateCcw },
+  { name: 'Notas fiscais', href: '/orders/invoices', icon: Receipt },
+  { name: 'Etiquetas', href: '/orders/labels', icon: Tag },
+  { name: 'Clientes offline', href: '/offline/customers', icon: Users },
+  { name: 'Vendedoras offline', href: '/offline/sellers', icon: UserCog },
+  { name: 'Pedidos offline', href: '/offline/orders', icon: ShoppingCart },
+  { name: 'Atribuição offline', href: '/offline/attribution', icon: GitBranch },
   { name: 'Smart Lists', href: '/smart-lists', icon: ListFilter },
   { name: 'Campanhas', href: '/campaigns', icon: Send },
+  { name: 'Composição de produtos', href: '/compositions', icon: Boxes },
   { name: 'Categorias', href: '/categories', icon: LayoutGrid },
+  { name: 'Vitrine de assets', href: '/assets/showcase', icon: Store },
   { name: 'Cupons', href: '/coupons', icon: Tag },
   { name: 'Regras de Preço', href: '/price-tables', icon: Tag },
   { name: 'Descontos por Qtd', href: '/tier-discounts', icon: Tag },
+  { name: 'WMS · Fulfillment', href: '/wms/fulfillment', icon: ShoppingCart },
+  { name: 'WMS · Entrada', href: '/wms/receipts', icon: Package },
+  { name: 'WMS · Estoque', href: '/wms/positions', icon: Boxes },
+  { name: 'WMS · Movimentação', href: '/wms/movements', icon: Truck },
+  { name: 'Menu da vitrine', href: '/pages/menu', icon: FileText },
+  { name: 'Páginas institucionais', href: '/pages/institutional', icon: FileText },
   { name: 'Filiais', href: '/branches', icon: GitBranch, adminOnly: true },
   { name: 'Usuários', href: '/users', icon: UserCog, adminOnly: true },
-  { name: 'Configurações', href: '/settings', icon: Settings, adminOnly: true },
+  { name: 'Configurações gerais', href: '/settings/general', icon: Settings, adminOnly: true },
+  { name: 'Permissões', href: '/settings/permissions', icon: UserCog, adminOnly: true },
+  { name: 'Configurações B2B', href: '/settings/b2b', icon: Users, adminOnly: true },
+  { name: 'Configurações B2C', href: '/settings/b2c', icon: ContactRound, adminOnly: true },
+  { name: 'Aparência', href: '/settings/appearance', icon: Store, adminOnly: true },
+  { name: 'Pagamentos', href: '/settings/payments', icon: CreditCard, adminOnly: true },
+  { name: 'Estoque', href: '/settings/stock', icon: Boxes, adminOnly: true },
+  { name: 'Armazéns', href: '/settings/stock-warehouses', icon: Store, adminOnly: true },
+  { name: 'Localizações de estoque', href: '/settings/stock-locations', icon: GitBranch, adminOnly: true },
+  { name: 'Frete', href: '/settings/shipping', icon: Truck, adminOnly: true },
+  { name: 'Marketing', href: '/settings/marketing', icon: MessageSquare, adminOnly: true },
+  { name: 'E-mails', href: '/settings/emails', icon: MessageSquare, adminOnly: true },
+  { name: 'ERP', href: '/settings/erp', icon: Link2, adminOnly: true },
+  { name: 'Webhooks', href: '/settings/integrations', icon: Link2, adminOnly: true },
+  { name: 'Fiscal', href: '/settings/fiscal', icon: Receipt, adminOnly: true },
+  { name: 'Domínio', href: '/settings/domain', icon: Store, adminOnly: true },
+  { name: 'Billing', href: '/settings/billing', icon: Receipt, adminOnly: true },
 ]
 
 const localeOptions = [
@@ -153,7 +195,7 @@ export default function AdminBottomNav({ session, storeName }: AdminBottomNavPro
             {/* Ver Vitrine */}
             <div className="px-4 pb-3">
               <Link
-                href="/"
+                href={getStorefrontHref(session?.storeId)}
                 target="_blank"
                 className="flex min-h-12 items-center justify-center gap-2 rounded-2xl border border-border/60 bg-muted/50 px-4 py-3 text-[13px] font-medium transition-colors hover:bg-muted/80"
               >

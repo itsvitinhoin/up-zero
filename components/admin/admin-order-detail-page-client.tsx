@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,6 +16,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+} from "@/components/ui/table";
 import {
   Dialog,
   DialogContent,
@@ -36,54 +38,76 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Separator } from "@/components/ui/separator";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
 import {
   ArrowLeft,
   Package,
+  Clock,
   Check,
+  Plus,
   Trash2,
   RotateCcw,
   Edit,
   Save,
   X,
-  Search,
   FileText,
   Printer,
   Send,
+  Truck,
   Phone,
   Mail,
   MapPin,
   CalendarDays,
   Activity,
+  Webhook,
   DollarSign,
   Boxes,
   Percent,
   CircleHelp,
-  CheckCheck,
+  Loader2,
+  UserRound,
 } from "lucide-react";
 import {
   getOrderDetailAction,
+  getOrderInvoiceAction,
+  generateOrderInvoiceAction,
+  refreshOrderInvoiceStatusAction,
+  getOrderLabelAction,
+  generateOrderLabelAction,
+  regenerateOrderLabelAction,
   updateOrderAction,
   addOrderItemAction,
+  deleteOrderItemAction,
   removeOrderItemAction,
   updateOrderItemAction,
+  dispatchOrderWebhookAction,
+  assignOrderSellerFromCustomerAction,
 } from "@/lib/actions/orders";
-import { getCustomerDetailAction } from "@/lib/actions/customers";
-import { getSiteSettingsAction } from "@/lib/actions/settings";
-import { getOrderProductVariantsCatalogAction, getProductFullAction } from "@/lib/actions/products";
-import { INFINITE_STOCK_MAX_QTY } from "@/lib/stock-mode";
-import type { Order, Customer, OrderItem, Product, StockMode, PaymentMethod } from "@/lib/types";
+import { dispatchOrderMessageAction } from "@/lib/actions/messaging";
+import { getCorePaymentMethodsAction } from "@/lib/actions/settings";
+import { resolveAvailableQtyByStockMode } from "@/lib/stock-mode";
+import type { Order, OrderInvoice, OrderLabel, Customer, OrderItem, Product, ProductVariant, StockMode } from "@/lib/types";
+import {
+  AssistedOrderProductCatalog,
+  type AssistedOrderVariantSelection,
+} from "@/components/admin/assisted-order-product-catalog";
 import CurrencyInput from "@/components/form/CurrencyInput";
 import IntegerInput from "@/components/form/IntegerInput";
 import OrderPaymentsCard from "@/components/admin/order-payments-card";
-import { normalizeAdminLocale, tAdmin } from "@/lib/i18n/admin";
-import { AdminPage } from "@/components/admin/admin-mobile-ui";
 import FloatingActionMenu from "@/components/ui/floating-action-menu";
-import { motion } from "framer-motion";
+import { normalizeAdminLocale, tAdmin } from "@/lib/i18n/admin";
+import { CloudflareImage } from "@/components/ui/cloudflare-image";
+import { toast } from "sonner";
+import { useAdminStore } from "@/contexts/admin-store-context";
 
 function getOrderStatusLabels(locale?: string): Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> {
   return {
     PENDING: { label: tAdmin(locale, "admin.orders.status.pending", "Pending"), variant: "secondary" },
+    IN_ANALYSIS: { label: tAdmin(locale, "admin.orders.status.inAnalysis", "Em Análise"), variant: "outline" },
+    RELEASED: { label: tAdmin(locale, "admin.orders.status.released", "Liberado"), variant: "default" },
     CONFIRMED: { label: tAdmin(locale, "admin.orders.status.confirmed", "Confirmed"), variant: "default" },
     PROCESSING: { label: tAdmin(locale, "admin.orders.status.processing", "Processing"), variant: "default" },
     INVOICED: { label: tAdmin(locale, "admin.orders.status.invoiced", "Invoiced"), variant: "default" },
@@ -91,6 +115,32 @@ function getOrderStatusLabels(locale?: string): Record<string, { label: string; 
     DELIVERED: { label: tAdmin(locale, "admin.orders.status.delivered", "Delivered"), variant: "default" },
     CANCELLED: { label: tAdmin(locale, "admin.orders.status.cancelled", "Cancelled"), variant: "destructive" },
   };
+}
+
+function sanitizePreviewHtml(input: string): string {
+  if (!input || typeof window === "undefined") return input
+
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(input, "text/html")
+
+  doc.querySelectorAll("script, style, iframe, object, embed, link, meta").forEach((node) => node.remove())
+
+  doc.querySelectorAll("*").forEach((element) => {
+    for (const attr of Array.from(element.attributes)) {
+      const attrName = attr.name.toLowerCase()
+      const attrValue = attr.value.trim().toLowerCase()
+
+      if (attrName.startsWith("on")) {
+        element.removeAttribute(attr.name)
+      }
+
+      if ((attrName === "href" || attrName === "src") && (attrValue.startsWith("javascript:") || attrValue.startsWith("data:"))) {
+        element.removeAttribute(attr.name)
+      }
+    }
+  })
+
+  return doc.body.innerHTML
 }
 
 function getPaymentStatusLabels(locale?: string): Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> {
@@ -103,9 +153,56 @@ function getPaymentStatusLabels(locale?: string): Record<string, { label: string
   };
 }
 
+function getPaymentMethodLabels(locale?: string): Record<'PIX' | 'BOLETO' | 'FATURADO' | 'CARTAO_EXTERNO', string> {
+  return {
+    PIX: tAdmin(locale, 'admin.payments.methods.pix', 'PIX'),
+    BOLETO: tAdmin(locale, 'admin.payments.methods.boleto', 'Boleto'),
+    FATURADO: tAdmin(locale, 'admin.payments.methods.faturado', 'Faturado'),
+    CARTAO_EXTERNO: tAdmin(locale, 'admin.payments.methods.creditCard', 'Cartão'),
+  }
+}
+
+function normalizeChaveNfe(value: string): string {
+  return value.replace(/\s/g, "").replace(/\D/g, "")
+}
+
+function orderHasValidInvoiceChave(invoice: OrderInvoice | null): boolean {
+  return normalizeChaveNfe(invoice?.accessKey ?? "").length === 44
+}
+
 interface OrderWithExtras extends Order {
   items: OrderItem[];
   customer?: Customer;
+}
+
+function getOrderItemOriginLabel(locale: string | undefined, origin?: 'customer' | 'manager_added' | 'replacement' | 'gift') {
+  switch (origin) {
+    case 'customer':
+      return tAdmin(locale, 'admin.orders.itemOrigin.customer', 'Customer')
+    case 'manager_added':
+      return tAdmin(locale, 'admin.orders.itemOrigin.manager_added', 'Manager')
+    case 'replacement':
+      return tAdmin(locale, 'admin.orders.itemOrigin.replacement', 'Replacement')
+    case 'gift':
+      return tAdmin(locale, 'admin.orders.itemOrigin.gift', 'Gift')
+    default:
+      return tAdmin(locale, 'admin.orders.itemOrigin.customer', 'Customer')
+  }
+}
+
+function getOrderOriginLabel(locale: string | undefined, origin?: 'customer' | 'manager' | 'api' | 'import' | string | null) {
+  switch (origin) {
+    case 'customer':
+      return tAdmin(locale, 'admin.orders.itemOrigin.customer', 'Customer')
+    case 'manager':
+      return tAdmin(locale, 'admin.orders.itemOrigin.manager_added', 'Manager')
+    case 'api':
+      return 'API'
+    case 'import':
+      return locale === 'pt-BR' ? 'Importação' : 'Import'
+    default:
+      return '-'
+  }
 }
 
 interface AdminOrderDetailPageClientProps {
@@ -113,22 +210,20 @@ interface AdminOrderDetailPageClientProps {
   orderId: string
   initialOrder: OrderWithExtras | null
   initialCustomer: Customer | null
-  initialProducts: Product[]
+  initialInvoice: OrderInvoice | null
+  initialLabel: OrderLabel | null
+  initialPayments: unknown[]
+  initialPaymentLinks: unknown[]
+  initialStockMode: StockMode
+  initialStockVariantMaxQty: number
   initialAttributeLabels: {
     color: Record<string, string>
     size: Record<string, string>
+    colorHex?: Record<string, string>
   }
 }
 
-type ProductVariantOption = {
-  id: string
-  productId: string
-  variantSku: string
-  stock: number
-  unitPrice: number
-  color: string
-  size: string
-}
+type WebhookPayload = Record<string, unknown>
 
 type ProductPreviewState = {
   productName: string
@@ -142,7 +237,14 @@ type ProductPreviewState = {
   }>
 }
 
-// ─── Color dot helpers ────────────────────────────────────────────────────────
+type VariantDimension = {
+  rawKey: string
+  normalizedKey: string
+  label: string
+  rawValue: string
+  displayValue: string
+}
+
 const COLOR_DOT_MAP: Record<string, string> = {
   rosa: '#f9a8d4', pink: '#f9a8d4',
   vermelho: '#ef4444', red: '#ef4444',
@@ -155,270 +257,192 @@ const COLOR_DOT_MAP: Record<string, string> = {
   amarelo: '#facc15', yellow: '#facc15',
   laranja: '#f97316', orange: '#f97316',
   roxo: '#a855f7', purple: '#a855f7',
-  violeta: '#8b5cf6', lilás: '#c084fc',
+  violeta: '#8b5cf6', lilas: '#c084fc',
   marrom: '#92400e', brown: '#92400e',
   bege: '#d4a96a', beige: '#d4a96a',
   caramelo: '#b45309', nude: '#e8c4a0',
   vinho: '#7f1d1d', burgundy: '#7f1d1d',
   dourado: '#d97706', gold: '#d97706',
   prata: '#94a3b8', silver: '#94a3b8',
-  coral: '#fb7185', salmão: '#fca5a5',
+  coral: '#fb7185', salmao: '#fca5a5',
   turquesa: '#06b6d4', mint: '#6ee7b7',
   off: '#fef9f0', creme: '#fef9f0',
 }
-function getColorDot(colorName: string | null): string {
+
+function getColorDot(colorName: string | null, hexMap?: Record<string, string>): string {
   if (!colorName) return '#94a3b8'
+  if (hexMap) {
+    const direct = hexMap[colorName] || hexMap[colorName.toUpperCase()] || hexMap[colorName.toLowerCase()]
+    if (direct) return direct
+  }
   const key = colorName.toLowerCase().trim()
   if (COLOR_DOT_MAP[key]) return COLOR_DOT_MAP[key]
-  // Try partial match
-  for (const [k, v] of Object.entries(COLOR_DOT_MAP)) {
-    if (key.includes(k) || k.includes(key)) return v
+
+  for (const [mapKey, value] of Object.entries(COLOR_DOT_MAP)) {
+    if (key.includes(mapKey) || mapKey.includes(key)) return value
   }
+
   return '#94a3b8'
+}
+
+function isItemAttended(item: OrderItem): boolean {
+  return item.status === 'attended' || item.fulfilled
+}
+
+function getItemAttendedQty(item: OrderItem): number {
+  return isItemAttended(item) ? Math.max(0, Number(item.qty || 0)) : 0
+}
+
+function getOrderDisplayCode(
+  order: Pick<Order, 'id' | 'code'> | null | undefined,
+  fallbackId: string,
+): string {
+  const code = String(order?.code || '').trim()
+  if (code) return code
+
+  const rawId = String(order?.id || fallbackId || '').trim()
+  return rawId.slice(0, 8).toUpperCase()
 }
 
 const SIZE_ORDER = [
   'PP', 'XS', 'P', 'S', 'M', 'G', 'L', 'GG', 'XL', 'G1', 'G2', 'G3', 'EG', 'EGG', 'XXL', 'XXXL',
   '34', '35', '36', '37', '38', '39', '40', '41', '42', '43', '44', '45', '46', '47', '48',
-  'P/M', 'M/G', 'G/GG', 'Único', 'U',
+  'P/M', 'M/G', 'G/GG', 'Unico', 'U',
 ]
 
-const PAYMENT_METHOD_OPTIONS: Array<{ value: PaymentMethod; label: string }> = [
-  { value: 'PIX', label: 'PIX' },
-  { value: 'CARTAO_EXTERNO', label: 'Cartão' },
-  { value: 'CARTAO_CREDITO', label: 'Cartão de crédito' },
-  { value: 'CARTAO_DEBITO', label: 'Cartão de débito' },
-  { value: 'BOLETO', label: 'Boleto' },
-  { value: 'CHEQUE', label: 'Cheque' },
-  { value: 'FATURADO', label: 'Faturado' },
-  { value: 'DINHEIRO', label: 'Dinheiro' },
-  { value: 'TRANSFERENCIA', label: 'Transferência' },
-]
-
-function getPaymentMethodLabel(value?: PaymentMethod | null): string {
-  return PAYMENT_METHOD_OPTIONS.find((option) => option.value === value)?.label || 'Selecionar'
+type InvoiceFiscalSummary = {
+  nature: string | null
+  emitterName: string | null
+  emitterCnpj: string | null
+  selectionMode: string | null
 }
 
-const MOCK_NOW = new Date('2026-05-26T14:30:00.000Z')
+type MobileInfoPanel = 'customer' | 'seller' | 'delivery' | 'status' | 'invoice' | 'label'
+type CommunicationPanel = 'message' | 'webhook'
 
-// ─── Mock data for offline/demo mode ────────────────────────────────────────
-// Helpers to build a complete mock OrderItem (all fields the renderer reads)
-function mkItem(
-  id: string, productId: string, nameSnapshot: string, skuSnapshot: string,
-  colorSnapshot: string, sizeSnapshot: string, qty: number, unitPrice: number,
-  fulfilled = false, originalQty?: number
-) {
-  return {
-    id, productId, nameSnapshot, skuSnapshot,
-    colorSnapshot, sizeSnapshot,
-    qty, originalQty: originalQty ?? qty, unitPrice,
-    total: (originalQty ?? qty) * unitPrice,
-    fulfilled, status: fulfilled ? 'attended' : undefined,
-    attendedQty: fulfilled ? qty : 0,
-    variantAvailableQty: 999,
-    assetId: null, assetImageUrl: null, imageUrl: null,
-    origin: 'customer' as const,
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null
+  }
+
+  return value as Record<string, unknown>
+}
+
+function normalizeFiscalSelectionMode(value: string | null | undefined): string | null {
+  switch (String(value || '').trim()) {
+    case 'fixed':
+      return 'Fixo'
+    case 'round_robin':
+      return 'Round robin'
+    case 'weighted_random':
+      return 'Aleatório ponderado'
+    default:
+      return value ? String(value) : null
   }
 }
 
-// Helpers to build a complete mock Customer
-function mkCustomer(
-  id: string, companyName: string, tradeName: string, cnpj: string,
-  contactName: string, phone: string, email: string, state: string,
-  street: string, city: string, zipCode: string
-) {
-  const createdAt = new Date('2023-06-15T10:00:00')
+function extractInvoiceFiscalSummary(invoice: OrderInvoice | null): InvoiceFiscalSummary | null {
+  if (!invoice) return null
+
+  const payloadValue = invoice.payload as unknown
+  const document = Array.isArray(payloadValue) ? payloadValue[0] : payloadValue
+  const docRecord = asRecord(document)
+  if (!docRecord) return null
+
+  const metadata = asRecord(docRecord.metadata)
+  const selectedEmitter = asRecord(metadata?.selected_emitter)
+  const emitente = asRecord(docRecord.emitente)
+
+  const nature = typeof docRecord.natureza === 'string' && docRecord.natureza.trim()
+    ? docRecord.natureza.trim()
+    : null
+  const emitterName = typeof selectedEmitter?.name === 'string' && selectedEmitter.name.trim()
+    ? selectedEmitter.name.trim()
+    : null
+  const emitterCnpj = typeof selectedEmitter?.cnpj === 'string' && selectedEmitter.cnpj.trim()
+    ? selectedEmitter.cnpj.trim()
+    : typeof emitente?.cpfCnpj === 'string' && emitente.cpfCnpj.trim()
+      ? emitente.cpfCnpj.trim()
+      : null
+  const selectionMode = typeof selectedEmitter?.selection_mode === 'string' && selectedEmitter.selection_mode.trim()
+    ? normalizeFiscalSelectionMode(selectedEmitter.selection_mode)
+    : null
+
+  if (!nature && !emitterName && !emitterCnpj && !selectionMode) {
+    return null
+  }
+
   return {
-    id, companyName, tradeName, cnpj, contactName, phone, email, state,
-    shippingStreet: street, shippingCity: city, shippingState: state,
-    shippingZipCode: zipCode, shippingNumber: '100', shippingComplement: '',
-    status: 'APPROVED', customerType: 'WHOLESALE',
-    createdAt, updatedAt: new Date('2024-11-20T14:30:00'),
+    nature,
+    emitterName,
+    emitterCnpj,
+    selectionMode,
   }
 }
-
-const MOCK_DETAIL_CUSTOMERS: Record<string, ReturnType<typeof mkCustomer>> = {
-  'mock-c1': mkCustomer('mock-c1', 'Boutique Elegance LTDA', 'Boutique Elegance', '12.345.678/0001-90', 'Ana Lima',     '(11) 99988-7766', 'compras@elegance.com.br',     'SP', 'Rua das Flores, 245',   'São Paulo',      '01310-100'),
-  'mock-c2': mkCustomer('mock-c2', 'Moda Feminina SA',      'Moda Feminina',     '98.765.432/0001-10', 'Carla Santos', '(11) 98877-6655', 'pedidos@modafeminina.com.br',  'RJ', 'Av. Rio Branco, 800',   'Rio de Janeiro', '20040-020'),
-  'mock-c3': mkCustomer('mock-c3', 'Casa da Moda ME',       'Casa da Moda',      '45.678.901/0001-23', 'Julia Ferreira','(31) 97766-5544','vendas@casadamoda.com.br',     'MG', 'Rua Bahia, 320',        'Belo Horizonte', '30160-010'),
-  'mock-c4': mkCustomer('mock-c4', 'Style & Co LTDA',       'Style & Co',        '78.901.234/0001-56', 'Maria Souza',  '(11) 96655-4433', 'compras@styleco.com.br',       'SP', 'Av. Paulista, 1500',    'São Paulo',      '01310-200'),
-  'mock-c5': mkCustomer('mock-c5', 'Fashion Plus ME',       'Fashion Plus',      '34.567.890/0001-78', 'Paula Costa',  '(41) 95544-3322', 'pedidos@fashionplus.com.br',   'PR', 'Rua XV de Novembro, 50','Curitiba',       '80020-310'),
-  'mock-c6': mkCustomer('mock-c6', 'Luxo & Estilo LTDA',    'Luxo & Estilo',     '56.789.012/0001-34', 'Renata Oliveira','(51) 94433-2211','vendas@luxoestilo.com.br',    'RS', 'Av. Ipiranga, 6681',    'Porto Alegre',   '90619-900'),
-}
-
-function mkOrder(
-  id: string, customerId: string, status: string, paymentStatus: string,
-  items: ReturnType<typeof mkItem>[],
-  opts: { notes?: string; internalNotes?: string; trackingCode?: string | null; shippingPrice?: number; discountTotal?: number; manualDiscount?: number; paymentMethod?: PaymentMethod; hoursAgo?: number } = {}
-) {
-  const c = MOCK_DETAIL_CUSTOMERS[customerId]
-  const subtotal = items.reduce((s, i) => s + i.total, 0)
-  const discountTotal = opts.discountTotal ?? 0
-  const shippingPrice = opts.shippingPrice ?? 0
-  const total = subtotal - discountTotal + shippingPrice
-  return {
-    id, customerId, status, paymentStatus,
-    items, total, subtotal, fulfilledTotal: items.filter(i => i.fulfilled).reduce((s, i) => s + i.total, 0),
-    discountTotal, manualDiscount: opts.manualDiscount ?? 0,
-    couponDiscount: 0, tierDiscount: 0,
-    shippingPrice,
-    paymentMethod: opts.paymentMethod ?? 'PIX',
-    trackingCode: opts.trackingCode ?? null, trackingUrl: '',
-    totalItems: items.reduce((s, i) => s + (i.originalQty ?? i.qty), 0),
-    fulfilledItems: items.filter(i => i.fulfilled).reduce((s, i) => s + i.qty, 0),
-    notes: opts.notes ?? '', internalNotes: opts.internalNotes ?? '',
-    // shipping address from customer
-    shippingStreet: c?.shippingStreet ?? '', shippingNumber: c?.shippingNumber ?? '',
-    shippingComplement: '', shippingCity: c?.shippingCity ?? '',
-    shippingState: c?.shippingState ?? '', shippingZipCode: c?.shippingZipCode ?? '',
-    createdAt: new Date(MOCK_NOW.getTime() - (opts.hoursAgo ?? 2) * 3600000),
-    updatedAt: MOCK_NOW,
-  }
-}
-
-const MOCK_ORDER_DETAILS: Record<string, ReturnType<typeof mkOrder>> = {
-  'a1b2c3d4e5f6a1b2': mkOrder('a1b2c3d4e5f6a1b2', 'mock-c1', 'PENDING', 'PENDING', [
-    mkItem('item-a1',  'p1', 'Vestido Floral Midi',  'VFM-001', 'Rosa',    'PP',  4,  289.90),
-    mkItem('item-a2',  'p1', 'Vestido Floral Midi',  'VFM-001', 'Rosa',    'P',   6,  289.90),
-    mkItem('item-a3',  'p1', 'Vestido Floral Midi',  'VFM-001', 'Rosa',    'M',   8,  289.90),
-    mkItem('item-a4',  'p1', 'Vestido Floral Midi',  'VFM-001', 'Rosa',    'G',   6,  289.90),
-    mkItem('item-a5',  'p1', 'Vestido Floral Midi',  'VFM-001', 'Rosa',    'GG',  4,  289.90),
-    mkItem('item-a6',  'p1', 'Vestido Floral Midi',  'VFM-001', 'Azul',    'P',   4,  289.90),
-    mkItem('item-a7',  'p1', 'Vestido Floral Midi',  'VFM-001', 'Azul',    'M',   6,  289.90),
-    mkItem('item-a8',  'p1', 'Vestido Floral Midi',  'VFM-001', 'Azul',    'G',   6,  289.90),
-    mkItem('item-a9',  'p2', 'Blusa Crepe Premium',  'BCP-002', 'Branco',  'P',   6,  179.90),
-    mkItem('item-a10', 'p2', 'Blusa Crepe Premium',  'BCP-002', 'Branco',  'M',   8,  179.90),
-    mkItem('item-a11', 'p2', 'Blusa Crepe Premium',  'BCP-002', 'Branco',  'G',   4,  179.90),
-    mkItem('item-a12', 'p2', 'Blusa Crepe Premium',  'BCP-002', 'Preto',   'P',   6,  179.90),
-    mkItem('item-a13', 'p2', 'Blusa Crepe Premium',  'BCP-002', 'Preto',   'M',   6,  179.90),
-    mkItem('item-a14', 'p2', 'Blusa Crepe Premium',  'BCP-002', 'Preto',   'G',   4,  179.90),
-  ], { hoursAgo: 1.5 }),
-
-  'b2c3d4e5f6a1b2c3': mkOrder('b2c3d4e5f6a1b2c3', 'mock-c2', 'PROCESSING', 'PAID', [
-    mkItem('item-b1', 'p3', 'Calça Alfaiataria', 'CA-003', 'Preto', '36', 10, 349.90, true),
-    mkItem('item-b2', 'p3', 'Calça Alfaiataria', 'CA-003', 'Preto', '38', 14, 349.90, true),
-    mkItem('item-b3', 'p3', 'Calça Alfaiataria', 'CA-003', 'Preto', '40', 20, 349.90, true),
-    mkItem('item-b4', 'p3', 'Calça Alfaiataria', 'CA-003', 'Preto', '42', 16, 349.90, false),
-    mkItem('item-b5', 'p3', 'Calça Alfaiataria', 'CA-003', 'Preto', '44', 8,  349.90, false),
-    mkItem('item-b6', 'p4', 'Conjunto Twin Set', 'CTS-004', 'Verde', 'P',  8,  459.90),
-    mkItem('item-b7', 'p4', 'Conjunto Twin Set', 'CTS-004', 'Verde', 'M',  15, 459.90),
-    mkItem('item-b8', 'p4', 'Conjunto Twin Set', 'CTS-004', 'Verde', 'G',  10, 459.90),
-    mkItem('item-b9', 'p4', 'Conjunto Twin Set', 'CTS-004', 'Verde', 'GG',  6, 459.90),
-  ], { notes: 'Urgente — cliente prioritário', hoursAgo: 3 }),
-
-  'c3d4e5f6a1b2c3d4': mkOrder('c3d4e5f6a1b2c3d4', 'mock-c3', 'SHIPPED', 'PAID', [
-    mkItem('item-c1', 'p5', 'Saia Midi Plissada', 'SMP-005', 'Vinho',     'PP',  6,  219.90, true),
-    mkItem('item-c2', 'p5', 'Saia Midi Plissada', 'SMP-005', 'Vinho',     'P',   8,  219.90, true),
-    mkItem('item-c3', 'p5', 'Saia Midi Plissada', 'SMP-005', 'Vinho',     'M',   10, 219.90, true),
-    mkItem('item-c4', 'p5', 'Saia Midi Plissada', 'SMP-005', 'Vinho',     'G',   14, 219.90, true),
-    mkItem('item-c5', 'p5', 'Saia Midi Plissada', 'SMP-005', 'Vinho',     'GG',  8,  219.90, true),
-    mkItem('item-c6', 'p6', 'Blazer Oversized',   'BO-006',  'Off White', 'P',   6,  399.90, true),
-    mkItem('item-c7', 'p6', 'Blazer Oversized',   'BO-006',  'Off White', 'M',   14, 399.90, true),
-    mkItem('item-c8', 'p6', 'Blazer Oversized',   'BO-006',  'Off White', 'G',   10, 399.90, true),
-    mkItem('item-c9', 'p6', 'Blazer Oversized',   'BO-006',  'Off White', 'GG',  6,  399.90, true),
-  ], { trackingCode: 'BR123456789BR', shippingPrice: 25, internalNotes: 'Enviado via Correios SEDEX', hoursAgo: 26 }),
-
-  'd4e5f6a1b2c3d4e5': mkOrder('d4e5f6a1b2c3d4e5', 'mock-c4', 'DELIVERED', 'PAID', [
-    mkItem('item-d1', 'p1', 'Vestido Floral Midi', 'VFM-001', 'Azul',    'PP',  4,  289.90, true),
-    mkItem('item-d2', 'p1', 'Vestido Floral Midi', 'VFM-001', 'Azul',    'P',   6,  289.90, true),
-    mkItem('item-d3', 'p1', 'Vestido Floral Midi', 'VFM-001', 'Azul',    'M',   8,  289.90, true),
-    mkItem('item-d4', 'p1', 'Vestido Floral Midi', 'VFM-001', 'Azul',    'G',   10, 289.90, true),
-    mkItem('item-d5', 'p1', 'Vestido Floral Midi', 'VFM-001', 'Azul',    'GG',  6,  289.90, true),
-    mkItem('item-d6', 'p6', 'Blazer Oversized',    'BO-006',  'Caramelo', 'P',   8,  399.90, true),
-    mkItem('item-d7', 'p6', 'Blazer Oversized',    'BO-006',  'Caramelo', 'M',   10, 399.90, true),
-    mkItem('item-d8', 'p6', 'Blazer Oversized',    'BO-006',  'Caramelo', 'G',   6,  399.90, true),
-  ], { hoursAgo: 50 }),
-
-  'e5f6a1b2c3d4e5f6': mkOrder('e5f6a1b2c3d4e5f6', 'mock-c5', 'PENDING', 'PENDING', [
-    mkItem('item-e1', 'p2', 'Blusa Crepe Premium',  'BCP-002', 'Preto',   'PP',  4,  179.90),
-    mkItem('item-e2', 'p2', 'Blusa Crepe Premium',  'BCP-002', 'Preto',   'P',   6,  179.90),
-    mkItem('item-e3', 'p2', 'Blusa Crepe Premium',  'BCP-002', 'Preto',   'M',   8,  179.90),
-    mkItem('item-e4', 'p2', 'Blusa Crepe Premium',  'BCP-002', 'Preto',   'G',   6,  179.90),
-    mkItem('item-e5', 'p5', 'Saia Midi Plissada',   'SMP-005', 'Mostarda','P',   4,  219.90),
-    mkItem('item-e6', 'p5', 'Saia Midi Plissada',   'SMP-005', 'Mostarda','M',   6,  219.90),
-    mkItem('item-e7', 'p5', 'Saia Midi Plissada',   'SMP-005', 'Mostarda','G',   4,  219.90),
-  ], { hoursAgo: 6 }),
-
-  'f6a1b2c3d4e5f6a1': mkOrder('f6a1b2c3d4e5f6a1', 'mock-c6', 'CONFIRMED', 'PAID', [
-    mkItem('item-f1', 'p3', 'Calça Alfaiataria', 'CA-003',  'Cáqui', '36', 8,  349.90),
-    mkItem('item-f2', 'p3', 'Calça Alfaiataria', 'CA-003',  'Cáqui', '38', 16, 349.90),
-    mkItem('item-f3', 'p3', 'Calça Alfaiataria', 'CA-003',  'Cáqui', '40', 14, 349.90),
-    mkItem('item-f4', 'p3', 'Calça Alfaiataria', 'CA-003',  'Cáqui', '42', 10, 349.90),
-    mkItem('item-f5', 'p4', 'Conjunto Twin Set', 'CTS-004', 'Lilás', 'P',  8,  459.90),
-    mkItem('item-f6', 'p4', 'Conjunto Twin Set', 'CTS-004', 'Lilás', 'M',  16, 459.90),
-    mkItem('item-f7', 'p4', 'Conjunto Twin Set', 'CTS-004', 'Lilás', 'G',  10, 459.90),
-    mkItem('item-f8', 'p4', 'Conjunto Twin Set', 'CTS-004', 'Lilás', 'GG',  6, 459.90),
-  ], { hoursAgo: 74 }),
-
-  'g1a2b3c4d5e6f7a8': mkOrder('g1a2b3c4d5e6f7a8', 'mock-c1', 'INVOICED', 'PARTIAL', [
-    mkItem('item-g1', 'p6', 'Blazer Oversized',   'BO-006',  'Cinza',    'P',   8,  399.90, true,  12),
-    mkItem('item-g2', 'p6', 'Blazer Oversized',   'BO-006',  'Cinza',    'M',   11, 399.90, false, 20),
-    mkItem('item-g3', 'p6', 'Blazer Oversized',   'BO-006',  'Cinza',    'G',   14, 399.90, true,  25),
-    mkItem('item-g4', 'p6', 'Blazer Oversized',   'BO-006',  'Cinza',    'GG',  6,  399.90, false, 10),
-    mkItem('item-g5', 'p5', 'Saia Midi Plissada', 'SMP-005', 'Mostarda', 'P',   8,  219.90),
-    mkItem('item-g6', 'p5', 'Saia Midi Plissada', 'SMP-005', 'Mostarda', 'M',   20, 219.90),
-    mkItem('item-g7', 'p5', 'Saia Midi Plissada', 'SMP-005', 'Mostarda', 'G',   12, 219.90),
-  ], { notes: 'Pagamento parcial confirmado', shippingPrice: 35, hoursAgo: 96 }),
-
-  'h2b3c4d5e6f7a8b9': mkOrder('h2b3c4d5e6f7a8b9', 'mock-c2', 'CANCELLED', 'REFUNDED', [
-    mkItem('item-h1', 'p1', 'Vestido Floral Midi', 'VFM-001', 'Rosa', 'PP',  2,  289.90),
-    mkItem('item-h2', 'p1', 'Vestido Floral Midi', 'VFM-001', 'Rosa', 'P',   6,  289.90),
-    mkItem('item-h3', 'p1', 'Vestido Floral Midi', 'VFM-001', 'Rosa', 'M',   4,  289.90),
-    mkItem('item-h4', 'p2', 'Blusa Crepe Premium', 'BCP-002', 'Bege', 'P',   4,  179.90),
-    mkItem('item-h5', 'p2', 'Blusa Crepe Premium', 'BCP-002', 'Bege', 'M',   4,  179.90),
-    mkItem('item-h6', 'p2', 'Blusa Crepe Premium', 'BCP-002', 'Bege', 'G',   2,  179.90),
-  ], { notes: 'Cancelado a pedido do cliente', hoursAgo: 120 }),
-}
-
-// Support simple IDs used in manual testing (e.g. /orders/ordmock001)
-const SIMPLE_ID_MAP: Record<string, string> = {
-  'ordmock001': 'a1b2c3d4e5f6a1b2',
-  'ordmock002': 'b2c3d4e5f6a1b2c3',
-  'ordmock003': 'c3d4e5f6a1b2c3d4',
-  'ordmock004': 'd4e5f6a1b2c3d4e5',
-  'ordmock005': 'e5f6a1b2c3d4e5f6',
-  'ordmock006': 'f6a1b2c3d4e5f6a1',
-  'ordmock007': 'g1a2b3c4d5e6f7a8',
-  'ordmock008': 'h2b3c4d5e6f7a8b9',
-}
-
-function getMockOrder(id: string) {
-  return MOCK_ORDER_DETAILS[id] ?? MOCK_ORDER_DETAILS[SIMPLE_ID_MAP[id] ?? ''] ?? null
-}
-
-function getMockCustomer(customerId: string) {
-  return MOCK_DETAIL_CUSTOMERS[customerId] ?? null
-}
-// ─────────────────────────────────────────────────────────────────────────────
 
 export default function AdminOrderDetailPageClient({
   locale,
   orderId,
   initialOrder,
   initialCustomer,
-  initialProducts,
+  initialInvoice,
+  initialLabel,
+  initialPayments,
+  initialPaymentLinks,
+  initialStockMode,
+  initialStockVariantMaxQty,
   initialAttributeLabels,
 }: AdminOrderDetailPageClientProps) {
+  const { session } = useAdminStore();
+  const router = useRouter();
+  const permissionSet = useMemo(
+    () => new Set(
+      Array.isArray(session?.permissionCodes)
+        ? session.permissionCodes
+            .map((code) => String(code || '').trim().toLowerCase())
+            .filter(Boolean)
+        : []
+    ),
+    [session?.permissionCodes],
+  )
+  const canCreateOrder = permissionSet.has('orders.create')
+  const canEditOrder = permissionSet.has('orders.edit')
+  const canCancelOrder = permissionSet.has('orders.cancel')
+  const canMarkOrderPaid = permissionSet.has('orders.mark_paid')
+  const canManageShipping = permissionSet.has('orders.manage_shipping')
+  const canManageReturns = permissionSet.has('orders.manage_returns')
+  const canSendMessages = permissionSet.has('messaging.send')
   const normalizedLocale = normalizeAdminLocale(locale)
   const tr = (key: string, fallback: string) => tAdmin(locale, key, fallback)
   const ORDER_STATUS_LABELS = getOrderStatusLabels(locale)
   const PAYMENT_STATUS_LABELS = getPaymentStatusLabels(locale)
-  const mockOrderFallback = !initialOrder ? getMockOrder(orderId) as unknown as OrderWithExtras | null : null
-  const mockCustomerFallback = !initialCustomer && mockOrderFallback
-    ? getMockCustomer((mockOrderFallback as any).customerId) as unknown as Customer | null
-    : null
-
-  const [order, setOrder] = useState<OrderWithExtras | null>(initialOrder ?? mockOrderFallback);
-  const [customer, setCustomer] = useState<Customer | null>(initialCustomer ?? mockCustomerFallback);
-  const [products, setProducts] = useState<Product[]>(initialProducts);
-  const [isLoading, setIsLoading] = useState(!initialOrder && !mockOrderFallback);
+  const PAYMENT_METHOD_LABELS = getPaymentMethodLabels(locale)
+  const [order, setOrder] = useState<OrderWithExtras | null>(initialOrder);
+  const [customer, setCustomer] = useState<Customer | null>(initialCustomer);
+  const isLoading = false;
   const [isSaving, setIsSaving] = useState(false);
+  const [isFloatingSaveLoading, setIsFloatingSaveLoading] = useState(false);
+  const [invoice, setInvoice] = useState<OrderInvoice | null>(initialInvoice);
+  const [invoiceLoading, setInvoiceLoading] = useState(false);
+  const [invoiceGenerating, setInvoiceGenerating] = useState(false);
+  const [invoiceRefreshing, setInvoiceRefreshing] = useState(false);
+  const [label, setLabel] = useState<OrderLabel | null>(initialLabel);
+  const [labelLoading, setLabelLoading] = useState(false);
+  const [labelGenerating, setLabelGenerating] = useState(false);
+  const [labelChaveModalOpen, setLabelChaveModalOpen] = useState(false);
+  const [labelChaveModalMode, setLabelChaveModalMode] = useState<"generate" | "regenerate">("generate");
+  const [labelChaveNfeInput, setLabelChaveNfeInput] = useState("");
+  const [labelNumeroNfeInput, setLabelNumeroNfeInput] = useState("");
+  const [labelChaveFormError, setLabelChaveFormError] = useState<string | null>(null);
+  const [availablePaymentMethods, setAvailablePaymentMethods] = useState<Array<{ id?: number; value: string; label: string }>>([]);
+
   // Edit states
   const [editingShipping, setEditingShipping] = useState(false);
   const [editingDiscount, setEditingDiscount] = useState(false);
+  const [editingTracking, setEditingTracking] = useState(false);
   const [trackingSaved, setTrackingSaved] = useState(false);
   const [editingNotes, setEditingNotes] = useState(false);
-  
+
   // Form states
   const [shippingPrice, setShippingPrice] = useState(0);
   const [manualDiscount, setManualDiscount] = useState(0);
@@ -426,28 +450,145 @@ export default function AdminOrderDetailPageClient({
   const [trackingUrl, setTrackingUrl] = useState("");
   const [notes, setNotes] = useState("");
   const [internalNotes, setInternalNotes] = useState("");
-  
-  // Add product dialog
+
   const [addProductOpen, setAddProductOpen] = useState(false);
-  const [productSearch, setProductSearch] = useState("");
-  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
-  const [productVariants, setProductVariants] = useState<ProductVariantOption[]>([]);
-  const [selectedVariant, setSelectedVariant] = useState<ProductVariantOption | null>(null);
-  const [selectedColor, setSelectedColor] = useState("");
-  const [selectedSize, setSelectedSize] = useState("");
-  const [addQuantity, setAddQuantity] = useState(1);
-  const [addUnitPrice, setAddUnitPrice] = useState(0);
-  const [loadingVariants, setLoadingVariants] = useState(false);
-  
+  const [isAssigningSeller, setIsAssigningSeller] = useState(false);
+
   // Selected items for bulk actions
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
   const [groupToRemove, setGroupToRemove] = useState<string | null>(null);
-  const [stockModeConfig, setStockModeConfig] = useState<StockMode>('FANTASY');
-  const [stockVariantMaxQty, setStockVariantMaxQty] = useState(999);
+  const [stockModeConfig, setStockModeConfig] = useState<StockMode>(initialStockMode);
+  const [stockVariantMaxQty, setStockVariantMaxQty] = useState(initialStockVariantMaxQty);
 
   const [attendedQtyDraft, setAttendedQtyDraft] = useState<Record<string, number>>({});
+  const [openCellId, setOpenCellId] = useState<string | null>(null)
   const [productPreview, setProductPreview] = useState<ProductPreviewState | null>(null)
-  
+  const [errorDialogOpen, setErrorDialogOpen] = useState(false)
+  const [errorDialogMessage, setErrorDialogMessage] = useState("")
+  const [mobileInfoPanel, setMobileInfoPanel] = useState<MobileInfoPanel | null>(null)
+  const [messageTrigger, setMessageTrigger] = useState<"ORDER_CREATED" | "ORDER_INVOICE_GENERATED" | "ORDER_CONFIRMED" | "ORDER_PROCESSING" | "ORDER_SHIPPED" | "ORDER_DELIVERED" | "ORDER_CANCELLED">("ORDER_CREATED")
+  const [messageChannel, setMessageChannel] = useState<"WHATSAPP" | "EMAIL">("WHATSAPP")
+  const [isDispatchingMessage, setIsDispatchingMessage] = useState(false)
+  const [dispatchFeedback, setDispatchFeedback] = useState<string>("")
+  const [dispatchPreview, setDispatchPreview] = useState<string>("")
+  const [dispatchPreviewHtml, setDispatchPreviewHtml] = useState<string>("")
+  const [webhookEvent, setWebhookEvent] = useState<
+    'order.created' | 'order.updated' | 'order.confirmed' | 'order.payment_confirmed' | 'order.shipped' | 'order.delivered' | 'order.cancelled'
+  >('order.created')
+  const [isDispatchingWebhook, setIsDispatchingWebhook] = useState(false)
+  const [webhookDispatchFeedback, setWebhookDispatchFeedback] = useState<string>("")
+  const [webhookDispatchPayload, setWebhookDispatchPayload] = useState<WebhookPayload | null>(null)
+  const [communicationPanel, setCommunicationPanel] = useState<CommunicationPanel | null>(null)
+  const [messageDispatchResultOpen, setMessageDispatchResultOpen] = useState(false)
+  const [webhookDispatchResultOpen, setWebhookDispatchResultOpen] = useState(false)
+  const invoiceFiscalSummary = extractInvoiceFiscalSummary(invoice)
+  const hasInvoicePdf = Boolean(invoice?.pdfUrl?.trim())
+  const hasInvoiceXml = Boolean(invoice?.xmlUrl?.trim())
+  const invoicePdfHref = invoice && hasInvoicePdf
+    ? `/api/admin/invoice-download?kind=pdf&orderId=${encodeURIComponent(String(invoice.orderId || ''))}`
+    : null
+  const invoiceXmlHref = invoice && hasInvoiceXml
+    ? `/api/admin/invoice-download?kind=xml&orderId=${encodeURIComponent(String(invoice.orderId || ''))}`
+    : null
+  const invoiceIsAwaitingProvider = Boolean(
+    invoice &&
+    (invoice.status === 'PENDING' || invoice.status === 'PROCESSING') &&
+    invoice.integrationReferenceId
+  )
+  const canGenerateInvoice = !invoice || !invoiceIsAwaitingProvider
+  const orderDisplayCode = getOrderDisplayCode(order, orderId)
+
+  async function handleDispatchOrderMessage() {
+    if (!order) return
+    if (!canSendMessages) {
+      setDispatchFeedback('Você não tem permissão para enviar mensagens')
+      return
+    }
+
+    setIsDispatchingMessage(true)
+    setDispatchFeedback("")
+
+    const result = await dispatchOrderMessageAction({
+      orderId: order.id,
+      trigger: messageTrigger,
+      channel: messageChannel,
+    })
+
+    if (!result.success || !result.data) {
+      const error = result.error || tr('admin.orders.messaging.dispatchError', 'Nao foi possivel disparar a mensagem')
+      setDispatchFeedback(error)
+      setIsDispatchingMessage(false)
+      return
+    }
+
+    const renderedMessage = result.data.renderedMessage || ""
+    setDispatchPreview(renderedMessage)
+    setDispatchPreviewHtml(sanitizePreviewHtml(renderedMessage))
+    setDispatchFeedback(`${result.data.message} (${result.data.recipient})`)
+    setWebhookDispatchResultOpen(false)
+    setMessageDispatchResultOpen(true)
+
+    if (result.data.whatsappUrl) {
+      window.open(result.data.whatsappUrl, '_blank', 'noopener,noreferrer')
+    }
+
+    setIsDispatchingMessage(false)
+  }
+
+  async function handleDispatchOrderWebhook() {
+    if (!order) return
+    setIsDispatchingWebhook(true)
+    setWebhookDispatchFeedback("")
+    setWebhookDispatchPayload(null)
+
+    const result = await dispatchOrderWebhookAction(order.id, webhookEvent)
+
+    if (!result.success || !result.data) {
+      const error = result.error || tr('admin.orders.webhook.dispatchError', 'Nao foi possivel disparar o webhook')
+      setWebhookDispatchFeedback(error)
+      setIsDispatchingWebhook(false)
+      return
+    }
+
+    setWebhookDispatchFeedback(`${result.data.message} (${result.data.event})`)
+    setWebhookDispatchPayload((result.data.payload as WebhookPayload | undefined) || null)
+    setMessageDispatchResultOpen(false)
+    setWebhookDispatchResultOpen(true)
+    setIsDispatchingWebhook(false)
+  }
+
+  function openErrorDialog(message: string) {
+    setErrorDialogMessage(message)
+    setErrorDialogOpen(true)
+  }
+
+  function showActionError(rawError: unknown, fallback: string) {
+    toast.error(extractActionErrorMessage(rawError, fallback))
+  }
+
+  function extractActionErrorMessage(rawError: unknown, fallback: string): string {
+    if (typeof rawError !== 'string') return fallback
+
+    const text = rawError.trim()
+    if (!text) return fallback
+
+    try {
+      const parsed = JSON.parse(text)
+      if (parsed && typeof parsed === 'object') {
+        const record = parsed as Record<string, unknown>
+        const error = typeof record.error === 'string' ? record.error.trim() : ''
+        if (error) return error
+
+        const message = typeof record.message === 'string' ? record.message.trim() : ''
+        if (message) return message
+      }
+    } catch {
+      // Keep raw string when backend returns plain text.
+    }
+
+    return text
+  }
+
   function resolveAttributeLabel(
     value: string | null | undefined,
     labels: Record<string, string>
@@ -457,70 +598,121 @@ export default function AdminOrderDetailPageClient({
     return labels[raw] || labels[raw.toUpperCase()] || labels[raw.toLowerCase()] || raw
   }
 
-  function resolveProductSku(item: OrderItem): string {
-    const variantSku = String(item.skuSnapshot || '').trim()
-    if (variantSku) {
-      return variantSku
-    }
-
-    const fromCatalog = initialProducts.find((product) => String(product.id) === String(item.productId))
-    if (fromCatalog?.sku) {
-      return fromCatalog.sku
-    }
-
-    return '-'
+  function normalizeVariantAttributeKind(key: string): string {
+    const normalized = key.trim().toLowerCase()
+    if (['cor', 'color'].includes(normalized)) return 'color'
+    if (['tam', 'tamanho', 'size'].includes(normalized)) return 'size'
+    return normalized
   }
 
-  function resolveVariantAttributes(item: OrderItem): Array<{ key: string; value: string }> {
-    const normalizeAttributeKey = (key: string): string => {
-      const normalized = key.trim().toLowerCase()
-      if (['cor', 'color'].includes(normalized)) return tr('admin.orders.attribute.color', 'Color')
-      if (['tam', 'tamanho', 'size'].includes(normalized)) return tr('admin.orders.attribute.size', 'Size')
+  function formatVariantAttributeLabel(key: string): string {
+    const normalized = normalizeVariantAttributeKind(key)
+    if (normalized === 'color') return tr('admin.orders.attribute.color', 'Color')
+    if (normalized === 'size') return tr('admin.orders.attribute.size', 'Size')
 
-      return key
-        .replace(/[_-]+/g, ' ')
-        .trim()
-        .replace(/^\w/, (char) => char.toUpperCase())
-    }
+    return key
+      .replace(/[_-]+/g, ' ')
+      .trim()
+      .replace(/^\w/, (char) => char.toUpperCase())
+  }
 
+  function formatVariantAttributeValue(normalizedKey: string, value: string): string {
+    if (normalizedKey === 'color') return resolveAttributeLabel(value, initialAttributeLabels.color)
+    if (normalizedKey === 'size') return resolveAttributeLabel(value, initialAttributeLabels.size)
+    return value
+  }
+
+  function getVariantDimensions(item: OrderItem): VariantDimension[] {
     const raw = String(item.variantCombinationKey || '').trim()
     if (raw) {
       const keyValueMatches = Array.from(raw.matchAll(/([^|,;:]+):([^|,;]+)/g))
       if (keyValueMatches.length > 0) {
         const parsed = keyValueMatches
           .map((match) => {
-            const key = String(match[1] || '').trim()
-            const value = String(match[2] || '').trim()
-            if (!key || !value) return null
+            const rawKey = String(match[1] || '').trim()
+            const rawValue = String(match[2] || '').trim()
+            if (!rawKey || !rawValue) return null
 
-            const normalizedKey = key.toLowerCase()
-            const parsedValue = normalizedKey === 'cor' || normalizedKey === 'color'
-              ? resolveAttributeLabel(value, initialAttributeLabels.color)
-              : normalizedKey === 'tam' || normalizedKey === 'tamanho' || normalizedKey === 'size'
-                ? resolveAttributeLabel(value, initialAttributeLabels.size)
-                : value
-
+            const normalizedKey = normalizeVariantAttributeKind(rawKey)
             return {
-              key: normalizeAttributeKey(key),
-              value: parsedValue,
+              rawKey,
+              normalizedKey,
+              label: formatVariantAttributeLabel(rawKey),
+              rawValue,
+              displayValue: formatVariantAttributeValue(normalizedKey, rawValue),
             }
           })
-          .filter((entry): entry is { key: string; value: string } => Boolean(entry))
+          .filter((entry): entry is VariantDimension => Boolean(entry))
 
         if (parsed.length > 0) return parsed
       }
+    }
 
+    const fallback: VariantDimension[] = []
+    const colorRaw = String(item.colorSnapshot || '').trim()
+    const sizeRaw = String(item.sizeSnapshot || '').trim()
+
+    if (colorRaw) {
+      fallback.push({
+        rawKey: 'color',
+        normalizedKey: 'color',
+        label: tr('admin.orders.attribute.color', 'Color'),
+        rawValue: colorRaw,
+        displayValue: resolveAttributeLabel(colorRaw, initialAttributeLabels.color),
+      })
+    }
+
+    if (sizeRaw) {
+      fallback.push({
+        rawKey: 'size',
+        normalizedKey: 'size',
+        label: tr('admin.orders.attribute.size', 'Size'),
+        rawValue: sizeRaw,
+        displayValue: resolveAttributeLabel(sizeRaw, initialAttributeLabels.size),
+      })
+    }
+
+    return fallback
+  }
+
+  function compareVariantDimensionValues(a: VariantDimension, b: VariantDimension): number {
+    if (a.normalizedKey === 'size' && b.normalizedKey === 'size') {
+      const ai = SIZE_ORDER.indexOf(a.rawValue)
+      const bi = SIZE_ORDER.indexOf(b.rawValue)
+      if (ai !== -1 && bi !== -1) return ai - bi
+      if (ai !== -1) return -1
+      if (bi !== -1) return 1
+    }
+
+    return a.displayValue.localeCompare(b.displayValue)
+  }
+
+  function resolveProductSku(item: OrderItem): string {
+    const productSku = String(item.productSkuSnapshot || '').trim()
+    if (productSku) {
+      return productSku
+    }
+
+    const variantSku = String(item.skuSnapshot || '').trim()
+    if (variantSku) {
+      return variantSku
+    }
+
+    return '-'
+  }
+
+  function resolveVariantAttributes(item: OrderItem): Array<{ key: string; value: string }> {
+    const dimensions = getVariantDimensions(item)
+    if (dimensions.length > 0) {
+      return dimensions.map((dimension) => ({ key: dimension.label, value: dimension.displayValue }))
+    }
+
+    const raw = String(item.variantCombinationKey || '').trim()
+    if (raw) {
       return [{ key: tr('admin.orders.attribute.variation', 'Variation'), value: raw }]
     }
 
-    const color = resolveAttributeLabel(item.colorSnapshot, initialAttributeLabels.color)
-    const size = resolveAttributeLabel(item.sizeSnapshot, initialAttributeLabels.size)
-    const fallback: Array<{ key: string; value: string }> = []
-
-    if (color !== '-') fallback.push({ key: tr('admin.orders.attribute.color', 'Color'), value: color })
-    if (size !== '-') fallback.push({ key: tr('admin.orders.attribute.size', 'Size'), value: size })
-
-    return fallback.length > 0 ? fallback : [{ key: tr('admin.orders.attribute.variation', 'Variation'), value: '-' }]
+    return [{ key: tr('admin.orders.attribute.variation', 'Variation'), value: tr('admin.orders.attribute.none', 'Sem variacao') }]
   }
 
   useEffect(() => {
@@ -534,155 +726,90 @@ export default function AdminOrderDetailPageClient({
 
     const nextAttendedDraft: Record<string, number> = {};
     for (const item of order.items) {
-      nextAttendedDraft[item.id] = Number(item.qty || 0);
+      nextAttendedDraft[item.id] = getItemAttendedQty(item);
     }
     setAttendedQtyDraft(nextAttendedDraft);
   }, [order]);
 
-  useEffect(() => {
-    if (!order && orderId) {
-      loadData();
-    }
-  }, [orderId, order]);
-
+  // Invoice and label are preloaded by server route for initial render performance.
 
   useEffect(() => {
-    let cancelled = false;
-
-    const loadStockSettings = async () => {
-      const result = await getSiteSettingsAction();
-      if (!result.success || !result.data || cancelled) return;
-
-      setStockModeConfig(result.data.stockMode || 'FANTASY');
-      setStockVariantMaxQty(Math.max(1, Number(result.data.variantMaxQty || 999)));
-    };
-
-    void loadStockSettings();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  function getMaxOrderEditQty(params: { currentQty?: number; availableQty?: number; variantStock?: number }): number {
-    const currentQty = Math.max(0, Math.floor(Number(params.currentQty || 0)));
-    const availableQty = Math.max(0, Math.floor(Number(params.availableQty || 0)));
-    const variantStock = Math.max(0, Math.floor(Number(params.variantStock || 0)));
-
-    if (stockModeConfig === 'BINARY') {
-      const binaryLimit = availableQty > 0 || variantStock > 0 ? 1 : 0;
-      return Math.max(currentQty, binaryLimit);
-    }
-
-    if (stockModeConfig === 'INFINITO') {
-      const infinitoLimit = availableQty > 0 || variantStock > 0 ? INFINITE_STOCK_MAX_QTY : 0;
-      return Math.max(currentQty, infinitoLimit);
-    }
-
-    if (stockModeConfig === 'FANTASY') {
-      return Math.max(currentQty, stockVariantMaxQty);
-    }
-
-    return Math.max(currentQty, availableQty, variantStock);
-  }
-
-  function clampOrderEditQty(value: number, maxAllowed: number): number {
-    const normalizedMax = Math.max(1, Math.floor(Number(maxAllowed || 1)));
-    const normalizedValue = Math.floor(Number(value || 0));
-    return Math.max(1, Math.min(normalizedMax, normalizedValue));
-  }
-
-  function isLocalDemoOrderId(id: string): boolean {
-    const numericId = Number(id)
-    return !Number.isFinite(numericId) || numericId <= 0
-  }
-
-  function canFallbackToLocalOrderUpdate(error?: string | null): boolean {
-    const normalizedError = String(error || '')
-    return (
-      isLocalDemoOrderId(order?.id || '') ||
-      normalizedError.includes('NEXT_PUBLIC_RUST_URL') ||
-      normalizedError.includes('Pedido inválido')
-    )
-  }
-
-  function applyLocalOrderPatch(patch: Partial<Order>) {
-    setOrder((prev) => {
-      if (!prev) return prev
-      return {
-        ...prev,
-        ...patch,
-        updatedAt: new Date(),
-      }
-    })
-  }
-
-  function applyLocalItemsPatch(
-    shouldPatch: (item: OrderItem) => boolean,
-    patchItem: (item: OrderItem) => OrderItem
-  ) {
-    setOrder((prev) => {
-      if (!prev) return prev
-
-      return {
-        ...prev,
-        updatedAt: new Date(),
-        items: prev.items.map((entry) => shouldPatch(entry) ? patchItem(entry) : entry),
-      }
-    })
-  }
-
-  function applyLocalItemQuantity(itemId: string, nextQty: number) {
-    applyLocalItemsPatch(
-      (entry) => entry.id === itemId,
-      (entry) => ({
-        ...entry,
-        qty: nextQty,
-        fulfilled: nextQty > 0,
-        status: nextQty > 0 ? 'attended' : 'active',
-      })
-    )
-  }
-
-  async function loadData() {
     if (!orderId) return;
-    setIsLoading(true);
-    const orderResult = await getOrderDetailAction(orderId);
-    
-    if (orderResult.success && orderResult.data) {
-      const orderData = orderResult.data as OrderWithExtras;
-      setOrder(orderData);
-      setShippingPrice(orderData.shippingPrice || 0);
-      setManualDiscount(orderData.manualDiscount || 0);
-      setTrackingCode(orderData.trackingCode || "");
-      setTrackingUrl(orderData.trackingUrl || "");
-      setNotes(orderData.notes || "");
-      setInternalNotes(orderData.internalNotes || "");
+    void loadLabel();
+  }, [orderId]);
 
-      if (orderData.customer) {
-        setCustomer(orderData.customer);
-      } else {
-        const customerResult = await getCustomerDetailAction(orderData.customerId);
-        if (customerResult.success && customerResult.data) {
-          setCustomer(customerResult.data);
-        }
-      }
-    } else {
-      // Fallback to mock data when no backend is available
-      const mock = getMockOrder(orderId) as unknown as OrderWithExtras | null
-      if (mock) {
-        setOrder(mock)
-        setShippingPrice((mock as any).shippingPrice || 0)
-        setManualDiscount((mock as any).manualDiscount || 0)
-        setTrackingCode((mock as any).trackingCode || "")
-        setNotes((mock as any).notes || "")
-        setInternalNotes((mock as any).internalNotes || "")
-        const mockCustomer = getMockCustomer((mock as any).customerId)
-        if (mockCustomer) setCustomer(mockCustomer as unknown as Customer)
-      }
+  useEffect(() => {
+    setStockModeConfig(initialStockMode);
+    setStockVariantMaxQty(initialStockVariantMaxQty);
+  }, [initialStockMode, initialStockVariantMaxQty]);
+
+  function getMaxOrderEditQty(params: {
+    currentQty?: number
+    availableQty?: number
+    variantStock?: number
+    reservedQty?: number
+  }): number {
+    const currentQty = Math.max(0, Math.floor(Number(params.currentQty || 0)))
+    const stockQty = Math.max(
+      0,
+      Math.floor(Number(params.variantStock ?? params.availableQty ?? 0)),
+    )
+    const reservedQty = Math.max(0, Math.floor(Number(params.reservedQty || 0)))
+    const available = resolveAvailableQtyByStockMode({
+      stockMode: stockModeConfig,
+      variantMaxQty: stockVariantMaxQty,
+      stockQty,
+      reservedQty,
+    })
+
+    return Math.max(currentQty, available)
+  }
+
+  function resolveVariantAvailableQty(stockQty: number, reservedQty: number): number {
+    return resolveAvailableQtyByStockMode({
+      stockMode: stockModeConfig,
+      variantMaxQty: stockVariantMaxQty,
+      stockQty,
+      reservedQty,
+    })
+  }
+
+  function clampOrderEditQty(value: number, maxAllowed: number, minAllowed: number = 1): number {
+    const normalizedMin = Math.max(0, Math.floor(Number(minAllowed || 0)));
+    const normalizedMax = Math.max(normalizedMin, Math.floor(Number(maxAllowed || normalizedMin)));
+    const normalizedValue = Math.floor(Number(value || 0));
+    return Math.max(normalizedMin, Math.min(normalizedMax, normalizedValue));
+  }
+
+  async function handleAssignSellerFromCustomer() {
+    if (!orderId || !order || order.assignedSellerId) return;
+
+    if (!customer?.assignedSellerId) {
+      toast.error(tr('admin.orders.seller.noCustomerSeller', 'Cliente não possui vendedora atribuída'));
+      return;
     }
 
-    setIsLoading(false);
+    setIsAssigningSeller(true);
+    try {
+      const result = await assignOrderSellerFromCustomerAction(orderId);
+      if (!result.success || !result.data) {
+        toast.error(result.error || tr('admin.orders.seller.assignError', 'Não foi possível atribuir a vendedora ao pedido'));
+        return;
+      }
+
+      setOrder((current) =>
+        current
+          ? {
+              ...current,
+              assignedSellerId: result.data!.assignedSellerId,
+              assignedSellerName: result.data!.assignedSellerName,
+            }
+          : current,
+      );
+      toast.success(tr('admin.orders.seller.assignSuccess', 'Vendedora atribuída ao pedido'));
+    } finally {
+      setIsAssigningSeller(false);
+    }
   }
 
   async function refreshOrderDataOnly(preserveScroll: boolean = false) {
@@ -695,10 +822,12 @@ export default function AdminOrderDetailPageClient({
     const orderResult = await getOrderDetailAction(orderId);
 
     if (orderResult.success && orderResult.data) {
-      const orderData = orderResult.data as OrderWithExtras;
+      const orderData = orderResult.data;
       setOrder(orderData);
       setShippingPrice(orderData.shippingPrice || 0);
       setManualDiscount(orderData.manualDiscount || 0);
+      setLabel(orderData.label ?? null);
+      setInvoice(orderData.invoice ?? null);
 
       if (orderData.customer) {
         setCustomer(orderData.customer);
@@ -715,51 +844,252 @@ export default function AdminOrderDetailPageClient({
     }
   }
 
-  async function handleStatusChange(newStatus: string) {
-    if (!order) return;
-    if (isLocalDemoOrderId(order.id)) {
-      applyLocalOrderPatch({ status: newStatus as Order["status"] })
-      return
+  async function loadInvoice() {
+    if (!orderId) return;
+    setInvoiceLoading(true);
+    const result = await getOrderInvoiceAction(orderId);
+    if (result.success && result.data) {
+      setInvoice(result.data);
+    } else {
+      setInvoice(null);
+    }
+    setInvoiceLoading(false);
+  }
+
+  async function loadLabel() {
+    if (!orderId) return;
+    setLabelLoading(true);
+    const result = await getOrderLabelAction(orderId);
+    if (result.success && result.data) {
+      setLabel(result.data);
+    } else {
+      setLabel(null);
+    }
+    setLabelLoading(false);
+  }
+
+  async function handleGenerateLabel(chaveData?: { chaveNfe?: string; numeroNfe?: string }) {
+    if (!order || !canEditOrder) return;
+    setLabelGenerating(true);
+    const result = await generateOrderLabelAction(order.id, chaveData);
+    if (!result.success) {
+      openErrorDialog(result.error || 'Não foi possível gerar a etiqueta');
+      setLabelGenerating(false);
+      return;
     }
 
+    setLabel(result.data || null);
+    setLabelChaveModalOpen(false);
+    await refreshOrderDataOnly(true);
+    setLabelGenerating(false);
+  }
+
+  async function handleRegenerateLabel(chaveData?: { chaveNfe?: string; numeroNfe?: string }) {
+    if (!order || !canEditOrder) return;
+    setLabelGenerating(true);
+    const result = await regenerateOrderLabelAction(order.id, chaveData);
+    if (!result.success) {
+      openErrorDialog(result.error || 'Não foi possível regenerar a etiqueta');
+      setLabelGenerating(false);
+      return;
+    }
+
+    setLabel(result.data || null);
+    setLabelChaveModalOpen(false);
+    await refreshOrderDataOnly(true);
+    setLabelGenerating(false);
+  }
+
+  function openLabelChaveModal(mode: "generate" | "regenerate") {
+    setLabelChaveModalMode(mode);
+    setLabelChaveNfeInput("");
+    setLabelNumeroNfeInput(invoice?.nfNumber?.trim() ?? "");
+    setLabelChaveFormError(null);
+    setLabelChaveModalOpen(true);
+  }
+
+  function handleGenerateLabelClick() {
+    if (!order || !canEditOrder) return;
+    if (!orderHasValidInvoiceChave(invoice)) {
+      openLabelChaveModal("generate");
+      return;
+    }
+    void handleGenerateLabel();
+  }
+
+  function handleRegenerateLabelClick() {
+    if (!order || !canEditOrder) return;
+    if (!orderHasValidInvoiceChave(invoice)) {
+      openLabelChaveModal("regenerate");
+      return;
+    }
+    void handleRegenerateLabel();
+  }
+
+  async function handleConfirmLabelChaveModal() {
+    const chave = normalizeChaveNfe(labelChaveNfeInput);
+    if (chave.length !== 44) {
+      setLabelChaveFormError("A chave NF-e deve ter 44 dígitos.");
+      return;
+    }
+
+    setLabelChaveFormError(null);
+    const payload = {
+      chaveNfe: chave,
+      numeroNfe: labelNumeroNfeInput.trim() || undefined,
+    };
+
+    if (labelChaveModalMode === "regenerate") {
+      await handleRegenerateLabel(payload);
+    } else {
+      await handleGenerateLabel(payload);
+    }
+  }
+
+  async function handleRefreshLabel() {
+    if (!orderId) return;
+    setLabelLoading(true);
+    await loadLabel();
+    await refreshOrderDataOnly(true);
+  }
+
+  async function handleGenerateInvoice() {
+    if (!order) return;
+    if (!canEditOrder) return;
+    setInvoiceGenerating(true);
+    const result = await generateOrderInvoiceAction(order.id);
+    if (!result.success) {
+      openErrorDialog(result.error || tr('admin.orders.alerts.generateInvoice', 'Não foi possível gerar a nota fiscal do pedido'));
+      setInvoiceGenerating(false);
+      return;
+    }
+
+    setInvoice(result.data || null);
+    await refreshOrderDataOnly(true);
+    setInvoiceGenerating(false);
+  }
+
+  async function handleRefreshInvoiceStatus() {
+    if (!order || !invoice) return;
+    if (!canEditOrder) return;
+    setInvoiceRefreshing(true);
+    const result = await refreshOrderInvoiceStatusAction(order.id);
+    if (!result.success) {
+      openErrorDialog(result.error || tr('admin.orders.alerts.refreshInvoice', 'Não foi possível consultar o status da nota fiscal'));
+      setInvoiceRefreshing(false);
+      return;
+    }
+
+    setInvoice(result.data || null);
+    await refreshOrderDataOnly(true);
+    setInvoiceRefreshing(false);
+  }
+
+  useEffect(() => {
+    if (!order || !invoice) return;
+    if (!canEditOrder) return;
+    if (invoice.status !== 'PROCESSING') return;
+    if (!invoice.integrationReferenceId) return;
+    if (invoiceRefreshing || invoiceGenerating || isSaving) return;
+
+    const timerId = window.setTimeout(async () => {
+      setInvoiceRefreshing(true);
+      const result = await refreshOrderInvoiceStatusAction(order.id);
+      if (result.success) {
+        setInvoice(result.data || null);
+        await refreshOrderDataOnly(true);
+      }
+      setInvoiceRefreshing(false);
+    }, 5000);
+
+    return () => {
+      window.clearTimeout(timerId);
+    };
+  }, [
+    canEditOrder,
+    order,
+    invoice,
+    invoiceRefreshing,
+    invoiceGenerating,
+    isSaving,
+  ]);
+
+  useEffect(() => {
+    let isMounted = true
+
+    const loadPaymentMethods = async () => {
+      const result = await getCorePaymentMethodsAction()
+      if (!isMounted) return
+      if (result.success && result.data) {
+        setAvailablePaymentMethods(result.data)
+      } else {
+        setAvailablePaymentMethods([])
+      }
+    }
+
+    void loadPaymentMethods()
+    return () => {
+      isMounted = false
+    }
+  }, [])
+
+  const paymentMethodOptions = availablePaymentMethods.length > 0
+    ? availablePaymentMethods
+    : [
+        { value: 'PIX', label: PAYMENT_METHOD_LABELS.PIX },
+        { value: 'BOLETO', label: PAYMENT_METHOD_LABELS.BOLETO },
+        { value: 'FATURADO', label: PAYMENT_METHOD_LABELS.FATURADO },
+        { value: 'CARTAO_EXTERNO', label: PAYMENT_METHOD_LABELS.CARTAO_EXTERNO },
+      ]
+
+  async function handleStatusChange(newStatus: string) {
+    if (!order) return;
+    if (!canEditOrder) return;
+    if (hasPendingFulfillmentCompletion) {
+      openErrorDialog(fulfillmentCompletionBlockMessage);
+      return;
+    }
+    if (newStatus === 'CANCELLED' && !canCancelOrder) return;
+    if ((newStatus === 'SHIPPED' || newStatus === 'DELIVERED') && !canManageShipping) return;
     setIsSaving(true);
     const result = await updateOrderAction(order.id, { status: newStatus as Order["status"] });
     if (result.success) {
       await refreshOrderDataOnly();
-    } else if (canFallbackToLocalOrderUpdate(result.error)) {
-      applyLocalOrderPatch({ status: newStatus as Order["status"] })
     } else {
-      window.alert(result.error || 'Não foi possível atualizar o status do pedido')
+      showActionError(result.error, tr('admin.orders.alerts.updateStatus', 'Nao foi possivel atualizar o status do pedido'))
     }
     setIsSaving(false);
   }
 
   async function handlePaymentStatusChange(newStatus: string) {
     if (!order) return;
-    const paymentStatus = newStatus as 'PENDING' | 'PAID' | 'PARTIAL' | 'REFUNDED' | 'CANCELLED'
-    if (isLocalDemoOrderId(order.id)) {
-      applyLocalOrderPatch({ paymentStatus })
-      return
+    if (!canEditOrder) return;
+    if (hasPendingFulfillmentCompletion) {
+      openErrorDialog(fulfillmentCompletionBlockMessage);
+      return;
     }
-
+    if ((newStatus === 'PAID' || newStatus === 'PARTIAL') && !canMarkOrderPaid) return;
+    if ((newStatus === 'REFUNDED' || newStatus === 'CANCELLED') && !canManageReturns) return;
     setIsSaving(true);
-    const result = await updateOrderAction(order.id, { paymentStatus });
+    const result = await updateOrderAction(order.id, { paymentStatus: newStatus as 'PENDING' | 'PAID' | 'PARTIAL' | 'REFUNDED' | 'CANCELLED' });
     if (result.success) {
       await refreshOrderDataOnly();
-    } else if (canFallbackToLocalOrderUpdate(result.error)) {
-      applyLocalOrderPatch({ paymentStatus })
     } else {
-      window.alert(result.error || 'Não foi possível atualizar o pagamento')
+      showActionError(result.error, tr('admin.orders.alerts.updatePaymentStatus', 'Nao foi possivel atualizar o status do pagamento'))
     }
     setIsSaving(false);
   }
 
   async function handleSaveShipping() {
     if (!order) return;
+    if (!canEditOrder) return;
+    if (!canManageShipping) return;
     setIsSaving(true);
     const result = await updateOrderAction(order.id, { shippingPrice });
     if (result.success) {
       await refreshOrderDataOnly(true);
+    } else {
+      showActionError(result.error, tr('admin.orders.alerts.updateShipping', 'Nao foi possivel atualizar o frete'))
     }
     setEditingShipping(false);
     setIsSaving(false);
@@ -767,11 +1097,12 @@ export default function AdminOrderDetailPageClient({
 
   async function handleSaveDiscount() {
     if (!order) return;
+    if (!canEditOrder) return;
     setIsSaving(true);
     const savedScroll = { x: window.scrollX, y: window.scrollY };
     const maxAllowedDiscount = Math.max(
       0,
-      subtotal + (order.shippingPrice || 0) - (order.discountTotal || 0)
+      orderSubtotal + (order.shippingPrice || 0) - (order.discountTotal || 0)
     )
     const normalizedManualDiscount = Math.min(
       maxAllowedDiscount,
@@ -802,6 +1133,8 @@ export default function AdminOrderDetailPageClient({
       setTimeout(() => {
         window.scrollTo(savedScroll.x, savedScroll.y);
       }, 0);
+    } else if (!result.success) {
+      showActionError(result.error, tr('admin.orders.alerts.updateDiscount', 'Nao foi possivel atualizar o desconto manual'))
     }
     setEditingDiscount(false);
     setIsSaving(false);
@@ -809,18 +1142,25 @@ export default function AdminOrderDetailPageClient({
 
   async function handleSaveTracking() {
     if (!order) return;
+    if (!canEditOrder) return;
+    if (!canManageShipping) return;
+    if (trackingLockedByLabel) return;
     setIsSaving(true);
     const result = await updateOrderAction(order.id, { trackingCode, trackingUrl });
     if (result.success) {
       await refreshOrderDataOnly();
       setTrackingSaved(true);
       setTimeout(() => setTrackingSaved(false), 1800);
+    } else {
+      showActionError(result.error, tr('admin.orders.alerts.updateTracking', 'Nao foi possivel atualizar o rastreio'))
     }
+    setEditingTracking(false);
     setIsSaving(false);
   }
 
   async function handleSaveOrderChanges() {
     if (!order) return;
+    if (!canEditOrder) return;
 
     const currentTracking = (order.trackingCode || '').trim();
     const nextTracking = (trackingCode || '').trim();
@@ -833,23 +1173,24 @@ export default function AdminOrderDetailPageClient({
     await refreshOrderDataOnly();
   }
 
-  function handleSendWhatsApp() {
-    if (!customer) return;
-    const phone = String(customer.phone || '').replace(/\D/g, '');
-    const orderId8 = order?.id.slice(0, 8).toUpperCase() ?? '';
-    const statusLabel = order ? (ORDER_STATUS_LABELS[order.status]?.label ?? order.status) : '';
-    const message = encodeURIComponent(
-      `Olá, ${customer.contactName || customer.companyName}! 👋\n\nSeu pedido *#${orderId8}* está com status: *${statusLabel}*.\n\nQualquer dúvida, estamos à disposição!`
-    );
-    const url = phone
-      ? `https://wa.me/55${phone}?text=${message}`
-      : `https://wa.me/?text=${message}`;
-    window.open(url, '_blank');
+  async function handleFloatingSaveClick() {
+    if (!canEditOrder) return;
+    setIsFloatingSaveLoading(true);
+
+    try {
+      await handleSaveOrderChanges();
+    } finally {
+      setIsFloatingSaveLoading(false);
+    }
   }
 
   async function handleExportPdf() {
+    if (!order) return;
+
     await handleSaveOrderChanges();
-    window.print();
+
+    const href = `/api/admin/order-print-pdf?orderId=${encodeURIComponent(String(order.id))}`;
+    window.open(href, '_blank', 'noopener,noreferrer');
   }
 
   async function handlePrintLabel() {
@@ -870,7 +1211,7 @@ export default function AdminOrderDetailPageClient({
     printWindow.document.write(`
       <html>
         <head>
-          <title>${tr('admin.orders.print.labelTitle', 'Order Label')} ${String(order.id).slice(0, 8).toUpperCase()}</title>
+          <title>${tr('admin.orders.print.labelTitle', 'Order Label')} ${getOrderDisplayCode(order, orderId)}</title>
           <style>
             body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 16px; color: #111827; }
             .label { border: 1px solid #d1d5db; border-radius: 10px; padding: 16px; }
@@ -883,7 +1224,7 @@ export default function AdminOrderDetailPageClient({
         </head>
         <body>
           <div class="label">
-            <div class="title">${tr('admin.orders.title', 'Order')} ${String(order.id).slice(0, 8).toUpperCase()}</div>
+            <div class="title">${tr('admin.orders.title', 'Order')} ${getOrderDisplayCode(order, orderId)}</div>
             <div class="line"><strong>${tr('admin.orders.print.recipient', 'Recipient')}:</strong> ${customerName}</div>
             <div class="line muted">${addressLine1}</div>
             <div class="line muted">${addressLine2}</div>
@@ -902,11 +1243,48 @@ export default function AdminOrderDetailPageClient({
     printWindow.close();
   }
 
+  async function handlePrintRomaneio() {
+    if (!order) return;
+
+    await handleSaveOrderChanges();
+
+    const href = `/api/admin/order-manifest-pdf?orderId=${encodeURIComponent(String(order.id))}`;
+    window.open(href, '_blank', 'noopener,noreferrer');
+  }
+
+  function handleOpenWhatsApp() {
+    const rawPhone = String(customer?.phone || '').trim();
+    const phoneDigits = rawPhone.replace(/\D/g, '');
+
+    if (phoneDigits.length < 10) {
+      openErrorDialog('Telefone do cliente inválido para WhatsApp');
+      return;
+    }
+
+    const customerName = customer?.contactName || customer?.companyName || 'cliente';
+    const statusKey = String(order?.status || 'PENDING').toUpperCase();
+    const statusLabel = ORDER_STATUS_LABELS[statusKey]?.label || 'Pendente';
+    const orderCode = getOrderDisplayCode(order, orderId);
+    const message = `Olá, ${customerName}! Seu pedido *#${orderCode}* está com status: *${statusLabel}*. Qualquer dúvida, estamos à disposição!`;
+    const whatsappUrl = `https://wa.me/55${phoneDigits}?text=${encodeURIComponent(message)}`;
+    window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
+  }
+
   async function handleTrackingBlur() {
     if (!order) return;
+    if (!canEditOrder) {
+      setEditingTracking(false);
+      return;
+    }
+    if (trackingLockedByLabel) {
+      setTrackingCode(order.trackingCode || "");
+      setEditingTracking(false);
+      return;
+    }
     const currentTracking = (order.trackingCode || '').trim();
     const nextTracking = (trackingCode || '').trim();
     if (currentTracking === nextTracking) {
+      setEditingTracking(false);
       return;
     }
     await handleSaveTracking();
@@ -914,10 +1292,13 @@ export default function AdminOrderDetailPageClient({
 
   async function handleSaveNotes() {
     if (!order) return;
+    if (!canEditOrder) return;
     setIsSaving(true);
     const result = await updateOrderAction(order.id, { internalNotes });
     if (result.success) {
       await refreshOrderDataOnly();
+    } else {
+      showActionError(result.error, tr('admin.orders.alerts.updateInternalNotes', 'Nao foi possivel salvar as observacoes internas'))
     }
     setEditingNotes(false);
     setIsSaving(false);
@@ -925,133 +1306,107 @@ export default function AdminOrderDetailPageClient({
 
   async function handlePaymentMethodChange(value: string) {
     if (!order) return;
-    const paymentMethod = value as PaymentMethod
-    if (isLocalDemoOrderId(order.id)) {
-      applyLocalOrderPatch({ paymentMethod })
+    if (!canEditOrder) return;
+
+    const selectedMethod = paymentMethodOptions.find((method) => method.value === value)
+    if (!selectedMethod?.id || !Number.isFinite(Number(selectedMethod.id)) || Number(selectedMethod.id) <= 0) {
+      openErrorDialog('Método de pagamento sem methodId válido. Verifique Configurações > Métodos de Pagamento.')
       return
     }
 
     setIsSaving(true);
     const result = await updateOrderAction(order.id, {
-      paymentMethod
+      paymentMethodId: Number(selectedMethod.id),
+      paymentMethod: value as 'PIX' | 'BOLETO' | 'FATURADO' | 'CARTAO_EXTERNO'
     });
     if (result.success) {
       await refreshOrderDataOnly();
-    } else if (canFallbackToLocalOrderUpdate(result.error)) {
-      applyLocalOrderPatch({ paymentMethod })
     } else {
-      window.alert(result.error || 'Não foi possível atualizar o método de pagamento')
+      showActionError(result.error, tr('admin.orders.alerts.updatePaymentMethod', 'Nao foi possivel atualizar o metodo de pagamento'))
     }
     setIsSaving(false);
   }
 
-  async function handleSelectProduct(product: Product) {
-    setSelectedProduct(product);
-    setAddUnitPrice(product.basePrice);
-    setSelectedColor("")
-    setSelectedSize("")
-    setSelectedVariant(null)
-    setLoadingVariants(true)
+  async function handleCatalogAddVariants(payload: {
+    product: Product
+    items: AssistedOrderVariantSelection[]
+  }): Promise<boolean> {
+    if (!order || !canEditOrder) return false
+    if (order.status === 'RELEASED') return false
 
-    const result = await getProductFullAction(product.id)
-
-    if (result.success && result.data) {
-      const rawVariants = Array.isArray(result.data?.variants) ? result.data.variants : []
-
-      const mappedVariants: ProductVariantOption[] = rawVariants
-        .map((variantEntry: any) => {
-          const attributeValues = Array.isArray(variantEntry?.attribute_values)
-            ? variantEntry.attribute_values
-            : Array.isArray(variantEntry?.attributeValues)
-              ? variantEntry.attributeValues
-              : []
-
-          const colorAttr = attributeValues.find((value: any) =>
-            ['color', 'cor'].includes(String(value?.attribute_code || '').toLowerCase())
-          )
-          const sizeAttr = attributeValues.find((value: any) =>
-            ['size', 'tamanho', 'tam'].includes(String(value?.attribute_code || '').toLowerCase())
-          )
-
-          const priceCents = Number(variantEntry?.promo_cents || 0) > 0
-            ? Number(variantEntry?.promo_cents || 0)
-            : Number(variantEntry?.price_cents || 0)
-
-          return {
-            id: String(variantEntry?.id || ''),
-            productId: String(variantEntry?.product_id || product.id),
-            variantSku: String(variantEntry?.sku || ''),
-            stock: Number(variantEntry?.stock_qty || 0),
-            unitPrice: priceCents / 100,
-            color: String(colorAttr?.value_name || '-').trim() || '-',
-            size: String(sizeAttr?.value_name || '-').trim() || '-',
-          }
+    setIsSaving(true)
+    try {
+      for (const item of payload.items) {
+        const result = await addOrderItemAction(order.id, {
+          productId: payload.product.id,
+          variantId: item.variantId,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          origin: 'manager_added',
         })
-        .filter((variant: ProductVariantOption) => variant.id)
 
-      setProductVariants(mappedVariants)
-    } else {
-      setProductVariants([])
+        if (!result.success) {
+          openErrorDialog(result.error || tr('admin.orders.alerts.addItem', 'Could not add item to order'))
+          return false
+        }
+      }
+
+      await refreshOrderDataOnly()
+      setAddProductOpen(false)
+      return true
+    } finally {
+      setIsSaving(false)
     }
-
-    setLoadingVariants(false)
   }
 
-  async function handleAddProduct() {
-    if (!order || !selectedProduct || !selectedVariant) return;
+  async function handleCatalogBarcodeScan(payload: {
+    product: Product
+    variant: ProductVariant
+  }): Promise<boolean> {
+    if (!order || !canEditOrder) return false
+    if (order.status === 'RELEASED') return false
 
     const maxAllowed = getMaxOrderEditQty({
-      variantStock: selectedVariant.stock,
-      availableQty: selectedVariant.stock,
+      variantStock: payload.variant.stock,
       currentQty: 0,
-    });
+    })
 
     if (maxAllowed < 1) {
-      window.alert(tr('admin.orders.alerts.variantUnavailable', 'Variant unavailable for this stock mode'))
-      return
+      openErrorDialog(tr('admin.orders.alerts.variantUnavailable', 'Variant unavailable for this stock mode'))
+      return false
     }
 
-    const clampedQty = clampOrderEditQty(addQuantity, maxAllowed);
+    const unitPrice = typeof payload.variant.priceOverride === 'number'
+      ? payload.variant.priceOverride
+      : payload.product.basePrice
 
-    setIsSaving(true);
-    
-    const result = await addOrderItemAction(order.id, {
-      productId: selectedProduct.id,
-      variantId: selectedVariant.id,
-      quantity: clampedQty,
-      unitPrice: addUnitPrice,
-      origin: 'manager_added',
-    });
+    setIsSaving(true)
+    try {
+      const result = await addOrderItemAction(order.id, {
+        productId: payload.product.id,
+        variantId: payload.variant.id,
+        quantity: 1,
+        unitPrice,
+        origin: 'manager_added',
+      })
 
-    if (!result.success) {
-      window.alert(result.error || tr('admin.orders.alerts.addItem', 'Could not add item to order'))
-      setIsSaving(false);
-      return;
+      if (!result.success) {
+        openErrorDialog(result.error || tr('admin.orders.alerts.addItem', 'Could not add item to order'))
+        return false
+      }
+
+      await refreshOrderDataOnly()
+      return true
+    } finally {
+      setIsSaving(false)
     }
-
-    await refreshOrderDataOnly();
-    setAddProductOpen(false);
-    setSelectedProduct(null);
-    setProductVariants([]);
-    setSelectedVariant(null);
-    setSelectedColor("");
-    setSelectedSize("");
-    setAddQuantity(1);
-    setAddUnitPrice(0);
-    setIsSaving(false);
   }
 
   async function handleRemoveItem(itemId: string) {
     if (!order) return;
+    if (!canEditOrder) return;
+    if (order.status === 'RELEASED') return;
     if (order.status === 'CONFIRMED') return;
-    if (isLocalDemoOrderId(order.id)) {
-      applyLocalItemsPatch(
-        (entry) => entry.id === itemId,
-        (entry) => ({ ...entry, qty: 0, fulfilled: false, status: 'removed' })
-      )
-      return
-    }
-
     setIsSaving(true);
     await removeOrderItemAction(order.id, itemId);
     await refreshOrderDataOnly();
@@ -1060,20 +1415,12 @@ export default function AdminOrderDetailPageClient({
 
   async function handleRemoveSelectedItems() {
     if (!order || selectedItems.length === 0) return;
+    if (!canEditOrder) return;
+    if (order.status === 'RELEASED') return;
     if (order.status === 'CONFIRMED') return;
-    if (isLocalDemoOrderId(order.id)) {
-      const selectedSet = new Set(selectedItems)
-      applyLocalItemsPatch(
-        (entry) => selectedSet.has(entry.id),
-        (entry) => ({ ...entry, qty: 0, fulfilled: false, status: 'removed' })
-      )
-      setSelectedItems([]);
-      return
-    }
-
     setIsSaving(true);
     for (const itemId of selectedItems) {
-      await removeOrderItemAction(order.id, itemId);
+      await deleteOrderItemAction(order.id, itemId);
     }
     setSelectedItems([]);
     await refreshOrderDataOnly();
@@ -1082,20 +1429,9 @@ export default function AdminOrderDetailPageClient({
 
   async function handleReactivateItem(itemId: string) {
     if (!order) return;
+    if (!canEditOrder) return;
+    if (order.status === 'RELEASED') return;
     if (order.status === 'CONFIRMED') return;
-    if (isLocalDemoOrderId(order.id)) {
-      applyLocalItemsPatch(
-        (entry) => entry.id === itemId,
-        (entry) => ({
-          ...entry,
-          qty: Number(entry.originalQty ?? entry.qty ?? 0),
-          fulfilled: false,
-          status: 'active',
-        })
-      )
-      return
-    }
-
     setIsSaving(true);
     await updateOrderItemAction(order.id, itemId, { fulfilled: false });
     await refreshOrderDataOnly();
@@ -1104,22 +1440,9 @@ export default function AdminOrderDetailPageClient({
 
   async function handleToggleFulfilled(itemId: string, fulfilled: boolean) {
     if (!order) return;
+    if (!canEditOrder) return;
+    if (order.status === 'RELEASED') return;
     if (order.status === 'CONFIRMED') return;
-    const item = order.items.find((entry) => entry.id === itemId);
-    if (item?.status === 'removed') return;
-    if (isLocalDemoOrderId(order.id)) {
-      applyLocalItemsPatch(
-        (entry) => entry.id === itemId,
-        (entry) => ({
-          ...entry,
-          fulfilled,
-          status: fulfilled ? 'attended' : 'active',
-          qty: fulfilled ? Math.max(1, Number(entry.qty || entry.originalQty || 1)) : Number(entry.qty || 0),
-        })
-      )
-      return
-    }
-
     setIsSaving(true);
     await updateOrderItemAction(order.id, itemId, { fulfilled });
     await refreshOrderDataOnly();
@@ -1128,20 +1451,9 @@ export default function AdminOrderDetailPageClient({
 
   async function handleMarkAllFulfilled() {
     if (!order) return;
+    if (!canEditOrder) return;
+    if (order.status === 'RELEASED') return;
     if (order.status === 'CONFIRMED') return;
-    if (isLocalDemoOrderId(order.id)) {
-      applyLocalItemsPatch(
-        (entry) => entry.status !== 'removed',
-        (entry) => ({
-          ...entry,
-          fulfilled: true,
-          status: 'attended',
-          qty: Math.max(1, Number(entry.qty || entry.originalQty || 1)),
-        })
-      )
-      return
-    }
-
     setIsSaving(true);
     for (const item of order.items) {
       if (item.status !== 'removed' && !item.fulfilled) {
@@ -1152,85 +1464,61 @@ export default function AdminOrderDetailPageClient({
     setIsSaving(false);
   }
 
-  async function handleMarkGroupFulfilled(items: OrderItem[], fulfilled: boolean) {
+  async function handleSaveAttendedQty(item: OrderItem, draftOverride?: number) {
     if (!order) return;
+    if (!canEditOrder) return;
+    if (order.status === 'RELEASED') return;
     if (order.status === 'CONFIRMED') return;
-    if (isLocalDemoOrderId(order.id)) {
-      const groupItemIds = new Set(items.map((item) => item.id))
-      applyLocalItemsPatch(
-        (entry) => groupItemIds.has(entry.id) && entry.status !== 'removed',
-        (entry) => ({
-          ...entry,
-          fulfilled,
-          status: fulfilled ? 'attended' : 'active',
-          qty: fulfilled ? Math.max(1, Number(entry.qty || entry.originalQty || 1)) : Number(entry.qty || 0),
-        })
-      )
-      return
-    }
 
-    setIsSaving(true);
-    for (const item of items) {
-      if (item.status !== 'removed') {
-        await updateOrderItemAction(order.id, item.id, { fulfilled });
-      }
-    }
-    await refreshOrderDataOnly();
-    setIsSaving(false);
-  }
-
-  async function handleChangeAttendedQty(item: OrderItem, nextValue: number) {
-    if (!order) return;
-    if (order.status === 'CONFIRMED') return;
-    if (item.status === 'removed') return;
-
-    const stockLimit = getMaxOrderEditQty({
+    const requestedQty = Math.max(0, Number(item.originalQty ?? item.qty));
+    const stockLimit = Math.max(requestedQty, getMaxOrderEditQty({
       currentQty: item.qty,
-      availableQty: item.variantAvailableQty,
-    });
-    const nextQty = Math.max(0, Math.min(Math.floor(Number(stockLimit || 0)), Math.round(Number(nextValue || 0))));
+      variantStock: item.variantStockQty,
+      reservedQty: item.variantReservedQty,
+    }));
+    const baseAttendedQty = getItemAttendedQty(item);
+    const rawDraft = Number(draftOverride ?? attendedQtyDraft[item.id] ?? baseAttendedQty);
+    const nextQty = clampOrderEditQty(Math.round(rawDraft), stockLimit, 0);
 
-    if (nextQty === Number(item.qty)) return;
-
-    const previousDraft = Number(attendedQtyDraft[item.id] ?? item.qty);
-    setAttendedQtyDraft(prev => ({ ...prev, [item.id]: nextQty }));
-    if (isLocalDemoOrderId(order.id)) {
-      applyLocalItemQuantity(item.id, nextQty)
-      return
-    }
+    if (nextQty === baseAttendedQty) return;
 
     setIsSaving(true);
-    const result = await updateOrderItemAction(order.id, item.id, {
-      quantity: nextQty,
-      unitPrice: item.unitPrice,
-    });
-    if (result.success) {
-      await refreshOrderDataOnly(true);
-    } else if (canFallbackToLocalOrderUpdate(result.error)) {
-      applyLocalItemQuantity(item.id, nextQty)
+    let result;
+
+    if (nextQty <= 0) {
+      result = await updateOrderItemAction(order.id, item.id, { fulfilled: false });
     } else {
-      setAttendedQtyDraft(prev => ({ ...prev, [item.id]: previousDraft }));
-      window.alert(result.error || 'Não foi possível atualizar a quantidade atendida');
+      if (!isItemAttended(item)) {
+        const fulfillResult = await updateOrderItemAction(order.id, item.id, { fulfilled: true });
+        if (!fulfillResult.success) {
+          toast.error(fulfillResult.error || tr('admin.orders.alerts.updateItem', 'Nao foi possivel atualizar o item do pedido'))
+          setIsSaving(false);
+          return;
+        }
+      }
+
+      result = await updateOrderItemAction(order.id, item.id, {
+        quantity: nextQty,
+        unitPrice: item.unitPrice,
+      });
+    }
+
+    if (result.success) {
+      await refreshOrderDataOnly();
+    } else {
+      toast.error(result.error || tr('admin.orders.alerts.updateItem', 'Nao foi possivel atualizar o item do pedido'))
     }
     setIsSaving(false);
   }
 
   async function handleRemoveGroupItems(items: OrderItem[]) {
     if (!order || items.length === 0) return;
+    if (!canEditOrder) return;
     if (order.status === 'CONFIRMED') return;
-    if (isLocalDemoOrderId(order.id)) {
-      const groupItemIds = new Set(items.map((item) => item.id))
-      applyLocalItemsPatch(
-        (entry) => groupItemIds.has(entry.id),
-        (entry) => ({ ...entry, qty: 0, fulfilled: false, status: 'removed' })
-      )
-      setGroupToRemove(null);
-      return
-    }
 
     setIsSaving(true);
     for (const item of items) {
-      await removeOrderItemAction(order.id, item.id);
+      await deleteOrderItemAction(order.id, item.id);
     }
     await refreshOrderDataOnly();
     setGroupToRemove(null);
@@ -1239,23 +1527,11 @@ export default function AdminOrderDetailPageClient({
 
   async function handleReactivateGroupItems(items: OrderItem[]) {
     if (!order || items.length === 0) return;
+    if (!canEditOrder) return;
     if (order.status === 'CONFIRMED') return;
 
     const removedItems = items.filter((item) => item.status === 'removed')
     if (removedItems.length === 0) return
-    if (isLocalDemoOrderId(order.id)) {
-      const removedItemIds = new Set(removedItems.map((item) => item.id))
-      applyLocalItemsPatch(
-        (entry) => removedItemIds.has(entry.id),
-        (entry) => ({
-          ...entry,
-          qty: Number(entry.originalQty ?? entry.qty ?? 0),
-          fulfilled: false,
-          status: 'active',
-        })
-      )
-      return
-    }
 
     setIsSaving(true)
     for (const item of removedItems) {
@@ -1286,92 +1562,6 @@ export default function AdminOrderDetailPageClient({
     });
   };
 
-  const filteredProducts = products.filter(p => 
-    p.name.toLowerCase().includes(productSearch.toLowerCase()) ||
-    p.sku.toLowerCase().includes(productSearch.toLowerCase())
-  );
-
-  const colorOptions = Array.from(
-    new Set(productVariants.map((variant) => variant.color).filter((value) => value && value !== '-'))
-  ).map((color) => ({
-    color,
-    stock: productVariants
-      .filter((variant) => variant.color === color)
-      .reduce((sum, variant) => sum + Math.max(0, Number(variant.stock || 0)), 0),
-  }))
-
-  const sizeOptions = Array.from(
-    new Set(
-      productVariants
-        .filter((variant) => !selectedColor || variant.color === selectedColor)
-        .map((variant) => variant.size)
-        .filter((value) => value && value !== '-')
-    )
-  ).map((size) => {
-    const sizeVariant = productVariants.find(
-      (variant) => (!selectedColor || variant.color === selectedColor) && variant.size === size
-    )
-
-    return {
-      size,
-      stock: Number(sizeVariant?.stock || 0),
-    }
-  })
-
-  useEffect(() => {
-    if (!addProductOpen) return
-
-    setProducts([])
-    setSelectedProduct(null)
-    setProductVariants([])
-    setSelectedVariant(null)
-    setSelectedColor("")
-    setSelectedSize("")
-
-    const loadVariantCatalog = async () => {
-      setLoadingVariants(true)
-      const result = await getOrderProductVariantsCatalogAction(productSearch)
-      if (result.success && result.data) {
-        const productsMap = new Map<string, Product>()
-        for (const entry of result.data) {
-          if (!productsMap.has(entry.productId)) {
-            productsMap.set(entry.productId, {
-              id: entry.productId,
-              name: entry.productName,
-              slug: entry.productCode.toLowerCase(),
-              sku: entry.productCode,
-              description: null,
-              materials: null,
-              measures: null,
-              basePrice: entry.unitPrice,
-              cost: null,
-              isActive: true,
-              isFeatured: false,
-              categoryId: '',
-              tags: [],
-              images: [],
-              sizes: [],
-              colors: [],
-              createdAt: new Date(),
-              updatedAt: new Date(),
-            })
-          }
-        }
-
-        setProducts(Array.from(productsMap.values()))
-      } else {
-        setProducts([])
-      }
-      setLoadingVariants(false)
-    }
-
-    const timeout = setTimeout(() => {
-      loadVariantCatalog()
-    }, 250)
-
-    return () => clearTimeout(timeout)
-  }, [addProductOpen, productSearch])
-
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -1390,10 +1580,27 @@ export default function AdminOrderDetailPageClient({
 
   const orderStatusInfo = ORDER_STATUS_LABELS[order.status] || { label: order.status, variant: "secondary" as const };
   const isOrderConfirmed = order.status === 'CONFIRMED';
+  const deliveryStatusValue = order.status === 'SHIPPED'
+    ? 'SHIPPED'
+    : order.status === 'DELIVERED'
+      ? 'DELIVERED'
+      : order.status === 'CANCELLED'
+        ? 'CANCELLED'
+        : 'PENDING'
+  const activeItemsCount = order.items.filter((item) => String(item.status || 'active').toLowerCase() === 'active').length
+  const progressedItemsCount = order.items.filter((item) => {
+    const normalizedStatus = String(item.status || 'active').toLowerCase()
+    return normalizedStatus === 'attended' || normalizedStatus === 'removed'
+  }).length
+  const hasPendingFulfillmentCompletion = progressedItemsCount > 0 && activeItemsCount > 0
+  const fulfillmentCompletionBlockMessage = hasPendingFulfillmentCompletion
+    ? `Processo de atendimento iniciado. Ainda existem ${activeItemsCount} item(ns) em estado inicial (active). Finalize os itens (atendido ou não atendido) para liberar alteração de status e geração de link de pagamento.`
+    : ''
 
   const orderStatusBadgeClass = (status: string) => {
     if (status === 'DELIVERED' || status === 'CONFIRMED' || status === 'INVOICED') return 'bg-emerald-50 text-emerald-600 border border-emerald-100'
-    if (status === 'PENDING') return 'bg-amber-50 text-amber-600 border border-amber-100'
+    if (status === 'PENDING' || status === 'IN_ANALYSIS') return 'bg-amber-50 text-amber-600 border border-amber-100'
+    if (status === 'RELEASED') return 'bg-blue-50 text-blue-600 border border-blue-100'
     if (status === 'PROCESSING' || status === 'SHIPPED') return 'bg-sky-50 text-sky-600 border border-sky-100'
     if (status === 'CANCELLED') return 'bg-rose-50 text-rose-600 border border-rose-100'
     return 'bg-muted/60 text-muted-foreground border border-border/60'
@@ -1429,6 +1636,7 @@ export default function AdminOrderDetailPageClient({
   const getLabelStatusBadgeClass = (status: string) => {
     if (status === 'ISSUED') return 'bg-emerald-50 text-emerald-600 border border-emerald-100'
     if (status === 'ERROR') return 'bg-rose-50 text-rose-600 border border-rose-100'
+    if (status === 'PROCESSING') return 'bg-amber-50 text-amber-700 border border-amber-100'
     return 'bg-muted/60 text-muted-foreground border border-border/60'
   }
 
@@ -1438,803 +1646,1840 @@ export default function AdminOrderDetailPageClient({
         return tr('admin.orders.labelStatus.issued', 'Issued')
       case 'ERROR':
         return tr('admin.orders.labelStatus.error', 'Error')
+      case 'PROCESSING':
+        return tr('admin.orders.labelStatus.processing', 'Processing')
       default:
         return status || tr('admin.orders.labelStatus.none', 'No status')
     }
   }
 
+  const canGenerateLabel = canEditOrder && !label
+  const canRegenerateLabel = canEditOrder && label?.status === 'ERROR'
+  const labelIsProcessing = label?.status === 'PROCESSING'
+  const trackingLockedByLabel = useMemo(() => {
+    if (order?.trackingSource === 'label') return true
+    if (!label) return false
+    if (label.status !== 'ISSUED' && label.status !== 'PROCESSING') return false
+    return Boolean(label.trackingCode?.trim())
+  }, [order?.trackingSource, label])
+
   // Calculate totals
-  const subtotal = order.items.filter(item => item.status !== 'removed').reduce((sum, item) => sum + item.total, 0);
+  const requestedSubtotal = order.items.reduce((sum, item) => {
+    const requestedQty = Math.max(0, Number(item.originalQty ?? item.qty));
+    return sum + requestedQty * Math.max(0, Number(item.unitPrice || 0));
+  }, 0);
+  const hasFulfillmentProgress = progressedItemsCount > 0
+  const attendedSubtotal = order.items
+    .filter((item) => item.status !== 'removed' && isItemAttended(item))
+    .reduce((sum, item) => sum + (getItemAttendedQty(item) * Math.max(0, Number(item.unitPrice || 0))), 0)
+  const orderSubtotal = hasFulfillmentProgress
+    ? Math.max(0, attendedSubtotal)
+    : Math.max(0, Number(order.subtotal || 0));
   const couponDiscount = order.couponDiscount || 0;
   const tierDiscount = order.tierDiscount || 0;
-  const paymentMethodDiscount = Math.max(0, (order.discountTotal || 0) - couponDiscount - tierDiscount);
-  const maxManualDiscount = Math.max(0, subtotal + (order.shippingPrice || 0) - (order.discountTotal || 0));
+  const compositionDiscount = Math.max(0, Number(order.compositionDiscountTotal || 0));
+  const nonCompositionDiscount = Math.max(0, (order.discountTotal || 0) - compositionDiscount);
+  const paymentMethodDiscount = Math.max(
+    0,
+    nonCompositionDiscount - couponDiscount - tierDiscount
+  );
+  const maxManualDiscount = Math.max(0, orderSubtotal + (order.shippingPrice || 0) - nonCompositionDiscount);
   const appliedManualDiscount = Math.min(Math.max(0, manualDiscount), maxManualDiscount);
-  const totalDiscount = (order.discountTotal || 0) + appliedManualDiscount;
-  const total = Math.max(0, subtotal - totalDiscount + (order.shippingPrice || 0));
-  const fulfilledTotal = order.items
-    .filter(i => i.status !== 'removed')
-    .reduce((sum, item) => sum + Number(item.qty || 0) * Number(item.unitPrice || 0), 0);
+  const totalDiscount = nonCompositionDiscount + appliedManualDiscount;
+  const requestedTotal = Math.max(0, requestedSubtotal - totalDiscount + (order.shippingPrice || 0));
+  const orderTotal = Math.max(0, orderSubtotal - totalDiscount + (order.shippingPrice || 0));
+  const fulfilledItemsTotal = attendedSubtotal
+  const fulfilledTotal = fulfilledItemsTotal > 0
+    ? Math.max(0, fulfilledItemsTotal - totalDiscount + (order.shippingPrice || 0))
+    : 0;
 
-  const productGroups = order.items
+  const groupedItems = order.items
     .reduce((acc, item) => {
-      const pid = String(item.productId)
-      if (!acc[pid]) {
-        acc[pid] = {
-          productId: pid,
+      const dimensions = getVariantDimensions(item)
+      const groupDimensions = dimensions.length > 2 ? dimensions.slice(0, -2) : []
+      const groupDimensionKey = groupDimensions
+        .map((dimension) => `${dimension.normalizedKey}:${dimension.rawValue}`)
+        .join('|') || '__base__'
+      const assetKey = String(item.assetId || '-').trim();
+      const groupKey = `${item.productId}::${assetKey}::${groupDimensionKey}`;
+
+      if (!acc[groupKey]) {
+        acc[groupKey] = {
+          key: groupKey,
           productName: item.nameSnapshot,
           sku: resolveProductSku(item),
+          groupDimensions,
           imageUrl: item.assetImageUrl || item.imageUrl || null,
-          unitPrice: item.unitPrice,
           items: [] as OrderItem[],
-        }
+        };
       }
-      if (!acc[pid].imageUrl && (item.assetImageUrl || item.imageUrl)) {
-        acc[pid].imageUrl = item.assetImageUrl || item.imageUrl || null
-      }
-      acc[pid].items.push(item)
-      return acc
-    }, {} as Record<string, { productId: string; productName: string; sku: string; imageUrl: string | null; unitPrice: number; items: OrderItem[] }>)
 
-  const productGroupsList = Object.values(productGroups)
-  const selectedVariantMaxAddQty = getMaxOrderEditQty({
-    variantStock: selectedVariant?.stock,
-    availableQty: selectedVariant?.stock,
-    currentQty: 0,
-  })
+      acc[groupKey].items.push(item);
+      return acc;
+    }, {} as Record<string, { key: string; productName: string; sku: string; groupDimensions: VariantDimension[]; imageUrl: string | null; items: OrderItem[] }>);
+
+  const groupedItemsList = Object.values(groupedItems)
+    .sort((a, b) => {
+      const skuCompare = String(a.sku || '').localeCompare(String(b.sku || ''), 'pt-BR', {
+        sensitivity: 'base',
+        numeric: true,
+      })
+      if (skuCompare !== 0) return skuCompare
+      const nameCompare = String(a.productName || '').localeCompare(String(b.productName || ''), 'pt-BR', {
+        sensitivity: 'base',
+      })
+      if (nameCompare !== 0) return nameCompare
+      return String(a.key || '').localeCompare(String(b.key || ''), 'pt-BR', { sensitivity: 'base' })
+    });
+  const mobilePanelTitle = mobileInfoPanel === 'customer'
+    ? tr('admin.orders.customerInfo', 'Customer Information')
+      : mobileInfoPanel === 'seller'
+        ? tr('admin.orders.seller.title', 'Vendedora')
+      : mobileInfoPanel === 'delivery'
+      ? 'Logística'
+    : mobileInfoPanel === 'status'
+      ? tr('admin.orders.statusSection', 'Order Status')
+      : mobileInfoPanel === 'invoice'
+        ? tr('admin.orders.invoice.title', 'Nota Fiscal')
+        : mobileInfoPanel === 'label'
+          ? 'Etiqueta de Envio'
+          : ''
+  const mobilePanelDescription = mobileInfoPanel === 'customer'
+    ? tr('admin.orders.customer.details', 'Dados de cadastro e entrega do cliente')
+    : mobileInfoPanel === 'seller'
+      ? tr('admin.orders.seller.description', 'Vendedora atribuída a este pedido')
+    : mobileInfoPanel === 'delivery'
+      ? 'Endereço, método e observação da entrega.'
+    : mobileInfoPanel === 'status'
+      ? tr('admin.orders.status.description', 'Atualize status, pagamento e rastreamento')
+      : mobileInfoPanel === 'invoice'
+        ? tr('admin.orders.invoice.description', 'Geração e acompanhamento da nota fiscal do pedido.')
+        : mobileInfoPanel === 'label'
+          ? 'Dados de rastreamento e etiqueta gerada pela transportadora.'
+          : ''
+  const orderSellerName = order?.assignedSellerName || null
+  const orderHasSeller = Boolean(order?.assignedSellerId)
+  const customerSellerName = customer?.assignedSellerName || null
+  const customerHasSeller = Boolean(customer?.assignedSellerId)
 
   return (
-    <AdminPage className="print:space-y-4 print:p-0 pb-40 md:pb-28">
-      <div className="print:hidden flex items-center justify-between gap-3 border-b pb-3">
-        {/* Left: back + title */}
-        <div className="flex items-center gap-2 min-w-0">
+    <div className="space-y-6 p-6 lg:p-8 print:space-y-4 print:p-0 [&_button:not(:disabled)]:cursor-pointer [&_select:not(:disabled)]:cursor-pointer [&_[role='button']:not([aria-disabled='true'])]:cursor-pointer">
+      <Dialog open={errorDialogOpen} onOpenChange={setErrorDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{tr('admin.orders.dialog.error.title', 'Erro')}</DialogTitle>
+            <DialogDescription>{errorDialogMessage}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" onClick={() => setErrorDialogOpen(false)}>
+              {tr('admin.orders.dialog.error.close', 'Fechar')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {!isOrderConfirmed && order.status !== 'RELEASED' && (
+        <Dialog open={addProductOpen} onOpenChange={setAddProductOpen}>
+          <DialogContent
+            className="flex h-[80vh] max-h-[80vh] w-[80vw]! max-w-[80vw]! flex-col overflow-hidden p-6 sm:h-[80vh] sm:max-h-[80vh] sm:w-[80vw]! sm:max-w-[80vw]!"
+            style={{ width: '80vw', maxWidth: '80vw', height: '80vh', maxHeight: '80vh' }}
+          >
+            <DialogHeader className="shrink-0">
+              <DialogTitle>Adicionar Produto ao Pedido</DialogTitle>
+              <DialogDescription>
+                Busque, bipar ou selecione um produto para adicionar ao pedido
+              </DialogDescription>
+            </DialogHeader>
+            <AssistedOrderProductCatalog
+              className="min-h-0 flex-1"
+              disabled={isSaving || !canEditOrder}
+              addButtonLabel="Adicionar ao Pedido"
+              matrixDialogClassName="flex h-[80vh] max-h-[80vh] w-[80vw]! max-w-[80vw]! flex-col overflow-hidden p-0"
+              getVariantMaxQuantity={(variant) => getMaxOrderEditQty({
+                variantStock: variant.stock,
+                currentQty: 0,
+              })}
+              onAddVariants={handleCatalogAddVariants}
+              onBarcodeScan={handleCatalogBarcodeScan}
+            />
+          </DialogContent>
+        </Dialog>
+      )}
+
+      <Dialog open={labelChaveModalOpen} onOpenChange={setLabelChaveModalOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Chave NF-e</DialogTitle>
+            <DialogDescription>
+              {invoice
+                ? "A nota fiscal deste pedido ainda não possui chave de acesso. Informe a chave NF-e (44 dígitos) para gerar a etiqueta."
+                : "Nenhuma nota fiscal foi gerada para este pedido. Informe a chave NF-e (44 dígitos) para gerar a etiqueta."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label htmlFor="order-label-chave-nfe">Chave NF-e *</Label>
+              <Input
+                id="order-label-chave-nfe"
+                value={labelChaveNfeInput}
+                onChange={(event) =>
+                  setLabelChaveNfeInput(normalizeChaveNfe(event.target.value).slice(0, 44))
+                }
+                placeholder="44 dígitos"
+                inputMode="numeric"
+                autoComplete="off"
+                className="font-mono"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="order-label-numero-nfe">Número NF</Label>
+              <Input
+                id="order-label-numero-nfe"
+                value={labelNumeroNfeInput}
+                onChange={(event) => setLabelNumeroNfeInput(event.target.value)}
+                autoComplete="off"
+              />
+            </div>
+            {labelChaveFormError && (
+              <p className="text-sm text-rose-600">{labelChaveFormError}</p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setLabelChaveModalOpen(false)}
+              disabled={labelGenerating}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void handleConfirmLabelChaveModal()}
+              disabled={labelGenerating}
+            >
+              {labelGenerating
+                ? labelChaveModalMode === "regenerate"
+                  ? "Regenerando..."
+                  : "Gerando..."
+                : labelChaveModalMode === "regenerate"
+                  ? "Regenerar etiqueta"
+                  : "Gerar etiqueta"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <div className="print:hidden flex flex-wrap items-start justify-between gap-4 border-b pb-3">
+        <div className="flex items-start gap-3">
           <Link href="/orders">
-            <Button variant="ghost" size="icon" className="shrink-0">
+            <Button variant="ghost" size="icon">
               <ArrowLeft className="h-4 w-4" />
             </Button>
           </Link>
-          <div className="min-w-0">
-            <h1 className="text-lg font-medium text-foreground flex items-center gap-2 truncate">
-              <Package className="h-5 w-5 text-primary shrink-0" />
-              {tr('admin.orders.title', 'Order')} {order.id.slice(0, 8).toUpperCase()}
-            </h1>
-            <div className="flex items-center gap-2 flex-wrap">
-              <p className="text-sm text-muted-foreground capitalize">{formatDateLong(order.createdAt)}</p>
+          <div>
+            <h1 className="text-lg font-medium text-foreground flex items-center gap-2"><Package className="h-5 w-5 text-primary" />{tr('admin.orders.title', 'Order')} {orderDisplayCode}</h1>
+            <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+              <p className="capitalize">{formatDateLong(order.createdAt)}</p>
               <Badge variant="outline" className={`text-xs font-medium ${orderStatusBadgeClass(order.status)}`}>{orderStatusInfo.label}</Badge>
-              {trackingCode?.trim() && (
-                <Badge variant="outline" className="text-xs font-medium font-mono">
-                  {trackingCode}
-                </Badge>
-              )}
             </div>
           </div>
+        </div>
+
+        <div className="flex w-full sm:w-auto flex-wrap items-center gap-2 sm:justify-end">
+          {canCreateOrder ? (
+            <Link href="/orders/new">
+              <Button type="button" className="h-9 gap-2 rounded-full px-4">
+                <Plus className="h-4 w-4" />
+                <span>Novo Pedido</span>
+              </Button>
+            </Link>
+          ) : null}
+          {trackingCode?.trim() && (
+            <Badge variant="outline" className="text-xs font-medium">
+              {tr('admin.orders.tracking', 'Tracking')}: {trackingCode}
+            </Badge>
+          )}
         </div>
       </div>
 
       {/* Print Header */}
       <div className="hidden print:block">
-        <h1 className="text-lg font-medium">{tr('admin.orders.title', 'Order')} {order.id.slice(0, 8).toUpperCase()}</h1>
+        <h1 className="text-lg font-medium">{tr('admin.orders.title', 'Order')} {orderDisplayCode}</h1>
         <p className="text-sm text-muted-foreground capitalize">{formatDateLong(order.createdAt)}</p>
         {trackingCode?.trim() && (
           <p className="text-sm mt-1">{tr('admin.orders.trackingCode', 'Tracking Code')}: {trackingCode}</p>
         )}
       </div>
 
-      <div className="space-y-4">
-
-        {/* ── 1. Customer Information ──────────────────────────────────────── */}
-        <Card className="rounded-xl border-border/20 shadow-none gap-0">
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <Package className="h-4 w-4" />
-              {tr('admin.orders.customerInfo', 'Customer Information')}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="border-t border-border/20 pt-6">
-            {customer ? (
-              <div className="grid grid-cols-1 gap-6 text-sm sm:grid-cols-2 lg:grid-cols-4">
-                <div className="space-y-1">
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Empresa</p>
-                  <p className="font-semibold">{customer.companyName}</p>
-                  <p className="text-muted-foreground">{customer.cnpj}</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Contato</p>
-                  <p className="font-medium">{customer.contactName}</p>
-                  <p className="text-muted-foreground flex items-center gap-2"><Phone className="h-3.5 w-3.5 shrink-0" />{customer.phone}</p>
-                  <p className="text-muted-foreground flex items-center gap-2"><Mail className="h-3.5 w-3.5 shrink-0" />{customer.email}</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Endereço</p>
-                  <p className="text-muted-foreground flex items-start gap-2">
-                    <MapPin className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                    <span>{order.shippingStreet}, {order.shippingNumber}{order.shippingComplement ? ` — ${order.shippingComplement}` : ''}</span>
-                  </p>
-                  <p className="text-muted-foreground pl-5">{order.shippingCity} — {order.shippingState}</p>
-                  <p className="text-muted-foreground pl-5">CEP: {order.shippingZipCode}</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Histórico</p>
-                  <p className="text-muted-foreground flex items-center gap-2"><CalendarDays className="h-3.5 w-3.5 shrink-0" />Cadastro: {formatDate(customer.createdAt)}</p>
-                  <p className="text-muted-foreground flex items-center gap-2"><Activity className="h-3.5 w-3.5 shrink-0" />Última atividade: {formatDate(customer.updatedAt)}</p>
-                </div>
-              </div>
-            ) : (
-              <p className="text-muted-foreground text-sm">{tr('admin.orders.customerNotFound', 'Customer not found')}</p>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* ── 2. Metrics ──────────────────────────────────────────────────── */}
-        <div className="print:hidden flex flex-col divide-y divide-border/30 rounded-xl border border-border/20 bg-card shadow-none overflow-hidden">
-          <div className="flex items-center justify-between gap-3 px-3 py-2.5">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div className="h-6 w-6 rounded-md bg-sky-100 text-sky-600 grid place-items-center shrink-0">
-                <DollarSign className="h-3 w-3" />
-              </div>
-              <p className="text-xs text-muted-foreground leading-none">Valor Solicitado</p>
-            </div>
-            <p className="text-sm font-semibold tabular-nums leading-none shrink-0">R$ {total.toFixed(2)}</p>
-          </div>
-          <div className="flex items-center justify-between gap-3 px-3 py-2.5">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div className="h-6 w-6 rounded-md bg-emerald-100 text-emerald-600 grid place-items-center shrink-0">
-                <Boxes className="h-3 w-3" />
-              </div>
-              <p className="text-xs text-muted-foreground leading-none">Valor Atendido</p>
-            </div>
-            <p className="text-sm font-semibold tabular-nums leading-none shrink-0 text-emerald-700 dark:text-emerald-400">R$ {fulfilledTotal.toFixed(2)}</p>
-          </div>
-          <div className="flex items-center justify-between gap-3 px-3 py-2.5">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div className="h-6 w-6 rounded-md bg-amber-100 text-amber-600 grid place-items-center shrink-0">
-                <Percent className="h-3 w-3" />
-              </div>
-              <p className="text-xs text-muted-foreground leading-none">% Atendida</p>
-            </div>
-            <p className="text-sm font-semibold tabular-nums leading-none shrink-0 text-amber-600">
-              {total > 0 ? `${((fulfilledTotal / total) * 100).toFixed(1)}%` : '0.0%'}
-            </p>
-          </div>
-        </div>
-
-        {/* ── 3. Order Status ──────────────────────────────────────────────── */}
-        <Card className="print:hidden rounded-xl border-border/20 shadow-none gap-0">
-          <CardHeader>
-            <CardTitle className="text-base">{tr('admin.orders.statusSection', 'Order Status')}</CardTitle>
-          </CardHeader>
-          <CardContent className="border-t border-border/20 pt-5 space-y-3">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              {/* Fulfillment */}
-              <div className="space-y-1.5">
-                <div className="flex items-center gap-1.5">
-                  <span className={cn('h-2 w-2 shrink-0 rounded-full', {
-                    'bg-amber-400': order.status === 'PENDING',
-                    'bg-blue-500': order.status === 'CONFIRMED' || order.status === 'PROCESSING',
-                    'bg-purple-500': order.status === 'INVOICED',
-                    'bg-cyan-500': order.status === 'SHIPPED',
-                    'bg-emerald-500': order.status === 'DELIVERED',
-                    'bg-red-500': order.status === 'CANCELLED',
-                  })} />
-                  <Label className="text-xs text-muted-foreground">{tr('admin.orders.separation', 'Fulfillment')}</Label>
-                </div>
-                <Select value={order.status} onValueChange={handleStatusChange} disabled={isSaving}>
-                  <SelectTrigger className="w-full h-11 text-sm">
-                    <span className="truncate">{ORDER_STATUS_LABELS[order.status]?.label ?? order.status}</span>
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="PENDING">{ORDER_STATUS_LABELS.PENDING.label}</SelectItem>
-                    <SelectItem value="CONFIRMED">{ORDER_STATUS_LABELS.CONFIRMED.label}</SelectItem>
-                    <SelectItem value="PROCESSING">{ORDER_STATUS_LABELS.PROCESSING.label}</SelectItem>
-                    <SelectItem value="INVOICED">{ORDER_STATUS_LABELS.INVOICED.label}</SelectItem>
-                    <SelectItem value="SHIPPED">{ORDER_STATUS_LABELS.SHIPPED.label}</SelectItem>
-                    <SelectItem value="DELIVERED">{ORDER_STATUS_LABELS.DELIVERED.label}</SelectItem>
-                    <SelectItem value="CANCELLED">{ORDER_STATUS_LABELS.CANCELLED.label}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Payment */}
-              <div className="space-y-1.5">
-                <div className="flex items-center gap-1.5">
-                  <span className={cn('h-2 w-2 shrink-0 rounded-full', {
-                    'bg-amber-400': (order.paymentStatus || 'PENDING') === 'PENDING',
-                    'bg-emerald-500': order.paymentStatus === 'PAID',
-                    'bg-orange-400': order.paymentStatus === 'PARTIAL',
-                    'bg-red-500': order.paymentStatus === 'REFUNDED' || order.paymentStatus === 'CANCELLED',
-                  })} />
-                  <Label className="text-xs text-muted-foreground">{tr('admin.orders.payment', 'Payment')}</Label>
-                </div>
-                <Select value={order.paymentStatus || 'PENDING'} onValueChange={handlePaymentStatusChange} disabled={isSaving}>
-                  <SelectTrigger className="w-full h-11 text-sm">
-                    <span className="truncate">{PAYMENT_STATUS_LABELS[order.paymentStatus || 'PENDING']?.label ?? order.paymentStatus ?? 'Pendente'}</span>
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="PENDING">{PAYMENT_STATUS_LABELS.PENDING.label}</SelectItem>
-                    <SelectItem value="PAID">{PAYMENT_STATUS_LABELS.PAID.label}</SelectItem>
-                    <SelectItem value="PARTIAL">{PAYMENT_STATUS_LABELS.PARTIAL.label}</SelectItem>
-                    <SelectItem value="REFUNDED">{PAYMENT_STATUS_LABELS.REFUNDED.label}</SelectItem>
-                    <SelectItem value="CANCELLED">{PAYMENT_STATUS_LABELS.CANCELLED.label}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Payment Method */}
-              <div className="space-y-1.5">
-                <div className="flex items-center gap-1.5">
-                  <span className="h-2 w-2 shrink-0 rounded-full bg-indigo-500" />
-                  <Label className="text-xs text-muted-foreground">Método</Label>
-                </div>
-                <Select value={order.paymentMethod || undefined} onValueChange={handlePaymentMethodChange} disabled={isSaving}>
-                  <SelectTrigger className="w-full h-11 text-sm">
-                    <span className="truncate">{getPaymentMethodLabel(order.paymentMethod)}</span>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {PAYMENT_METHOD_OPTIONS.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Delivery */}
-              <div className="space-y-1.5">
-                <div className="flex items-center gap-1.5">
-                  <span className={cn('h-2 w-2 shrink-0 rounded-full', {
-                    'bg-amber-400': order.status === 'PENDING',
-                    'bg-blue-500': order.status === 'PROCESSING',
-                    'bg-cyan-500': order.status === 'SHIPPED',
-                    'bg-emerald-500': order.status === 'DELIVERED',
-                    'bg-red-500': order.status === 'CANCELLED',
-                    'bg-muted-foreground/40': order.status === 'CONFIRMED' || order.status === 'INVOICED',
-                  })} />
-                  <Label className="text-xs text-muted-foreground">{tr('admin.orders.delivery', 'Delivery')}</Label>
-                </div>
-                <Select value={order.status} onValueChange={handleStatusChange} disabled={isSaving}>
-                  <SelectTrigger className="w-full h-11 text-sm">
-                    <span className="truncate">
-                      {order.status === 'PENDING'
-                        ? tr('admin.orders.deliveryStatus.pending', 'Pending')
-                        : order.status === 'PROCESSING'
-                          ? tr('admin.orders.deliveryStatus.processing', 'Preparing')
-                          : order.status === 'SHIPPED'
-                            ? tr('admin.orders.deliveryStatus.shipped', 'In Transit')
-                            : order.status === 'DELIVERED'
-                              ? tr('admin.orders.deliveryStatus.delivered', 'Delivered')
-                              : order.status === 'CANCELLED'
-                                ? tr('admin.orders.deliveryStatus.cancelled', 'Returned')
-                                : '-'}
-                    </span>
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="PENDING">{tr('admin.orders.deliveryStatus.pending', 'Pending')}</SelectItem>
-                    <SelectItem value="PROCESSING">{tr('admin.orders.deliveryStatus.processing', 'Preparing')}</SelectItem>
-                    <SelectItem value="SHIPPED">{tr('admin.orders.deliveryStatus.shipped', 'In Transit')}</SelectItem>
-                    <SelectItem value="DELIVERED">{tr('admin.orders.deliveryStatus.delivered', 'Delivered')}</SelectItem>
-                    <SelectItem value="CANCELLED">{tr('admin.orders.deliveryStatus.cancelled', 'Returned')}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            {/* Tracking Code — full width below */}
-            <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">{tr('admin.orders.trackingCode', 'Tracking Code')}</Label>
-              <Input
-                value={trackingCode}
-                onChange={(event) => setTrackingCode(event.target.value)}
-                onBlur={handleTrackingBlur}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    void handleTrackingBlur();
-                  }
-                }}
-                placeholder={tr('admin.orders.trackingPlaceholder', 'Ex: BR123456789XX')}
-                disabled={isSaving}
-                className="h-11 text-sm"
-              />
-              {trackingSaved && (
-                <p className="text-xs text-emerald-600">{tr('admin.orders.saved', 'Saved')}</p>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* ── 4. Products ──────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
         <div className="space-y-4">
-          <Card className="rounded-xl border-border/20 shadow-none">
-            <CardHeader className="flex flex-row items-center justify-between">
-              <div>
-                <CardTitle className="text-base">Produtos do Pedido ({productGroupsList.length})</CardTitle>
-                <CardDescription>
-                  Itens agrupados por produto/cor com edição rápida por matriz
-                </CardDescription>
-              </div>
-              {!isOrderConfirmed && selectedItems.length > 0 && (
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button variant="outline" size="sm" className="text-muted-foreground">
-                      <Trash2 className="h-4 w-4 mr-2" />
-                      Excluir ({selectedItems.length})
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Confirmar exclusão</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        Tem certeza que deseja excluir {selectedItems.length} item(ns) do pedido?
-                        O estoque será restaurado automaticamente.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                      <AlertDialogAction onClick={handleRemoveSelectedItems}>
-                        Excluir
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-              )}
-            </CardHeader>
+          <div className="grid grid-cols-2 gap-2 md:hidden print:hidden">
+            <Button type="button" variant="outline" className="h-auto justify-start gap-2 px-3 py-2" onClick={() => setMobileInfoPanel('customer')}>
+              <Package className="h-4 w-4 text-primary" />
+              <span className="text-xs font-medium">Cliente</span>
+            </Button>
+            <Button type="button" variant="outline" className="h-auto justify-start gap-2 px-3 py-2" onClick={() => setMobileInfoPanel('seller')}>
+              <UserRound className="h-4 w-4 text-primary" />
+              <span className="text-xs font-medium">Vendedora</span>
+            </Button>
+            <Button type="button" variant="outline" className="h-auto justify-start gap-2 px-3 py-2" onClick={() => setMobileInfoPanel('delivery')}>
+              <Truck className="h-4 w-4 text-primary" />
+              <span className="text-xs font-medium">Logística</span>
+            </Button>
+            <Button type="button" variant="outline" className="h-auto justify-start gap-2 px-3 py-2" onClick={() => setMobileInfoPanel('status')}>
+              <Clock className="h-4 w-4 text-primary" />
+              <span className="text-xs font-medium">Status</span>
+            </Button>
+            <Button type="button" variant="outline" className="h-auto justify-start gap-2 px-3 py-2" onClick={() => setMobileInfoPanel('invoice')}>
+              <FileText className="h-4 w-4 text-primary" />
+              <span className="text-xs font-medium">Nota Fiscal</span>
+            </Button>
+            <Button type="button" variant="outline" className="h-auto justify-start gap-2 px-3 py-2" onClick={() => setMobileInfoPanel('label')}>
+              <Printer className="h-4 w-4 text-primary" />
+              <span className="text-xs font-medium">Etiqueta</span>
+            </Button>
+          </div>
 
-            {/* Add Product dialog — controlled, triggered from FAB */}
-            {!isOrderConfirmed && (
-              <Dialog open={addProductOpen} onOpenChange={setAddProductOpen}>
-                <DialogContent className="max-w-2xl">
-                  <DialogHeader>
-                    <DialogTitle>Adicionar Produto ao Pedido</DialogTitle>
-                    <DialogDescription>
-                      Busque e selecione um produto para adicionar ao pedido
-                    </DialogDescription>
-                  </DialogHeader>
-                  <div className="space-y-4">
-                    <div className="relative">
-                      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                      <Input
-                        placeholder="Buscar produto por nome ou SKU..."
-                        value={productSearch}
-                        onChange={(e) => setProductSearch(e.target.value)}
-                        className="pl-9"
-                      />
-                    </div>
+          <Drawer open={mobileInfoPanel !== null} onOpenChange={(open) => !open && setMobileInfoPanel(null)}>
+            <DrawerContent className="max-h-[85vh]">
+              <DrawerHeader className="text-left">
+                <DrawerTitle>{mobilePanelTitle}</DrawerTitle>
+                <DrawerDescription>{mobilePanelDescription}</DrawerDescription>
+              </DrawerHeader>
+              <div className="overflow-y-auto px-4 pb-6">
+                {mobileInfoPanel === 'customer' && (
+                  <div className="space-y-3 text-sm">
+                    {customer ? (
+                      <>
+                        <div>
+                          <p className="font-semibold">{customer.companyName}</p>
+                          <p className="text-muted-foreground">{customer.cnpj}</p>
+                        </div>
+                        <Separator />
+                        <div className="space-y-1.5">
+                          {customer.contactName && customer.contactName.trim().toLowerCase() !== customer.companyName.trim().toLowerCase() ? (
+                            <p className="font-medium">{customer.contactName}</p>
+                          ) : null}
+                          <p className="text-muted-foreground flex items-center gap-2"><Phone className="h-3.5 w-3.5" />{customer.phone}</p>
+                          <p className="text-muted-foreground flex items-center gap-2"><Mail className="h-3.5 w-3.5" />{customer.email}</p>
+                        </div>
+                        <Separator />
+                        <div className="text-muted-foreground space-y-1">
+                          <p className="flex items-start gap-2">
+                            <MapPin className="h-3.5 w-3.5 mt-0.5" />
+                            <span>
+                              {order.shippingStreet}, {order.shippingNumber}
+                              {order.shippingComplement ? ` - ${order.shippingComplement}` : ''}
+                            </span>
+                          </p>
+                          {order.shippingComplement && <p>{order.shippingComplement}</p>}
+                          <p>{order.shippingCity} - {order.shippingState}</p>
+                          <p>{tr('admin.orders.print.zip', 'ZIP')}: {order.shippingZipCode}</p>
+                        </div>
+                        <Separator />
+                        <div className="space-y-1 text-muted-foreground">
+                          <p className="flex items-center gap-2"><Clock className="h-3.5 w-3.5" />{tr('admin.orders.customer.origin', 'Origin')}: {getOrderOriginLabel(locale, order.origin)}</p>
+                          <p className="flex items-center gap-2"><CalendarDays className="h-3.5 w-3.5" />{tr('admin.orders.customer.registeredAt', 'Registered')}: {formatDate(customer.createdAt)}</p>
+                          <p className="flex items-center gap-2"><Activity className="h-3.5 w-3.5" />{tr('admin.orders.customer.lastActivity', 'Last activity')}: {formatDate(customer.updatedAt)}</p>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="text-muted-foreground">{tr('admin.orders.customerNotFound', 'Customer not found')}</p>
+                    )}
+                  </div>
+                )}
 
-                    {!selectedProduct ? (
-                      <div className="max-h-75 overflow-y-auto border rounded-lg">
-                        {loadingVariants ? (
-                          <p className="p-3 text-sm text-muted-foreground">Carregando catálogo de variantes...</p>
-                        ) : filteredProducts.length === 0 ? (
-                          <p className="p-3 text-sm text-muted-foreground">Nenhum produto real encontrado no catálogo de variantes</p>
-                        ) : null}
-                        {filteredProducts.slice(0, 10).map((product) => (
-                          <div
-                            key={product.id}
-                            className="p-3 border-b last:border-b-0 hover:bg-muted cursor-pointer"
-                            onClick={() => handleSelectProduct(product)}
-                          >
-                            <p className="font-medium">{product.name}</p>
-                            <p className="text-sm text-muted-foreground">
-                              SKU: {product.sku} | R$ {product.basePrice.toFixed(2)}
-                            </p>
-                          </div>
-                        ))}
+                {mobileInfoPanel === 'seller' && (
+                  <div className="space-y-3 text-sm">
+                    {orderHasSeller ? (
+                      <div className="space-y-1.5">
+                        <p className="font-semibold">{orderSellerName || tr('admin.orders.seller.unnamed', 'Vendedora')}</p>
                       </div>
                     ) : (
-                      <div className="space-y-5">
-                        <div className="p-3 bg-muted rounded-lg flex items-center justify-between">
-                          <div>
-                            <p className="font-medium">{selectedProduct.name}</p>
-                            <p className="text-sm text-muted-foreground">SKU: {selectedProduct.sku}</p>
-                          </div>
-                          <Button variant="ghost" size="sm" onClick={() => {
-                            setSelectedProduct(null);
-                            setProductVariants([]);
-                            setSelectedVariant(null);
-                            setSelectedColor("");
-                            setSelectedSize("");
-                          }}>
-                            <X className="h-4 w-4" />
-                          </Button>
-                        </div>
-
-                        {loadingVariants ? (
-                          <p className="text-sm text-muted-foreground">Carregando variações...</p>
-                        ) : productVariants.length > 0 ? (
-                          <div className="space-y-4">
-                            <div>
-                              <Label>Cor</Label>
-                              <Select
-                                value={selectedColor}
-                                onValueChange={(value) => {
-                                  setSelectedColor(value)
-                                  setSelectedSize("")
-                                  setSelectedVariant(null)
-                                }}
-                              >
-                                <SelectTrigger className="w-full">
-                                  <SelectValue placeholder="Selecione a cor" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {colorOptions.map((colorOption) => (
-                                    <SelectItem key={colorOption.color} value={colorOption.color}>
-                                      {colorOption.color} (Estoque: {colorOption.stock})
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </div>
-                            <div>
-                              <Label>Tamanho</Label>
-                              <Select
-                                value={selectedSize}
-                                onValueChange={(value) => {
-                                  setSelectedSize(value)
-                                  const variant = productVariants.find(
-                                    (entry) => entry.color === selectedColor && entry.size === value
-                                  )
-                                  setSelectedVariant(variant || null)
-                                  if (variant) {
-                                    setAddUnitPrice(variant.unitPrice)
-                                  }
-                                }}
-                                disabled={!selectedColor}
-                              >
-                                <SelectTrigger className="w-full">
-                                  <SelectValue placeholder="Selecione o tamanho" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {sizeOptions.map((sizeOption) => (
-                                    <SelectItem key={sizeOption.size} value={sizeOption.size}>
-                                      {sizeOption.size} (Estoque: {sizeOption.stock})
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </div>
-                          </div>
+                      <div className="space-y-3">
+                        <p className="text-muted-foreground">
+                          {tr('admin.orders.seller.missing', 'Este pedido não possui vendedora atribuída.')}
+                        </p>
+                        {customerHasSeller ? (
+                          <>
+                            <p className="text-sm">
+                              {tr('admin.orders.seller.customerSeller', 'Vendedora do cliente')}:{' '}
+                              <span className="font-medium text-foreground">{customerSellerName || customer?.assignedSellerId}</span>
+                            </p>
+                            <Button
+                              type="button"
+                              size="sm"
+                              onClick={handleAssignSellerFromCustomer}
+                              disabled={isAssigningSeller || !canEditOrder}
+                            >
+                              {isAssigningSeller ? (
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                              ) : (
+                                <UserRound className="mr-2 h-4 w-4" />
+                              )}
+                              {tr('admin.orders.seller.assignFromCustomer', 'Atribuir vendedora do cliente')}
+                            </Button>
+                          </>
                         ) : (
-                          <p className="text-sm text-destructive">Este produto não possui variações cadastradas</p>
-                        )}
-
-                        <div className="grid grid-cols-2 gap-4 pt-1">
-                          <div>
-                            <Label>Quantidade</Label>
-                            <IntegerInput
-                              value={addQuantity}
-                              onChange={(value) => {
-                                if (selectedVariantMaxAddQty < 1) {
-                                  setAddQuantity(1)
-                                  return
-                                }
-                                setAddQuantity(clampOrderEditQty(Number(value || 1), selectedVariantMaxAddQty))
-                              }}
-                              min={1}
-                              max={selectedVariantMaxAddQty < 1 ? undefined : selectedVariantMaxAddQty}
-                              fullWidth
-                            />
-                          </div>
-                          <div>
-                            <Label>Preço Unitário</Label>
-                            <CurrencyInput
-                              min={0}
-                              value={addUnitPrice}
-                              onChange={(value) => setAddUnitPrice(Number(value || 0))}
-                              fullWidth
-                              className="space-y-0"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="text-right">
-                          <p className="text-sm text-muted-foreground">
-                            Total: R$ {(addQuantity * addUnitPrice).toFixed(2)}
+                          <p className="text-muted-foreground">
+                            {tr('admin.orders.seller.noCustomerSeller', 'Cliente não possui vendedora atribuída')}
                           </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {mobileInfoPanel === 'status' && (
+                  <div className="space-y-4 text-sm">
+                    <div className="space-y-2">
+                      <Label>{tr('admin.orders.payment', 'Payment')}</Label>
+                      <Select value={order.paymentStatus || 'PENDING'} onValueChange={handlePaymentStatusChange} disabled={isSaving || !canEditOrder || (!canMarkOrderPaid && !canManageReturns) || hasPendingFulfillmentCompletion}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="PENDING">{PAYMENT_STATUS_LABELS.PENDING.label}</SelectItem>
+                          {(canMarkOrderPaid || order.paymentStatus === 'PAID') ? <SelectItem value="PAID" disabled={!canMarkOrderPaid}>{PAYMENT_STATUS_LABELS.PAID.label}</SelectItem> : null}
+                          {(canMarkOrderPaid || order.paymentStatus === 'PARTIAL') ? <SelectItem value="PARTIAL" disabled={!canMarkOrderPaid}>{PAYMENT_STATUS_LABELS.PARTIAL.label}</SelectItem> : null}
+                          {(canManageReturns || order.paymentStatus === 'REFUNDED') ? <SelectItem value="REFUNDED" disabled={!canManageReturns}>{PAYMENT_STATUS_LABELS.REFUNDED.label}</SelectItem> : null}
+                          {(canManageReturns || order.paymentStatus === 'CANCELLED') ? <SelectItem value="CANCELLED" disabled={!canManageReturns}>{PAYMENT_STATUS_LABELS.CANCELLED.label}</SelectItem> : null}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>{tr('admin.billing.paymentMethod', 'Payment Method')}</Label>
+                      <Select value={order.paymentMethod || 'PIX'} onValueChange={handlePaymentMethodChange} disabled={isSaving || !canEditOrder}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {paymentMethodOptions.map((method) => (
+                            <SelectItem key={method.value} value={method.value}>{method.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Status</Label>
+                      <Select value={order.status} onValueChange={handleStatusChange} disabled={isSaving || !canEditOrder || hasPendingFulfillmentCompletion}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="PENDING">{ORDER_STATUS_LABELS.PENDING.label}</SelectItem>
+                          <SelectItem value="IN_ANALYSIS">{ORDER_STATUS_LABELS.IN_ANALYSIS.label}</SelectItem>
+                          <SelectItem value="RELEASED">{ORDER_STATUS_LABELS.RELEASED.label}</SelectItem>
+                          <SelectItem value="CONFIRMED">{ORDER_STATUS_LABELS.CONFIRMED.label}</SelectItem>
+                          <SelectItem value="PROCESSING">{ORDER_STATUS_LABELS.PROCESSING.label}</SelectItem>
+                          <SelectItem value="INVOICED">{ORDER_STATUS_LABELS.INVOICED.label}</SelectItem>
+                          {(canManageShipping || order.status === 'SHIPPED') ? (
+                            <SelectItem value="SHIPPED" disabled={!canManageShipping}>{ORDER_STATUS_LABELS.SHIPPED.label}</SelectItem>
+                          ) : null}
+                          {(canManageShipping || order.status === 'DELIVERED') ? (
+                            <SelectItem value="DELIVERED" disabled={!canManageShipping}>{ORDER_STATUS_LABELS.DELIVERED.label}</SelectItem>
+                          ) : null}
+                          {(canCancelOrder || order.status === 'CANCELLED') ? (
+                            <SelectItem value="CANCELLED" disabled={!canCancelOrder}>{ORDER_STATUS_LABELS.CANCELLED.label}</SelectItem>
+                          ) : null}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>{tr('admin.orders.delivery', 'Delivery')}</Label>
+                      <Select value={deliveryStatusValue} disabled>
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="PENDING">{tr('admin.orders.deliveryStatus.pending', 'Pending')}</SelectItem>
+                          <SelectItem value="PROCESSING">{tr('admin.orders.deliveryStatus.processing', 'Preparing')}</SelectItem>
+                          {(canManageShipping || order.status === 'SHIPPED') ? <SelectItem value="SHIPPED" disabled={!canManageShipping}>{tr('admin.orders.deliveryStatus.shipped', 'In Transit')}</SelectItem> : null}
+                          {(canManageShipping || order.status === 'DELIVERED') ? <SelectItem value="DELIVERED" disabled={!canManageShipping}>{tr('admin.orders.deliveryStatus.delivered', 'Delivered')}</SelectItem> : null}
+                          {(canCancelOrder || order.status === 'CANCELLED') ? <SelectItem value="CANCELLED" disabled={!canCancelOrder}>{tr('admin.orders.deliveryStatus.cancelled', 'Returned')}</SelectItem> : null}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>{tr('admin.orders.trackingCode', 'Tracking Code')}</Label>
+                      <Input
+                        value={trackingCode}
+                        onFocus={() => {
+                          if (canEditOrder && canManageShipping && !trackingLockedByLabel) {
+                            setEditingTracking(true)
+                          }
+                        }}
+                        onChange={(event) => setTrackingCode(event.target.value)}
+                        onBlur={handleTrackingBlur}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            void handleTrackingBlur();
+                          }
+                        }}
+                        placeholder={tr('admin.orders.trackingPlaceholder', 'Ex: BR123456789XX')}
+                        disabled={isSaving || !canEditOrder || !canManageShipping || trackingLockedByLabel}
+                        readOnly={trackingLockedByLabel}
+                        className={trackingLockedByLabel ? "bg-muted font-mono" : undefined}
+                      />
+                      {trackingLockedByLabel && (
+                        <p className="text-xs text-muted-foreground">
+                          Preenchido automaticamente pela etiqueta de envio.
+                        </p>
+                      )}
+                      {trackingSaved && (
+                        <p className="text-xs text-emerald-600">{tr('admin.orders.saved', 'Saved')}</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {mobileInfoPanel === 'delivery' && (
+                  <div className="space-y-4 text-sm">
+                    <div className="space-y-1">
+                      <Label className="text-muted-foreground">Endereço de entrega</Label>
+                      <p>
+                        {order.shippingStreet}, {order.shippingNumber}
+                        {order.shippingComplement ? ` - ${order.shippingComplement}` : ''}
+                      </p>
+                      <p className="text-muted-foreground">
+                        {order.shippingNeighborhood} - {order.shippingCity}/{order.shippingState} · CEP {order.shippingZipCode}
+                      </p>
+                    </div>
+
+                    <Separator />
+
+                    <div className="space-y-1">
+                      <Label className="text-muted-foreground">Método de entrega</Label>
+                      <p className="font-medium">{order.shippingName || '-'}</p>
+                      {order.shippingMethodCode ? (
+                        <p className="text-xs text-muted-foreground">Código: {order.shippingMethodCode}</p>
+                      ) : null}
+                      {typeof order.shippingDeliveryDays === 'number' && order.shippingDeliveryDays >= 0 ? (
+                        <p className="text-xs text-muted-foreground">Prazo: {order.shippingDeliveryDays} dia(s) útil(eis)</p>
+                      ) : null}
+                    </div>
+
+                    <Separator />
+
+                    <div className="space-y-1">
+                      <Label className="text-muted-foreground">Observação da entrega</Label>
+                      <p className="whitespace-pre-wrap">{order.shippingNote || 'Nenhuma observação de entrega'}</p>
+                    </div>
+                  </div>
+                )}
+
+                {mobileInfoPanel === 'invoice' && (
+                  <div className="space-y-4 text-sm">
+                    {invoice?.status !== 'AUTHORIZED' && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        {canEditOrder && invoiceIsAwaitingProvider && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={handleRefreshInvoiceStatus}
+                            disabled={invoiceRefreshing || invoiceGenerating || isSaving || !invoice?.integrationReferenceId}
+                            title={!invoice?.integrationReferenceId ? tr('admin.orders.invoice.missingReference', 'A nota ainda não possui referência de integração para consulta') : undefined}
+                          >
+                            <RotateCcw className="mr-2 h-4 w-4" />
+                            {invoiceRefreshing ? tr('admin.orders.invoice.refreshing', 'Consultando...') : tr('admin.orders.invoice.refresh', 'Consultar status')}
+                          </Button>
+                        )}
+                        {canEditOrder && canGenerateInvoice && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={handleGenerateInvoice}
+                            disabled={invoiceGenerating || invoiceRefreshing || isSaving}
+                          >
+                            <Send className="mr-2 h-4 w-4" />
+                            {invoice ? tr('admin.orders.invoice.regenerate', 'Gerar NF novamente') : tr('admin.orders.invoice.generate', 'Gerar NF')}
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                    {invoiceLoading ? (
+                      <p className="text-muted-foreground">{tr('admin.orders.invoice.loading', 'Carregando nota fiscal...')}</p>
+                    ) : !invoice ? (
+                      <p className="text-muted-foreground">{tr('admin.orders.invoice.empty', 'Nenhuma nota fiscal gerada para este pedido.')}</p>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">{tr('admin.orders.table.status', 'Status')}</span>
+                          <Badge variant="outline" className={getInvoiceStatusBadgeClass(invoice.status)}>
+                            {getInvoiceStatusLabel(invoice.status)}
+                          </Badge>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">{tr('admin.orders.invoice.number', 'Invoice Number')}</span>
+                          <span className="font-medium">{invoice.nfNumber || '-'}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">{tr('admin.orders.invoice.accessKey', 'Access Key')}</span>
+                          <span className="max-w-56 truncate font-medium" title={invoice.accessKey || undefined}>{invoice.accessKey || '-'}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">Gerada em</span>
+                          <span className="font-medium">{invoice.issuedAt ? formatDate(invoice.issuedAt) : '-'}</span>
+                        </div>
+                        {invoiceFiscalSummary && (
+                          <div className="rounded-lg border border-border/50 bg-muted/20 p-3">
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                              <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                                {tr('admin.orders.invoice.fiscalContext', 'Contexto fiscal')}
+                              </span>
+                              {invoiceFiscalSummary.selectionMode && (
+                                <Badge variant="secondary" className="font-normal">
+                                  {invoiceFiscalSummary.selectionMode}
+                                </Badge>
+                              )}
+                            </div>
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              <div className="space-y-1">
+                                <p className="text-xs text-muted-foreground">{tr('admin.orders.invoice.operationNature', 'Natureza da operação')}</p>
+                                <p className="font-medium leading-snug">{invoiceFiscalSummary.nature || '-'}</p>
+                              </div>
+                              <div className="space-y-1">
+                                <p className="text-xs text-muted-foreground">{tr('admin.orders.invoice.emitter', 'Emitente fiscal')}</p>
+                                <p className="font-medium leading-snug">{invoiceFiscalSummary.emitterName || '-'}</p>
+                                <p className="text-xs text-muted-foreground">CNPJ: {invoiceFiscalSummary.emitterCnpj || '-'}</p>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        {(invoicePdfHref || invoiceXmlHref) && (
+                          <div className="flex flex-wrap gap-2 pt-1">
+                            {invoicePdfHref && (
+                              <Button size="sm" variant="outline" asChild>
+                                <Link href={invoicePdfHref} target="_blank" rel="noopener noreferrer">
+                                  <FileText className="mr-2 h-4 w-4" />
+                                  PDF
+                                </Link>
+                              </Button>
+                            )}
+                            {invoiceXmlHref && (
+                              <Button size="sm" variant="outline" asChild>
+                                <Link href={invoiceXmlHref} target="_blank" rel="noopener noreferrer">
+                                  <FileText className="mr-2 h-4 w-4" />
+                                  XML
+                                </Link>
+                              </Button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {mobileInfoPanel === 'label' && (
+                  <div className="space-y-4 text-sm">
+                    {labelLoading ? (
+                      <p className="text-muted-foreground">Carregando etiqueta...</p>
+                    ) : !label ? (
+                      <div className="space-y-3">
+                        <p className="text-muted-foreground">Nenhuma etiqueta gerada para este pedido.</p>
+                        {canGenerateLabel && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={handleGenerateLabelClick}
+                            disabled={labelGenerating || isSaving}
+                          >
+                            <Send className="mr-2 h-4 w-4" />
+                            {labelGenerating ? 'Gerando...' : 'Gerar etiqueta'}
+                          </Button>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">Status</span>
+                          <Badge variant="outline" className={getLabelStatusBadgeClass(label.status)}>
+                            {getLabelStatusLabel(label.status)}
+                          </Badge>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">Rastreamento</span>
+                          <span className="font-medium font-mono">{label.trackingCode || '-'}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">Transportadora</span>
+                          <span className="font-medium">{label.carrier || '-'}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">Integração</span>
+                          <span className="font-medium">{label.integrationName || '-'}</span>
+                        </div>
+                        {label.errorMessage && (
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-muted-foreground">Erro</span>
+                            <span className="font-medium text-rose-600 max-w-56 text-right">{label.errorMessage}</span>
+                          </div>
+                        )}
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">Emitida em</span>
+                          <span className="font-medium">{label.issuedAt ? formatDate(label.issuedAt) : '-'}</span>
+                        </div>
+                        {label.pdfUrl && (
+                          <div className="flex flex-wrap gap-2 pt-1">
+                            <Button size="sm" variant="outline" asChild>
+                              <Link href={label.pdfUrl} target="_blank">
+                                <FileText className="mr-2 h-4 w-4" />
+                                Etiqueta PDF
+                              </Link>
+                            </Button>
+                          </div>
+                        )}
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          {labelIsProcessing && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={handleRefreshLabel}
+                              disabled={labelLoading || labelGenerating || isSaving}
+                            >
+                              <RotateCcw className="mr-2 h-4 w-4" />
+                              Atualizar status
+                            </Button>
+                          )}
+                          {canRegenerateLabel && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={handleRegenerateLabelClick}
+                              disabled={labelGenerating || isSaving}
+                            >
+                              <RotateCcw className="mr-2 h-4 w-4" />
+                              Regenerar
+                            </Button>
+                          )}
                         </div>
                       </div>
                     )}
                   </div>
-                  <DialogFooter>
-                    <Button variant="outline" onClick={() => setAddProductOpen(false)}>
-                      Cancelar
-                    </Button>
+                )}
+              </div>
+            </DrawerContent>
+          </Drawer>
+
+          <Card className="hidden md:block print:block rounded-xl border-border/20 shadow-non gap-0">
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Package className="h-4 w-4" />
+                {tr('admin.orders.customerInfo', 'Customer Information')}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="border-t border-border/20 pt-4">
+              {customer ? (
+                <div className="space-y-3 text-sm">
+                  <div>
+                    <p className="font-semibold">{customer.companyName}</p>
+                    <p className="text-muted-foreground">{customer.cnpj}</p>
+                  </div>
+                  <Separator />
+                  <div className="space-y-1.5">
+                    {customer.contactName && customer.contactName.trim().toLowerCase() !== customer.companyName.trim().toLowerCase() ? (
+                      <p className="font-medium">{customer.contactName}</p>
+                    ) : null}
+                    <p className="text-muted-foreground flex items-center gap-2"><Phone className="h-3.5 w-3.5" />{customer.phone}</p>
+                    <p className="text-muted-foreground flex items-center gap-2"><Mail className="h-3.5 w-3.5" />{customer.email}</p>
+                  </div>
+                  <Separator />
+                  <div className="text-muted-foreground space-y-1">
+                    <p className="flex items-start gap-2">
+                      <MapPin className="h-3.5 w-3.5 mt-0.5" />
+                      <span>
+                        {order.shippingStreet}, {order.shippingNumber}
+                        {order.shippingComplement ? ` - ${order.shippingComplement}` : ''}
+                      </span>
+                    </p>
+                    {order.shippingComplement && <p>{order.shippingComplement}</p>}
+                    <p>{order.shippingCity} - {order.shippingState}</p>
+                    <p>{tr('admin.orders.print.zip', 'ZIP')}: {order.shippingZipCode}</p>
+                  </div>
+                  <Separator />
+                  <div className="space-y-1 text-muted-foreground">
+                    <p className="flex items-center gap-2"><Clock className="h-3.5 w-3.5" />{tr('admin.orders.customer.origin', 'Origin')}: {getOrderOriginLabel(locale, order.origin)}</p>
+                    <p className="flex items-center gap-2"><CalendarDays className="h-3.5 w-3.5" />{tr('admin.orders.customer.registeredAt', 'Registered')}: {formatDate(customer.createdAt)}</p>
+                    <p className="flex items-center gap-2"><Activity className="h-3.5 w-3.5" />{tr('admin.orders.customer.lastActivity', 'Last activity')}: {formatDate(customer.updatedAt)}</p>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-muted-foreground text-sm">{tr('admin.orders.customerNotFound', 'Customer not found')}</p>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="hidden md:block print:block rounded-xl border-border/20 shadow-none gap-0">
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <UserRound className="h-4 w-4" />
+                {tr('admin.orders.seller.title', 'Vendedora')}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="border-t border-border/20 pt-4">
+              {orderHasSeller ? (
+                <div className="space-y-1.5 text-sm">
+                  <p className="font-semibold">{orderSellerName || tr('admin.orders.seller.unnamed', 'Vendedora')}</p>
+                </div>
+              ) : (
+                <div className="space-y-3 text-sm">
+                  <p className="text-muted-foreground">
+                    {tr('admin.orders.seller.missing', 'Este pedido não possui vendedora atribuída.')}
+                  </p>
+                  {customerHasSeller ? (
+                    <>
+                      <p>
+                        {tr('admin.orders.seller.customerSeller', 'Vendedora do cliente')}:{' '}
+                        <span className="font-medium text-foreground">{customerSellerName || customer?.assignedSellerId}</span>
+                      </p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={handleAssignSellerFromCustomer}
+                        disabled={isAssigningSeller || !canEditOrder}
+                        className="print:hidden"
+                      >
+                        {isAssigningSeller ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <UserRound className="mr-2 h-4 w-4" />
+                        )}
+                        {tr('admin.orders.seller.assignFromCustomer', 'Atribuir vendedora do cliente')}
+                      </Button>
+                    </>
+                  ) : (
+                    <p className="text-muted-foreground">
+                      {tr('admin.orders.seller.noCustomerSeller', 'Cliente não possui vendedora atribuída')}
+                    </p>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="hidden md:block print:hidden rounded-xl border-border/20 shadow-none gap-0">
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Truck className="h-4 w-4" />
+                Logística
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4 border-t border-border/20 pt-6">
+              <div className="space-y-1">
+                <Label className="text-muted-foreground">Endereço de entrega</Label>
+                <p className="text-sm">
+                  {order.shippingStreet}, {order.shippingNumber}
+                  {order.shippingComplement ? ` - ${order.shippingComplement}` : ''}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {order.shippingNeighborhood} - {order.shippingCity}/{order.shippingState} · CEP {order.shippingZipCode}
+                </p>
+              </div>
+
+              <Separator />
+
+              <div className="space-y-1">
+                <Label className="text-muted-foreground">Método de entrega</Label>
+                <p className="text-sm font-medium">{order.shippingName || '-'}</p>
+                {order.shippingMethodCode ? (
+                  <p className="text-xs text-muted-foreground">Código: {order.shippingMethodCode}</p>
+                ) : null}
+                {typeof order.shippingDeliveryDays === 'number' && order.shippingDeliveryDays >= 0 ? (
+                  <p className="text-xs text-muted-foreground">Prazo: {order.shippingDeliveryDays} dia(s) útil(eis)</p>
+                ) : null}
+              </div>
+
+              <Separator />
+
+              <div className="space-y-1">
+                <Label className="text-muted-foreground">Observação da entrega</Label>
+                <p className="text-sm whitespace-pre-wrap">{order.shippingNote || 'Nenhuma observação de entrega'}</p>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="hidden md:block print:hidden rounded-xl border-border/20 shadow-none gap-0">
+            <CardHeader>
+              <CardTitle className="text-base">{tr('admin.orders.statusSection', 'Order Status')}</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4 border-t border-border/20 pt-6">
+              <div className="space-y-2">
+                <Label>{tr('admin.billing.paymentMethod', 'Payment Method')}</Label>
+                <Select value={order.paymentMethod || 'PIX'} onValueChange={handlePaymentMethodChange} disabled={isSaving || !canEditOrder}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {paymentMethodOptions.map((method) => (
+                      <SelectItem key={method.value} value={method.value}>{method.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>{tr('admin.orders.payment', 'Payment')}</Label>
+                <Select value={order.paymentStatus || 'PENDING'} onValueChange={handlePaymentStatusChange} disabled={isSaving || !canEditOrder || (!canMarkOrderPaid && !canManageReturns) || hasPendingFulfillmentCompletion}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="PENDING">{PAYMENT_STATUS_LABELS.PENDING.label}</SelectItem>
+                    {(canMarkOrderPaid || order.paymentStatus === 'PAID') ? <SelectItem value="PAID" disabled={!canMarkOrderPaid}>{PAYMENT_STATUS_LABELS.PAID.label}</SelectItem> : null}
+                    {(canMarkOrderPaid || order.paymentStatus === 'PARTIAL') ? <SelectItem value="PARTIAL" disabled={!canMarkOrderPaid}>{PAYMENT_STATUS_LABELS.PARTIAL.label}</SelectItem> : null}
+                    {(canManageReturns || order.paymentStatus === 'REFUNDED') ? <SelectItem value="REFUNDED" disabled={!canManageReturns}>{PAYMENT_STATUS_LABELS.REFUNDED.label}</SelectItem> : null}
+                    {(canManageReturns || order.paymentStatus === 'CANCELLED') ? <SelectItem value="CANCELLED" disabled={!canManageReturns}>{PAYMENT_STATUS_LABELS.CANCELLED.label}</SelectItem> : null}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Status</Label>
+                <Select value={order.status} onValueChange={handleStatusChange} disabled={isSaving || !canEditOrder || hasPendingFulfillmentCompletion}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="PENDING">{ORDER_STATUS_LABELS.PENDING.label}</SelectItem>
+                    <SelectItem value="IN_ANALYSIS">{ORDER_STATUS_LABELS.IN_ANALYSIS.label}</SelectItem>
+                    <SelectItem value="RELEASED">{ORDER_STATUS_LABELS.RELEASED.label}</SelectItem>
+                    <SelectItem value="CONFIRMED">{ORDER_STATUS_LABELS.CONFIRMED.label}</SelectItem>
+                    <SelectItem value="PROCESSING">{ORDER_STATUS_LABELS.PROCESSING.label}</SelectItem>
+                    <SelectItem value="INVOICED">{ORDER_STATUS_LABELS.INVOICED.label}</SelectItem>
+                    {(canManageShipping || order.status === 'SHIPPED') ? (
+                      <SelectItem value="SHIPPED" disabled={!canManageShipping}>{ORDER_STATUS_LABELS.SHIPPED.label}</SelectItem>
+                    ) : null}
+                    {(canManageShipping || order.status === 'DELIVERED') ? (
+                      <SelectItem value="DELIVERED" disabled={!canManageShipping}>{ORDER_STATUS_LABELS.DELIVERED.label}</SelectItem>
+                    ) : null}
+                    {(canCancelOrder || order.status === 'CANCELLED') ? (
+                      <SelectItem value="CANCELLED" disabled={!canCancelOrder}>{ORDER_STATUS_LABELS.CANCELLED.label}</SelectItem>
+                    ) : null}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>{tr('admin.orders.delivery', 'Delivery')}</Label>
+                <Select value={deliveryStatusValue} disabled>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="PENDING">{tr('admin.orders.deliveryStatus.pending', 'Pending')}</SelectItem>
+                    <SelectItem value="PROCESSING">{tr('admin.orders.deliveryStatus.processing', 'Preparing')}</SelectItem>
+                    {(canManageShipping || order.status === 'SHIPPED') ? <SelectItem value="SHIPPED" disabled={!canManageShipping}>{tr('admin.orders.deliveryStatus.shipped', 'In Transit')}</SelectItem> : null}
+                    {(canManageShipping || order.status === 'DELIVERED') ? <SelectItem value="DELIVERED" disabled={!canManageShipping}>{tr('admin.orders.deliveryStatus.delivered', 'Delivered')}</SelectItem> : null}
+                    {(canCancelOrder || order.status === 'CANCELLED') ? <SelectItem value="CANCELLED" disabled={!canCancelOrder}>{tr('admin.orders.deliveryStatus.cancelled', 'Returned')}</SelectItem> : null}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>{tr('admin.orders.trackingCode', 'Tracking Code')}</Label>
+                <Input
+                  value={trackingCode}
+                  onFocus={() => {
+                    if (canEditOrder && canManageShipping && !trackingLockedByLabel) {
+                      setEditingTracking(true)
+                    }
+                  }}
+                  onChange={(event) => setTrackingCode(event.target.value)}
+                  onBlur={handleTrackingBlur}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      void handleTrackingBlur();
+                    }
+                  }}
+                  placeholder={tr('admin.orders.trackingPlaceholder', 'Ex: BR123456789XX')}
+                  disabled={isSaving || !canEditOrder || !canManageShipping || trackingLockedByLabel}
+                  readOnly={trackingLockedByLabel}
+                  className={trackingLockedByLabel ? "bg-muted font-mono" : undefined}
+                />
+                {trackingLockedByLabel && (
+                  <p className="text-xs text-muted-foreground">
+                    Preenchido automaticamente pela etiqueta de envio.
+                  </p>
+                )}
+                {trackingSaved && (
+                  <p className="text-xs text-emerald-600">{tr('admin.orders.saved', 'Saved')}</p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="hidden md:block print:hidden rounded-xl border-border/20 shadow-none gap-0">
+            <CardHeader className="flex flex-row items-start justify-between space-y-0">
+              <div>
+                <CardTitle className="text-base">{tr('admin.orders.invoice.title', 'Nota Fiscal')}</CardTitle>
+                <CardDescription>{tr('admin.orders.invoice.description', 'Geração e acompanhamento da nota fiscal do pedido.')}</CardDescription>
+              </div>
+              {invoice?.status !== 'AUTHORIZED' && (
+                <div className="flex items-center gap-2">
+                  {canEditOrder && invoiceIsAwaitingProvider && (
                     <Button
-                      onClick={handleAddProduct}
-                      disabled={!selectedProduct || !selectedVariant || isSaving || selectedVariantMaxAddQty < 1}
+                      size="sm"
+                      variant="outline"
+                      onClick={handleRefreshInvoiceStatus}
+                      disabled={invoiceRefreshing || invoiceGenerating || isSaving || !invoice?.integrationReferenceId}
+                      title={!invoice?.integrationReferenceId ? tr('admin.orders.invoice.missingReference', 'A nota ainda não possui referência de integração para consulta') : undefined}
                     >
-                      Adicionar
+                      <RotateCcw className="mr-2 h-4 w-4" />
+                      {invoiceRefreshing ? tr('admin.orders.invoice.refreshing', 'Consultando...') : tr('admin.orders.invoice.refresh', 'Consultar status')}
                     </Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
-            )}
+                  )}
+                  {canEditOrder && canGenerateInvoice && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleGenerateInvoice}
+                      disabled={invoiceGenerating || invoiceRefreshing || isSaving}
+                    >
+                      <Send className="mr-2 h-4 w-4" />
+                      {invoice ? tr('admin.orders.invoice.regenerate', 'Gerar NF novamente') : tr('admin.orders.invoice.generate', 'Gerar NF')}
+                    </Button>
+                  )}
+                </div>
+              )}
+            </CardHeader>
+            <CardContent className="space-y-4 border-t border-border/20 pt-6">
+              {invoiceLoading ? (
+                <p className="text-sm text-muted-foreground">{tr('admin.orders.invoice.loading', 'Carregando nota fiscal...')}</p>
+              ) : !invoice ? (
+                <p className="text-sm text-muted-foreground">{tr('admin.orders.invoice.empty', 'Nenhuma nota fiscal gerada para este pedido.')}</p>
+              ) : (
+                <div className="space-y-3 text-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">{tr('admin.orders.table.status', 'Status')}</span>
+                    <Badge variant="outline" className={getInvoiceStatusBadgeClass(invoice.status)}>
+                      {getInvoiceStatusLabel(invoice.status)}
+                    </Badge>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">{tr('admin.orders.invoice.number', 'Invoice Number')}</span>
+                    <span className="font-medium">{invoice.nfNumber || '-'}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">{tr('admin.orders.invoice.accessKey', 'Access Key')}</span>
+                    <span className="max-w-56 truncate font-medium" title={invoice.accessKey || undefined}>{invoice.accessKey || '-'}</span>
+                  </div>
+                  {/* <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">{tr('admin.orders.invoice.integration', 'Integration')}</span>
+                    <span className="font-medium">{invoice.integrationName || '-'}</span>
+                  </div> */}
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">Gerada em</span>
+                    <span className="font-medium">{invoice.issuedAt ? formatDate(invoice.issuedAt) : '-'}</span>
+                  </div>
+                  {invoiceFiscalSummary && (
+                    <div className="rounded-lg border border-border/50 bg-muted/20 p-3">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                          {tr('admin.orders.invoice.fiscalContext', 'Contexto fiscal')}
+                        </span>
+                        {invoiceFiscalSummary.selectionMode && (
+                          <Badge variant="secondary" className="font-normal">
+                            {invoiceFiscalSummary.selectionMode}
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="space-y-1">
+                          <p className="text-xs text-muted-foreground">{tr('admin.orders.invoice.operationNature', 'Natureza da operação')}</p>
+                          <p className="font-medium leading-snug">{invoiceFiscalSummary.nature || '-'}</p>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-xs text-muted-foreground">{tr('admin.orders.invoice.emitter', 'Emitente fiscal')}</p>
+                          <p className="font-medium leading-snug">{invoiceFiscalSummary.emitterName || '-'}</p>
+                          <p className="text-xs text-muted-foreground">CNPJ: {invoiceFiscalSummary.emitterCnpj || '-'}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {(invoicePdfHref || invoiceXmlHref) && (
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      {invoicePdfHref && (
+                        <Button size="sm" variant="outline" asChild>
+                          <Link href={invoicePdfHref} target="_blank" rel="noopener noreferrer">
+                            <FileText className="mr-2 h-4 w-4" />
+                            PDF
+                          </Link>
+                        </Button>
+                      )}
+                      {invoiceXmlHref && (
+                        <Button size="sm" variant="outline" asChild>
+                          <Link href={invoiceXmlHref} target="_blank" rel="noopener noreferrer">
+                            <FileText className="mr-2 h-4 w-4" />
+                            XML
+                          </Link>
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
-            <CardContent className="border-t border-border/20 pt-6">
-              <div className="space-y-4">
-                {productGroupsList.map((group) => {
-                  const groupAllRemoved = group.items.length > 0 && group.items.every((item) => item.status === 'removed')
-                  const activeItems = group.items.filter(i => i.status !== 'removed')
-                  const groupAllFulfilled = activeItems.length > 0 && activeItems.every(i => i.fulfilled || i.status === 'attended')
-                  const groupRequested = group.items.reduce((sum, item) => sum + Number(item.originalQty ?? item.qty), 0)
-                  const groupFulfilled = group.items.filter(i => i.status !== 'removed').reduce((sum, i) => sum + Number(i.qty || 0), 0)
-                  const groupTotal = group.items.reduce((sum, item) => sum + Number(item.originalQty ?? item.qty) * Number(item.unitPrice || 0), 0)
+          <Card className="hidden md:block print:hidden rounded-xl border-border/20 shadow-none gap-0">
+            <CardHeader className="flex flex-row items-start justify-between space-y-0">
+              <div>
+                <CardTitle className="text-base">Etiqueta de Envio</CardTitle>
+                <CardDescription>Dados de rastreamento e etiqueta gerada pela transportadora.</CardDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                {canEditOrder && labelIsProcessing && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleRefreshLabel}
+                    disabled={labelLoading || labelGenerating || isSaving}
+                  >
+                    <RotateCcw className="mr-2 h-4 w-4" />
+                    {labelLoading ? 'Consultando...' : 'Atualizar status'}
+                  </Button>
+                )}
+                {canRegenerateLabel && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleRegenerateLabelClick}
+                    disabled={labelGenerating || labelLoading || isSaving}
+                  >
+                    <RotateCcw className="mr-2 h-4 w-4" />
+                    {labelGenerating ? 'Regenerando...' : 'Regenerar'}
+                  </Button>
+                )}
+                {canGenerateLabel && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleGenerateLabelClick}
+                    disabled={labelGenerating || labelLoading || isSaving}
+                  >
+                    <Send className="mr-2 h-4 w-4" />
+                    {labelGenerating ? 'Gerando...' : 'Gerar etiqueta'}
+                  </Button>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4 border-t border-border/20 pt-6">
+              {labelLoading ? (
+                <p className="text-sm text-muted-foreground">Carregando etiqueta...</p>
+              ) : !label ? (
+                <p className="text-sm text-muted-foreground">Nenhuma etiqueta gerada para este pedido.</p>
+              ) : (
+                <div className="space-y-3 text-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">Status</span>
+                    <Badge variant="outline" className={getLabelStatusBadgeClass(label.status)}>
+                      {getLabelStatusLabel(label.status)}
+                    </Badge>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">Rastreamento</span>
+                    <span className="font-medium font-mono">{label.trackingCode || '-'}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">Transportadora</span>
+                    <span className="font-medium">{label.carrier || '-'}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">Integração</span>
+                    <span className="font-medium">{label.integrationName || '-'}</span>
+                  </div>
+                  {label.errorMessage && (
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">Erro</span>
+                      <span className="font-medium text-rose-600 max-w-56 text-right">{label.errorMessage}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">Emitida em</span>
+                    <span className="font-medium">{label.issuedAt ? formatDate(label.issuedAt) : '-'}</span>
+                  </div>
+                  {label.pdfUrl && (
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      <Button size="sm" variant="outline" asChild>
+                        <Link href={label.pdfUrl} target="_blank">
+                          <FileText className="mr-2 h-4 w-4" />
+                          Etiqueta PDF
+                        </Link>
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
-                  // Build unique sizes and colors for the matrix
-                  const rawColors = Array.from(new Set(group.items.map(i => String(i.colorSnapshot || '')).filter(Boolean)))
-                  const rawSizes = Array.from(new Set(group.items.map(i => String(i.sizeSnapshot || '')).filter(Boolean)))
-                  rawSizes.sort((a, b) => {
-                    const ai = SIZE_ORDER.indexOf(a); const bi = SIZE_ORDER.indexOf(b)
-                    if (ai !== -1 && bi !== -1) return ai - bi
-                    if (ai !== -1) return -1; if (bi !== -1) return 1
-                    return a.localeCompare(b)
-                  })
+          <Drawer
+            direction="right"
+            open={communicationPanel !== null}
+            onOpenChange={(open) => !open && setCommunicationPanel(null)}
+          >
+            <DrawerContent className="w-full sm:max-w-xl">
+              <DrawerHeader className="text-left border-b border-border/20 px-5 py-4">
+                <DrawerTitle>
+                  <span className="inline-flex items-center gap-2">
+                    {communicationPanel === 'message' ? (
+                      <Send className="h-4 w-4 text-primary" />
+                    ) : (
+                      <Webhook className="h-4 w-4 text-primary" />
+                    )}
+                    {communicationPanel === 'message' ? 'Disparo de Mensagem ao Cliente' : 'Disparo Manual de Webhook'}
+                  </span>
+                </DrawerTitle>
+                <DrawerDescription className="mt-1">
+                  {communicationPanel === 'message'
+                    ? 'Selecione trigger e canal para enviar usando o template ativo da mensageria.'
+                    : 'Dispare manualmente o evento de webhook do pedido usando o fluxo padrão do backend.'}
+                </DrawerDescription>
+              </DrawerHeader>
 
-                  // Matrix lookup: matrixLookup[color][size] = item
-                  const matrixLookup: Record<string, Record<string, OrderItem>> = {}
-                  for (const item of group.items) {
-                    const c = String(item.colorSnapshot || '')
-                    const s = String(item.sizeSnapshot || '')
-                    if (!matrixLookup[c]) matrixLookup[c] = {}
-                    matrixLookup[c][s] = item
-                  }
-
-                  // Price range for display
-                  const prices = group.items.map(i => Number(i.unitPrice || 0)).filter(p => p > 0)
-                  const minPrice = prices.length ? Math.min(...prices) : 0
-                  const maxPrice = prices.length ? Math.max(...prices) : 0
-                  const priceLabel = minPrice === maxPrice
-                    ? `R$ ${minPrice.toFixed(2)}`
-                    : `R$ ${minPrice.toFixed(2)} – ${maxPrice.toFixed(2)}`
-
-                  return (
-                    <div key={group.productId} className={`rounded-xl border border-border/20 overflow-hidden ${groupAllRemoved ? 'opacity-60' : ''}`}>
-
-                      {/* ── Product header ───────────────────────────── */}
-                      <div className="flex items-center justify-between gap-3 px-4 py-3 bg-muted/30">
-                        <div className="flex items-center gap-3 min-w-0">
-                          {/* Product image thumbnail */}
-                          <button
-                            type="button"
-                            className="h-14 w-14 rounded-lg bg-muted overflow-hidden shrink-0 grid place-items-center border border-border/20"
-                            onClick={() => {
-                              const groupedVariants = group.items.reduce((acc, entry) => {
-                                const attributes = resolveVariantAttributes(entry)
-                                const variantKey = attributes.map(a => `${a.key}:${a.value}`).join('|')
-                                if (!acc[variantKey]) acc[variantKey] = { variantKey, attributes, requestedQty: 0, attendedQty: 0 }
-                                acc[variantKey].requestedQty += Number(entry.originalQty ?? entry.qty)
-                                if (entry.status !== 'removed') {
-                                  acc[variantKey].attendedQty += Number(entry.qty || 0)
-                                }
-                                return acc
-                              }, {} as Record<string, { variantKey: string; attributes: Array<{ key: string; value: string }>; requestedQty: number; attendedQty: number }>)
-                              setProductPreview({ productName: group.productName, imageUrl: group.imageUrl, sku: group.sku, variants: Object.values(groupedVariants) })
-                            }}
-                          >
-                            {group.imageUrl ? (
-                              <img src={group.imageUrl} alt={group.productName} className="h-full w-full object-cover" />
-                            ) : (
-                              <Package className="h-5 w-5 text-muted-foreground/40" />
-                            )}
-                          </button>
-
-                          {/* Product info */}
-                          <div className="min-w-0">
-                            <p className="font-semibold text-sm leading-tight">{group.productName}</p>
-                            <p className="text-xs text-muted-foreground mt-0.5">SKU: {group.sku} · {priceLabel}</p>
-                            <div className="flex items-center gap-3 mt-1.5 flex-wrap">
-                              <span className="text-xs text-muted-foreground">
-                                Solic.: <span className="font-semibold text-foreground tabular-nums">{groupRequested}</span>
-                              </span>
-                              <span className="text-xs text-muted-foreground">
-                                Atend.: <span className="font-semibold text-emerald-600 tabular-nums">{groupFulfilled}</span>
-                              </span>
-                              <span className="text-xs text-muted-foreground">
-                                Total: <span className="font-semibold text-foreground tabular-nums">R$ {groupTotal.toFixed(2)}</span>
-                              </span>
-                            </div>
-                          </div>
-
-                          {groupAllRemoved && (
-                            <Badge variant="outline" className="text-xs font-medium bg-rose-50 text-rose-600 border border-rose-100 shrink-0">Removido</Badge>
-                          )}
+              <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+                {communicationPanel === 'message' ? (
+                  <Card className="rounded-xl border-border/30 shadow-none">
+                    <CardContent className="pt-5 space-y-4">
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label>Trigger</Label>
+                          <Select value={messageTrigger} onValueChange={(value) => setMessageTrigger(value as typeof messageTrigger)}>
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="ORDER_CREATED">Novo Pedido</SelectItem>
+                              <SelectItem value="ORDER_INVOICE_GENERATED">NF Gerada</SelectItem>
+                              <SelectItem value="ORDER_CONFIRMED">Pedido Confirmado</SelectItem>
+                              <SelectItem value="ORDER_PROCESSING">Pedido em Separacao</SelectItem>
+                              <SelectItem value="ORDER_SHIPPED">Pedido Enviado</SelectItem>
+                              <SelectItem value="ORDER_DELIVERED">Pedido Entregue</SelectItem>
+                              <SelectItem value="ORDER_CANCELLED">Pedido Cancelado</SelectItem>
+                            </SelectContent>
+                          </Select>
                         </div>
 
-                        {/* Group-level action */}
-                        {!isOrderConfirmed && groupAllRemoved ? (
-                          <Button variant="ghost" size="icon" className="h-10 w-10 shrink-0" disabled={isSaving} onClick={() => handleReactivateGroupItems(group.items)} title="Reativar">
-                            <RotateCcw className="h-5 w-5" />
-                          </Button>
-                        ) : !isOrderConfirmed ? (
-                          <div className="flex items-center gap-1">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className={`h-10 w-10 shrink-0 transition-colors ${groupAllFulfilled ? 'text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/20' : 'text-muted-foreground hover:text-foreground'}`}
-                              disabled={isSaving}
-                              onClick={() => handleMarkGroupFulfilled(group.items, !groupAllFulfilled)}
-                              title={groupAllFulfilled ? 'Desmarcar todos' : 'Marcar todos como atendidos'}
+                        <div className="space-y-2">
+                          <Label>Canal</Label>
+                          <Select value={messageChannel} onValueChange={(value) => setMessageChannel(value as typeof messageChannel)}>
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="WHATSAPP">WhatsApp</SelectItem>
+                              <SelectItem value="EMAIL">E-mail</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button onClick={() => { void handleDispatchOrderMessage() }} disabled={!canSendMessages || isDispatchingMessage || isSaving}>
+                          {isDispatchingMessage ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Send className="h-4 w-4 mr-2" />}
+                          {isDispatchingMessage ? 'Disparando...' : 'Disparar Mensagem'}
+                        </Button>
+                        {dispatchFeedback ? (
+                          <p className="text-sm text-muted-foreground">{dispatchFeedback}</p>
+                        ) : null}
+                      </div>
+                    </CardContent>
+                  </Card>
+                ) : null}
+
+                {communicationPanel === 'webhook' ? (
+                  <Card className="rounded-xl border-border/30 shadow-none">
+                    <CardContent className="pt-5 space-y-4">
+                      <div className="space-y-2">
+                        <Label>Evento</Label>
+                        <Select value={webhookEvent} onValueChange={(value) => setWebhookEvent(value as typeof webhookEvent)}>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="order.created">order.created</SelectItem>
+                            <SelectItem value="order.updated">order.updated</SelectItem>
+                            <SelectItem value="order.confirmed">order.confirmed</SelectItem>
+                            <SelectItem value="order.payment_confirmed">order.payment_confirmed</SelectItem>
+                            <SelectItem value="order.shipped">order.shipped</SelectItem>
+                            <SelectItem value="order.delivered">order.delivered</SelectItem>
+                            <SelectItem value="order.cancelled">order.cancelled</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button onClick={() => { void handleDispatchOrderWebhook() }} disabled={isDispatchingWebhook || isSaving}>
+                          {isDispatchingWebhook ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Webhook className="h-4 w-4 mr-2" />}
+                          {isDispatchingWebhook ? 'Disparando...' : 'Disparar Webhook'}
+                        </Button>
+                        {webhookDispatchFeedback ? (
+                          <p className="text-sm text-muted-foreground">{webhookDispatchFeedback}</p>
+                        ) : null}
+                      </div>
+                    </CardContent>
+                  </Card>
+                ) : null}
+              </div>
+            </DrawerContent>
+          </Drawer>
+
+          <Dialog open={messageDispatchResultOpen} onOpenChange={setMessageDispatchResultOpen}>
+            <DialogContent className="max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+              <DialogHeader className="shrink-0 pr-8 text-left">
+                <DialogTitle>Mensagem disparada</DialogTitle>
+                <DialogDescription>{dispatchFeedback}</DialogDescription>
+              </DialogHeader>
+
+              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Pre-visualizacao enviada</p>
+                  {/[<][^>]+[>]/.test(dispatchPreview) ? (
+                    <div className="rounded-md border border-border/60 bg-background p-3">
+                      <div className="mx-auto w-full max-w-full rounded-md border border-border/60 bg-white px-5 py-4 text-[15px] leading-7 text-zinc-900 shadow-sm [&_a]:text-blue-700 [&_a]:underline [&_p]:mb-3 [&_p:last-child]:mb-0 [&_strong]:font-semibold [&_ul]:my-3 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-3 [&_ol]:list-decimal [&_ol]:pl-5 [&_hr]:my-4 [&_hr]:border-zinc-200 [&_br]:leading-6"
+                        dangerouslySetInnerHTML={{ __html: dispatchPreviewHtml || dispatchPreview }}
+                      />
+                    </div>
+                  ) : (
+                    <div className="rounded-md border border-border/60 bg-background p-3">
+                      <p className="text-sm whitespace-pre-wrap leading-relaxed">{dispatchPreview}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={webhookDispatchResultOpen} onOpenChange={setWebhookDispatchResultOpen}>
+            <DialogContent className="max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+              <DialogHeader className="shrink-0 pr-8 text-left">
+                <DialogTitle>Webhook disparado</DialogTitle>
+                <DialogDescription>{webhookDispatchFeedback}</DialogDescription>
+              </DialogHeader>
+
+              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                {webhookDispatchPayload ? (
+                  <div className="space-y-2 rounded-lg border border-border/60 bg-muted/30 p-4">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      Campos enviados
+                    </p>
+                    <pre className="max-h-[55vh] overflow-auto rounded-md bg-background p-3 text-xs leading-5 text-foreground whitespace-pre-wrap wrap-break-word">
+                      {JSON.stringify(webhookDispatchPayload, null, 2)}
+                    </pre>
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-dashed border-border/60 bg-muted/20 p-4 text-sm text-muted-foreground">
+                    Nenhum payload disponível.
+                  </div>
+                )}
+              </div>
+            </DialogContent>
+          </Dialog>
+        </div>
+
+        <div className="space-y-4">
+          <div className="space-y-4 print:hidden">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <Card className="rounded-xl border-border/20 shadow-none p-0">
+                <CardContent className="flex items-center gap-4 pt-5 pb-5">
+                  <div className="h-12 w-12 rounded-xl bg-sky-100 text-sky-600 grid place-items-center">
+                    <DollarSign className="h-6 w-6" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-muted-foreground">Valor Solicitado</p>
+                    <p className="text-xl font-medium leading-tight">R$ {requestedTotal.toFixed(2)}</p>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-xl border-border/20 shadow-none p-0">
+                <CardContent className="flex items-center gap-4 pt-5 pb-5">
+                  <div className="h-12 w-12 rounded-xl bg-emerald-100 text-emerald-600 grid place-items-center">
+                    <Boxes className="h-6 w-6" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-muted-foreground">Valor Atendido</p>
+                    <p className="text-xl font-medium leading-tight">R$ {fulfilledTotal.toFixed(2)}</p>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-xl border-border/20 shadow-none p-0">
+                <CardContent className="flex items-center gap-4 pt-5 pb-5">
+                  <div className="h-12 w-12 rounded-xl bg-amber-100 text-amber-600 grid place-items-center">
+                    <Percent className="h-6 w-6" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-muted-foreground">% Atendida</p>
+                    <p className="text-xl font-medium leading-tight text-amber-600">
+                      {requestedTotal > 0 ? `${((fulfilledTotal / requestedTotal) * 100).toFixed(1)}%` : '0.0%'}
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+        {/* Items */}
+        <div className="space-y-4">
+          {hasPendingFulfillmentCompletion ? (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <p className="font-medium">Atenção: finalize o processo de atendimento</p>
+              <p className="mt-1 text-amber-800">{fulfillmentCompletionBlockMessage}</p>
+            </div>
+          ) : null}
+
+          <Card className="rounded-xl border-border/20 shadow-none">
+            <CardHeader className="flex flex-row items-center justify-between">
+              <div>
+                <CardTitle className="text-base">Produtos do Pedido ({groupedItemsList.length})</CardTitle>
+                <CardDescription>
+                  Itens agrupados por produto/cor com edição rápida por matriz
+                </CardDescription>
+              </div>
+              <div className="flex gap-2">
+                {!isOrderConfirmed && order.status !== 'RELEASED' && selectedItems.length > 0 && (
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button variant="outline" size="sm" className="text-muted-foreground">
+                        <Trash2 className="h-4 w-4 mr-2" />
+                        Excluir Selecionados ({selectedItems.length})
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Confirmar exclusão</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          Tem certeza que deseja excluir {selectedItems.length} item(ns) do pedido?
+                          Essa ação remove o item definitivamente.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction onClick={handleRemoveSelectedItems}>
+                          Excluir
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent className="border-t border-border/20 pt-6">
+              <div className="flex flex-wrap items-center gap-4 pb-4 text-xs text-muted-foreground">
+                <span className="font-medium">Legenda:</span>
+                <span>Estoque atual: mostrado no editor da celula</span>
+                <span>Solicitado: numero superior da celula</span>
+                <span>Atendido: numero inferior da celula</span>
+              </div>
+              <div className="space-y-5">
+                {groupedItemsList.map((group) => {
+                  const groupAllRemoved = group.items.length > 0 && group.items.every((item) => item.status === 'removed')
+                  const groupRequested = group.items.reduce((sum, item) => sum + Number(item.originalQty ?? item.qty), 0)
+                  const groupFulfilled = group.items.reduce((sum, item) => sum + getItemAttendedQty(item), 0)
+                  const groupSubtotal = group.items.reduce((sum, item) => {
+                    const requestedQty = Number(item.originalQty ?? item.qty)
+                    return sum + requestedQty * Number(item.unitPrice || 0)
+                  }, 0)
+                  const groupAttendedSubtotal = group.items.reduce((sum, item) => {
+                    const attendedQty = getItemAttendedQty(item)
+                    return sum + attendedQty * Number(item.unitPrice || 0)
+                  }, 0)
+                  const matrixEntries = group.items.map((item) => {
+                    const dimensions = getVariantDimensions(item)
+                    const remainingDimensions = dimensions.slice(group.groupDimensions.length)
+                    const sizeDimension = [...remainingDimensions].reverse().find((dimension) => dimension.normalizedKey === 'size')
+                    const columnDimension = sizeDimension
+                      || (remainingDimensions.length >= 1
+                        ? remainingDimensions[remainingDimensions.length - 1]
+                        : {
+                            rawKey: '__column__',
+                            normalizedKey: '__column__',
+                            label: tr('admin.orders.attribute.variation', 'Variation'),
+                            rawValue: '__single__',
+                            displayValue: tr('admin.orders.attribute.noVariation', 'Sem variacao'),
+                          })
+                    const rowCandidate = remainingDimensions.find((dimension) => dimension.rawKey !== columnDimension.rawKey || dimension.rawValue !== columnDimension.rawValue)
+                    const rowDimension = rowCandidate
+                      || {
+                        rawKey: '__row__',
+                        normalizedKey: '__row__',
+                        label: tr('admin.orders.attribute.group', 'Grupo'),
+                        rawValue: '__single__',
+                        displayValue: tr('admin.orders.attribute.single', 'Item'),
+                      }
+
+                    return {
+                      item,
+                      rowDimension,
+                      columnDimension,
+                      allDimensions: dimensions,
+                    }
+                  })
+
+                  const rowDimensionLabel = matrixEntries[0]?.rowDimension.label || tr('admin.orders.attribute.group', 'Grupo')
+                  const uniqueRows = Array.from(new Map(matrixEntries.map((entry) => [entry.rowDimension.rawValue || '__row__', entry.rowDimension])).values())
+                    .sort(compareVariantDimensionValues)
+                  const uniqueColumns = Array.from(new Map(matrixEntries.map((entry) => [entry.columnDimension.rawValue || '__column__', entry.columnDimension])).values())
+                    .sort(compareVariantDimensionValues)
+
+                  const matrixLookup: Record<string, Record<string, Array<typeof matrixEntries[number]>>> = {}
+                  for (const entry of matrixEntries) {
+                    const rowKey = entry.rowDimension.rawValue || '__row__'
+                    const columnKey = entry.columnDimension.rawValue || '__column__'
+                    if (!matrixLookup[rowKey]) matrixLookup[rowKey] = {}
+                    if (!matrixLookup[rowKey][columnKey]) matrixLookup[rowKey][columnKey] = []
+                    matrixLookup[rowKey][columnKey].push(entry)
+                  }
+                  const distinctGroupColors = new Set(
+                    group.items
+                      .flatMap((item) => getVariantDimensions(item))
+                      .filter((dimension) => dimension.normalizedKey === 'color')
+                      .map((dimension) => dimension.rawValue)
+                      .filter(Boolean)
+                  ).size
+
+                  const groupSummary = group.groupDimensions
+                    .filter((dimension) => !(dimension.normalizedKey === 'color' && distinctGroupColors <= 1))
+                    .map((dimension) => `${dimension.label}: ${dimension.displayValue}`)
+                    .join(' · ')
+
+                  return (
+                    <div key={group.key} className={`rounded-xl border border-border/20 ${groupAllRemoved ? 'opacity-60' : ''}`}>
+                      <div className="flex items-center justify-between gap-3 border-b border-border/20 px-4 py-3">
+                        <div className="flex items-center gap-3">
+                          <div className="h-11 w-11 rounded-md bg-muted overflow-hidden grid place-items-center text-xs text-muted-foreground">
+                            <button
+                              type="button"
+                              className="h-full w-full cursor-pointer"
+                              onClick={() => {
+                                const groupedVariants = group.items.reduce((acc, entry) => {
+                                  const attributes = resolveVariantAttributes(entry)
+                                  const variantKey = attributes
+                                    .map((attribute) => `${attribute.key}:${attribute.value}`)
+                                    .join('|')
+
+                                  if (!acc[variantKey]) {
+                                    acc[variantKey] = { variantKey, attributes, requestedQty: 0, attendedQty: 0 }
+                                  }
+
+                                  acc[variantKey].requestedQty += Number(entry.originalQty ?? entry.qty)
+                                  acc[variantKey].attendedQty += getItemAttendedQty(entry)
+                                  return acc
+                                }, {} as Record<string, { variantKey: string; attributes: Array<{ key: string; value: string }>; requestedQty: number; attendedQty: number }>)
+
+                                setProductPreview({
+                                  productName: group.productName,
+                                  imageUrl: group.imageUrl,
+                                  sku: group.sku,
+                                  variants: Object.values(groupedVariants),
+                                })
+                              }}
                             >
-                              <CheckCheck className="h-5 w-5" />
-                            </Button>
-                          <AlertDialog open={groupToRemove === group.productId} onOpenChange={(open) => setGroupToRemove(open ? group.productId : null)}>
+                              {group.imageUrl ? (
+                                <CloudflareImage
+                                  src={group.imageUrl}
+                                  cloudflare={{ width: 48, height: 48, fit: "cover", dpr: 2 }}
+                                  alt={group.productName}
+                                  width={48}
+                                  height={48}
+                                  className="h-full w-full object-cover"
+                                />
+                              ) : (
+                                <span>IMG</span>
+                              )}
+                            </button>
+                          </div>
+                          <div>
+                            <p className="font-medium">{group.productName}</p>
+                            <p className="text-xs text-muted-foreground">
+                              SKU: {group.sku}{groupSummary ? ` | ${groupSummary}` : ''}
+                            </p>
+                          </div>
+                          {groupAllRemoved ? (
+                            <Badge variant="outline" className="text-xs font-medium bg-rose-50 text-rose-600 border border-rose-100">Grupo removido</Badge>
+                          ) : null}
+                        </div>
+                        {canEditOrder && !isOrderConfirmed && order.status !== 'RELEASED' && groupAllRemoved ? (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            disabled={isSaving}
+                            onClick={() => handleReactivateGroupItems(group.items)}
+                            title="Reativar itens removidos"
+                          >
+                            <RotateCcw className="h-4 w-4" />
+                          </Button>
+                        ) : canEditOrder && !isOrderConfirmed && order.status !== 'RELEASED' ? (
+                          <AlertDialog
+                            open={groupToRemove === group.key}
+                            onOpenChange={(open) => setGroupToRemove(open ? group.key : null)}
+                          >
                             <AlertDialogTrigger asChild>
-                              <Button variant="ghost" size="icon" className="h-10 w-10 shrink-0 text-muted-foreground" disabled={isSaving}>
-                                <Trash2 className="h-5 w-5" />
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-muted-foreground"
+                                disabled={isSaving}
+                              >
+                                <Trash2 className="h-4 w-4" />
                               </Button>
                             </AlertDialogTrigger>
                             <AlertDialogContent>
                               <AlertDialogHeader>
-                                <AlertDialogTitle>Remover produto do pedido</AlertDialogTitle>
+                                <AlertDialogTitle>Excluir itens do produto</AlertDialogTitle>
                                 <AlertDialogDescription>
-                                  Tem certeza que deseja remover {group.items.length} variante(s) de "{group.productName}" do pedido?
+                                  Tem certeza que deseja excluir {group.items.length} item(ns) deste produto do pedido?
                                 </AlertDialogDescription>
                               </AlertDialogHeader>
                               <AlertDialogFooter>
                                 <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                                <AlertDialogAction onClick={() => handleRemoveGroupItems(group.items)}>Remover</AlertDialogAction>
+                                <AlertDialogAction onClick={() => handleRemoveGroupItems(group.items)}>
+                                  Excluir
+                                </AlertDialogAction>
                               </AlertDialogFooter>
                             </AlertDialogContent>
                           </AlertDialog>
-                          </div>
                         ) : null}
                       </div>
 
-                      {/* ── Color × Size matrix ──────────────────────── */}
                       <div className="overflow-x-auto">
                         <table className="w-full text-sm border-t border-border/20">
                           <thead>
                             <tr className="bg-muted/20 border-b border-border/10">
-                              <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground min-w-[140px]">Cor</th>
-                              {rawSizes.map(size => (
-                                <th key={size} className="text-center px-4 py-3 text-xs font-medium text-muted-foreground whitespace-nowrap">
-                                  {resolveAttributeLabel(size, initialAttributeLabels.size)}
+                              <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground min-w-35">{rowDimensionLabel}</th>
+                              {uniqueColumns.map((column) => (
+                                <th key={column.rawValue || '__empty-column'} className="text-center px-4 py-3 text-xs font-medium text-muted-foreground whitespace-nowrap">
+                                  {column.displayValue}
                                 </th>
                               ))}
                             </tr>
                           </thead>
                           <tbody>
-                            {rawColors.map((color, colorIdx) => {
-                              const colorLabel = resolveAttributeLabel(color, initialAttributeLabels.color)
-                              const colorDot = getColorDot(color)
+                            {uniqueRows.map((row, rowIdx) => {
+                              const rowColorDot = row.normalizedKey === 'color' ? getColorDot(row.rawValue || null, initialAttributeLabels.colorHex) : null
 
                               return (
-                                <tr key={color} className={`border-b border-border/10 last:border-0 ${colorIdx % 2 === 1 ? 'bg-muted/10' : ''}`}>
-                                  {/* Color label with dot */}
+                                <tr key={row.rawValue || `empty-row-${rowIdx}`} className={`border-b border-border/10 last:border-0 ${rowIdx % 2 === 1 ? 'bg-muted/10' : ''}`}>
                                   <td className="px-4 py-3.5">
                                     <div className="flex items-center gap-2">
-                                      <span
-                                        className="inline-block h-3.5 w-3.5 rounded-full shrink-0 border border-black/10"
-                                        style={{ background: colorDot }}
-                                      />
-                                      <span className="text-sm font-medium">{colorLabel}</span>
+                                      {rowColorDot ? (
+                                        <span
+                                          className="inline-block h-3.5 w-3.5 rounded-full shrink-0 border border-black/10"
+                                          style={{ background: rowColorDot }}
+                                        />
+                                      ) : null}
+                                      <span className="text-sm font-medium">{row.displayValue}</span>
                                     </div>
                                   </td>
 
-                                  {/* Size cells with inline attended quantity controls */}
-                                  {rawSizes.map(size => {
-                                    const item = matrixLookup[color]?.[size]
-                                    if (!item) {
+                                  {uniqueColumns.map((column) => {
+                                    const entries = matrixLookup[row.rawValue || '__row__']?.[column.rawValue || '__column__'] || []
+
+                                    if (entries.length === 0) {
                                       return (
-                                        <td key={size} className="min-w-24 text-center px-2 py-3.5">
+                                        <td key={`${row.rawValue}-${column.rawValue}-empty`} className="text-center px-4 py-3.5">
                                           <span className="text-muted-foreground/25 text-xs select-none">—</span>
                                         </td>
                                       )
                                     }
-
-                                    const requestedQty = Number(item.originalQty ?? item.qty)
-                                    const attendedQtyVal = Number(attendedQtyDraft[item.id] ?? item.qty)
-                                    const isAttended = item.status === 'attended' || item.fulfilled
-                                    const isRemoved = item.status === 'removed'
-                                    const stockLimit = getMaxOrderEditQty({ currentQty: item.qty, availableQty: item.variantAvailableQty })
-                                    const normalizedAttendedQty = Math.max(0, Math.min(Math.floor(Number(stockLimit || 0)), Math.floor(attendedQtyVal)))
-                                    const isZeroRequested = requestedQty > 0 && normalizedAttendedQty === 0 && !isRemoved
-                                    const isDifferentRequested = requestedQty > 0 && normalizedAttendedQty !== requestedQty && normalizedAttendedQty !== 0 && !isRemoved
-                                    const isMatchingRequested = requestedQty > 0 && normalizedAttendedQty === requestedQty && !isRemoved
-                                    const canDecrease = !isSaving && normalizedAttendedQty > 0 && !isOrderConfirmed && !isRemoved
-                                    const canIncrease = !isSaving && normalizedAttendedQty < stockLimit && !isOrderConfirmed && !isRemoved
-
-                                    if (isOrderConfirmed || isRemoved) {
-                                      return (
-                                        <td key={size} className={`min-w-24 text-center px-2 py-3.5 ${isRemoved ? 'opacity-40' : isZeroRequested ? 'bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-100 dark:bg-rose-950/30 dark:text-rose-200 dark:ring-rose-900/60' : isDifferentRequested ? 'bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-100 dark:bg-amber-950/30 dark:text-amber-200 dark:ring-amber-900/60' : isMatchingRequested ? 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-100 dark:bg-emerald-950/30 dark:text-emerald-200 dark:ring-emerald-900/60' : isAttended ? 'bg-emerald-50/40 dark:bg-emerald-950/10' : ''}`}>
-                                          <div className="flex flex-col items-center gap-1">
-                                            <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-md border border-border/50 bg-slate-100 px-2 text-xs font-semibold tabular-nums text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">{requestedQty}</span>
-                                            <span className={cn("text-xl font-semibold tabular-nums", isRemoved ? "line-through text-muted-foreground/40" : isZeroRequested ? "text-rose-700 dark:text-rose-200" : isDifferentRequested ? "text-amber-700 dark:text-amber-200" : isMatchingRequested || isAttended ? "text-emerald-600 dark:text-emerald-200" : "text-foreground")}>
-                                              {normalizedAttendedQty}
-                                            </span>
-                                          </div>
-                                        </td>
-                                      )
-                                    }
-
                                     return (
                                       <td
-                                        key={size}
-                                        className={`min-w-24 text-center px-2 py-2 transition-colors ${
-                                          isZeroRequested
-                                            ? 'bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-100 dark:bg-rose-950/30 dark:text-rose-200 dark:ring-rose-900/60'
-                                            : isDifferentRequested
-                                              ? 'bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-100 dark:bg-amber-950/30 dark:text-amber-200 dark:ring-amber-900/60'
-                                              : isMatchingRequested
-                                                ? 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-100 dark:bg-emerald-950/30 dark:text-emerald-200 dark:ring-emerald-900/60'
-                                                : isAttended
-                                                  ? 'bg-emerald-50/40 dark:bg-emerald-950/10'
-                                                  : 'bg-background'
-                                        }`}
+                                        key={`${row.rawValue || '__row__'}-${column.rawValue || '__column__'}-cell`}
+                                        className="text-center px-4 py-3.5"
                                       >
-                                        <div className="flex min-h-32 flex-col items-center justify-between gap-2">
-                                          <button
-                                            type="button"
-                                            className={cn(
-                                              "flex h-9 w-9 items-center justify-center rounded-full border text-2xl leading-none transition-colors disabled:opacity-30",
-                                              isZeroRequested
-                                                ? "border-rose-200 bg-white/70 text-rose-600 hover:bg-white dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-200"
-                                                : isDifferentRequested
-                                                  ? "border-amber-200 bg-white/70 text-amber-700 hover:bg-white dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"
-                                                  : isMatchingRequested
-                                                    ? "border-emerald-200 bg-white/70 text-emerald-700 hover:bg-white dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200"
-                                                    : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
-                                            )}
-                                            disabled={!canIncrease}
-                                            onClick={() => handleChangeAttendedQty(item, normalizedAttendedQty + 1)}
-                                            aria-label={`Aumentar quantidade atendida de ${group.productName}`}
-                                          >
-                                            +
-                                          </button>
-                                          <div className="flex flex-col items-center gap-1 select-none">
-                                            <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-md border border-border/50 bg-slate-100 px-2 text-xs font-semibold tabular-nums text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">{requestedQty}</span>
-                                            <input
-                                              type="text"
-                                              inputMode="numeric"
-                                              pattern="[0-9]*"
-                                              value={normalizedAttendedQty}
-                                              disabled={isSaving}
-                                              onFocus={(event) => event.currentTarget.select()}
-                                              onChange={(event) => {
-                                                const nextRawValue = event.currentTarget.value
-                                                const parsedValue = nextRawValue === '' ? 0 : Number(nextRawValue)
-                                                if (!Number.isFinite(parsedValue)) return
-                                                const nextDraft = Math.max(0, Math.min(Math.floor(Number(stockLimit || 0)), Math.floor(parsedValue)))
-                                                setAttendedQtyDraft(prev => ({ ...prev, [item.id]: nextDraft }))
-                                              }}
-                                              onBlur={() => handleChangeAttendedQty(item, Number(attendedQtyDraft[item.id] ?? item.qty))}
-                                              onKeyDown={(event) => {
-                                                if (event.key === 'Enter') {
-                                                  event.preventDefault()
-                                                  event.currentTarget.blur()
-                                                }
-                                              }}
-                                              aria-label={`Quantidade atendida de ${group.productName}`}
-                                              className={cn(
-                                                "h-10 w-16 rounded-lg border border-transparent bg-transparent text-center text-3xl font-semibold leading-none tabular-nums outline-none transition-colors [appearance:textfield] focus:border-ring focus:bg-background/80 focus:ring-2 focus:ring-ring/25 disabled:opacity-70 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
-                                                isZeroRequested
-                                                  ? "text-rose-700 focus:bg-white dark:text-rose-200 dark:focus:bg-rose-950/50"
-                                                  : isDifferentRequested
-                                                    ? "text-amber-700 focus:bg-white dark:text-amber-200 dark:focus:bg-amber-950/50"
-                                                    : isMatchingRequested || isAttended
-                                                      ? "text-emerald-600 focus:bg-white dark:text-emerald-200 dark:focus:bg-emerald-950/50"
-                                                      : "text-foreground"
-                                              )}
-                                            />
-                                          </div>
-                                          <button
-                                            type="button"
-                                            className={cn(
-                                              "flex h-9 w-9 items-center justify-center rounded-full border text-2xl leading-none transition-colors disabled:opacity-30",
-                                              isZeroRequested
-                                                ? "border-rose-200 bg-white/70 text-rose-600 hover:bg-white dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-200"
-                                                : isDifferentRequested
-                                                  ? "border-amber-200 bg-white/70 text-amber-700 hover:bg-white dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"
-                                                  : isMatchingRequested
-                                                    ? "border-emerald-200 bg-white/70 text-emerald-700 hover:bg-white dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200"
-                                                    : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
-                                            )}
-                                            disabled={!canDecrease}
-                                            onClick={() => handleChangeAttendedQty(item, normalizedAttendedQty - 1)}
-                                            aria-label={`Diminuir quantidade atendida de ${group.productName}`}
-                                          >
-                                            -
-                                          </button>
+                                        <div className="space-y-1.5">
+                                          {entries.map(({ item }) => {
+                                            const requestedQty = Number(item.originalQty ?? item.qty)
+                                            const isAttended = isItemAttended(item)
+                                            const baseAttendedQty = getItemAttendedQty(item)
+                                            const attendedQty = Number(attendedQtyDraft[item.id] ?? baseAttendedQty)
+                                            const isRemoved = item.status === 'removed'
+                                            const isManagerAdded = item.origin === 'manager_added'
+                                            const stockLimit = Math.max(requestedQty, getMaxOrderEditQty({
+                                              currentQty: item.qty,
+                                              variantStock: item.variantStockQty,
+                                              reservedQty: item.variantReservedQty,
+                                            }))
+                                            const normalizedAttendedQty = clampOrderEditQty(attendedQty, stockLimit, 0)
+                                            const hasAttendedQtyChanges = normalizedAttendedQty !== baseAttendedQty
+                                            const isOpen = openCellId === item.id
+
+                                            const cellContent = (
+                                              <div className="flex flex-col items-center gap-0.5 select-none">
+                                                {isManagerAdded ? (
+                                                  <span
+                                                    title={getOrderItemOriginLabel(locale, item.origin)}
+                                                    className="rounded border border-amber-300 bg-amber-50 px-1 py-0.5 text-[9px] font-semibold uppercase leading-none tracking-wide text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-300"
+                                                  >
+                                                    {tr('admin.orders.itemOrigin.manager_added', 'Gestor')}
+                                                  </span>
+                                                ) : null}
+                                                <span title={`Solicitado: ${requestedQty}`} className="text-[10px] text-muted-foreground/60 tabular-nums leading-none">{requestedQty}</span>
+                                                <span title={`Atendido: ${normalizedAttendedQty}`} className={`text-sm font-semibold tabular-nums leading-none ${isRemoved ? 'line-through text-muted-foreground/40' : isAttended ? 'text-emerald-600' : 'text-foreground'}`}>
+                                                  {normalizedAttendedQty}
+                                                </span>
+                                                {isAttended && !isRemoved ? (
+                                                  <span title="Atendido" className="mt-0.5 h-1 w-1 rounded-full bg-emerald-500" />
+                                                ) : null}
+                                              </div>
+                                            )
+
+                                            if (isOrderConfirmed || order.status === 'RELEASED' || !canEditOrder) {
+                                              return (
+                                                <div key={item.id} className={`rounded-md py-1 ${isRemoved ? 'bg-rose-50/40 dark:bg-rose-950/10' : isAttended ? 'bg-emerald-50/40 dark:bg-emerald-950/10' : ''}`}>
+                                                  {cellContent}
+                                                </div>
+                                              )
+                                            }
+
+                                            return (
+                                              <div
+                                                key={item.id}
+                                                className={`rounded-md transition-colors ${
+                                                  isOpen
+                                                    ? 'bg-primary/8 ring-1 ring-inset ring-primary/30'
+                                                    : isRemoved
+                                                      ? 'bg-rose-50/40 dark:bg-rose-950/10 hover:bg-rose-50 dark:hover:bg-rose-950/20'
+                                                    : isAttended
+                                                      ? 'bg-emerald-50/40 dark:bg-emerald-950/10 hover:bg-emerald-50 dark:hover:bg-emerald-950/20'
+                                                      : isManagerAdded
+                                                        ? 'bg-amber-50/50 ring-1 ring-inset ring-amber-200/80 hover:bg-amber-50 dark:bg-amber-950/10 dark:ring-amber-900/40 dark:hover:bg-amber-950/20'
+                                                        : 'hover:bg-muted/60'
+                                                }`}
+                                              >
+                                                <Popover
+                                                  open={isOpen}
+                                                  onOpenChange={(open) => {
+                                                    if (!open && hasAttendedQtyChanges) {
+                                                      void handleSaveAttendedQty(item)
+                                                    }
+                                                    setOpenCellId(open ? item.id : null)
+                                                  }}
+                                                >
+                                                  <PopoverTrigger asChild>
+                                                    <button type="button" className="w-full cursor-pointer py-1 focus:outline-none">
+                                                      {cellContent}
+                                                    </button>
+                                                  </PopoverTrigger>
+                                                  <PopoverContent className="w-64 border-border/50 p-0 shadow-lg" side="top" align="center" sideOffset={8}>
+                                                    <div className="border-b border-border/40 px-4 pt-3 pb-2">
+                                                      <p className="text-sm font-semibold leading-tight text-foreground">{group.productName}</p>
+                                                      <p className="mt-0.5 text-xs text-muted-foreground">SKU: {group.sku}</p>
+                                                      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                                                        {resolveVariantAttributes(item).map((attribute, attributeIndex) => (
+                                                          <span key={`${item.id}-${attribute.key}-${attributeIndex}`} className="text-xs text-muted-foreground">
+                                                            <span className="font-medium text-foreground">{attribute.key}:</span> {attribute.value}
+                                                          </span>
+                                                        ))}
+                                                      </div>
+                                                    </div>
+
+                                                    <div className="space-y-3 px-4 py-3">
+                                                      <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                                        <span>Estoque atual</span>
+                                                        <span className="font-semibold tabular-nums text-foreground">
+                                                          {resolveVariantAvailableQty(
+                                                            Number(item.variantStockQty || 0),
+                                                            Number(item.variantReservedQty || 0),
+                                                          )}
+                                                        </span>
+                                                      </div>
+
+                                                      <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                                        <span>Solicitado</span>
+                                                        <span className="font-semibold tabular-nums text-foreground">{requestedQty}</span>
+                                                      </div>
+
+                                                      <div className="flex items-center justify-between">
+                                                        <span className="text-xs text-muted-foreground">Atendido</span>
+                                                        <div className="flex items-center gap-2">
+                                                          <button
+                                                            type="button"
+                                                            className="flex h-7 w-7 items-center justify-center rounded-md border border-border bg-background transition-colors hover:bg-muted disabled:opacity-40"
+                                                            disabled={isSaving || normalizedAttendedQty <= 0}
+                                                            onClick={() => {
+                                                              const next = Math.max(0, normalizedAttendedQty - 1)
+                                                              setAttendedQtyDraft((prev) => ({ ...prev, [item.id]: next }))
+                                                            }}
+                                                          >
+                                                            <span className="text-base font-medium leading-none">−</span>
+                                                          </button>
+                                                          <span className="w-8 text-center text-sm font-bold tabular-nums">{normalizedAttendedQty}</span>
+                                                          <button
+                                                            type="button"
+                                                            className="flex h-7 w-7 items-center justify-center rounded-md border border-border bg-background transition-colors hover:bg-muted disabled:opacity-40"
+                                                            disabled={isSaving || normalizedAttendedQty >= stockLimit}
+                                                            onClick={() => {
+                                                              const next = clampOrderEditQty(normalizedAttendedQty + 1, stockLimit, 0)
+                                                              setAttendedQtyDraft((prev) => ({ ...prev, [item.id]: next }))
+                                                            }}
+                                                          >
+                                                            <span className="text-base font-medium leading-none">+</span>
+                                                          </button>
+                                                        </div>
+                                                      </div>
+                                                    </div>
+
+                                                    <div className="flex items-center gap-2 px-3 pb-2">
+                                                      <button
+                                                        type="button"
+                                                        className={`flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md border text-xs font-medium transition-colors ${
+                                                          isAttended
+                                                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-400'
+                                                            : 'border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground'
+                                                        }`}
+                                                        disabled={isSaving}
+                                                        onClick={async () => {
+                                                          if (isAttended) {
+                                                            await handleToggleFulfilled(item.id, false)
+                                                            return
+                                                          }
+
+                                                          const requestedAttendedQty = clampOrderEditQty(requestedQty, stockLimit, 0)
+                                                          setAttendedQtyDraft((prev) => ({ ...prev, [item.id]: requestedAttendedQty }))
+                                                          await handleSaveAttendedQty(item, requestedAttendedQty)
+                                                          setOpenCellId(null)
+                                                        }}
+                                                      >
+                                                        <Check className="h-3.5 w-3.5" />
+                                                        {isAttended ? 'Atendido' : isRemoved ? 'Reativar e marcar atendido' : 'Marcar atendido'}
+                                                      </button>
+                                                      {hasAttendedQtyChanges ? (
+                                                        <button
+                                                          type="button"
+                                                          className="flex h-8 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                                                          disabled={isSaving}
+                                                          onClick={async () => {
+                                                            await handleSaveAttendedQty(item)
+                                                            setOpenCellId(null)
+                                                          }}
+                                                        >
+                                                          <Save className="h-3.5 w-3.5" />
+                                                          Salvar
+                                                        </button>
+                                                      ) : null}
+                                                    </div>
+
+                                                    <div className="px-3 pb-3">
+                                                      <button
+                                                        type="button"
+                                                        className="flex h-8 w-full items-center justify-center gap-1.5 rounded-md border border-rose-200 bg-rose-50 text-xs font-medium text-rose-700 transition-colors hover:bg-rose-100 disabled:opacity-40 dark:border-rose-900/50 dark:bg-rose-950/20 dark:text-rose-300"
+                                                        disabled={isSaving || isRemoved}
+                                                        onClick={async () => {
+                                                          await handleRemoveItem(item.id)
+                                                          setOpenCellId(null)
+                                                        }}
+                                                      >
+                                                        <Trash2 className="h-3.5 w-3.5" />
+                                                        {isRemoved ? 'Ja marcado como nao atendido' : 'Nao atendido'}
+                                                      </button>
+                                                    </div>
+                                                  </PopoverContent>
+                                                </Popover>
+                                              </div>
+                                            )
+                                          })}
                                         </div>
                                       </td>
                                     )
@@ -2244,6 +3489,13 @@ export default function AdminOrderDetailPageClient({
                             })}
                           </tbody>
                         </table>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-1 border-t border-border/10 bg-muted/10 px-4 py-3 text-sm">
+                        <span className="text-muted-foreground">Solicitado: <span className="font-semibold tabular-nums text-foreground">{groupRequested}</span></span>
+                        <span className="text-muted-foreground text-right">R$ <span className="tabular-nums">{groupSubtotal.toFixed(2)}</span></span>
+                        <span className="text-muted-foreground">Atendido: <span className="font-semibold tabular-nums text-foreground">{groupFulfilled}</span></span>
+                        <span className="text-muted-foreground text-right">R$ <span className="font-semibold tabular-nums text-foreground">{groupAttendedSubtotal.toFixed(2)}</span></span>
                       </div>
                     </div>
                   )
@@ -2265,9 +3517,12 @@ export default function AdminOrderDetailPageClient({
               <div className="grid grid-cols-1 gap-6 md:grid-cols-[320px_minmax(0,1fr)]">
                 <div className="overflow-hidden rounded-lg border border-border/20 bg-muted">
                   {productPreview.imageUrl ? (
-                    <img
+                    <CloudflareImage
                       src={productPreview.imageUrl}
+                      cloudflare={{ width: 640, height: 640, fit: "cover", dpr: 2 }}
                       alt={productPreview.productName}
+                      width={640}
+                      height={640}
                       className="h-full w-full object-cover"
                     />
                   ) : (
@@ -2326,8 +3581,10 @@ export default function AdminOrderDetailPageClient({
             <CardContent className="border-t border-border/20 pt-6">
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Subtotal</span>
-                  <span className="font-semibold tabular-nums">R$ {subtotal.toFixed(2)}</span>
+                  <span className="text-muted-foreground">
+                    {hasFulfillmentProgress ? 'Subtotal (atendido)' : 'Subtotal'}
+                  </span>
+                  <span className="font-semibold tabular-nums">R$ {orderSubtotal.toFixed(2)}</span>
                 </div>
 
                 <div className="flex items-center justify-between">
@@ -2342,10 +3599,10 @@ export default function AdminOrderDetailPageClient({
                         </TooltipTrigger>
                         <TooltipContent align="start" className="max-w-xs">
                           <div className="space-y-2 text-xs">
-                            <p className="font-medium">Composição dos descontos</p>
+                            <p className="font-medium">Detalhes dos descontos</p>
                             <div className="space-y-1">
                               <div className="flex items-center justify-between gap-2">
-                                <span className="text-muted-foreground">Cupom</span>
+                                <span className="text-muted-foreground">Cupom{order.couponCode ? ` (${order.couponCode})` : ''}</span>
                                 <span className="tabular-nums">-R$ {couponDiscount.toFixed(2)}</span>
                               </div>
                               <div className="flex items-center justify-between gap-2">
@@ -2400,7 +3657,7 @@ export default function AdminOrderDetailPageClient({
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1">
                     <span className="text-muted-foreground">Frete</span>
-                    {!editingShipping ? (
+                    {!editingShipping && canManageShipping ? (
                       <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => setEditingShipping(true)}>
                         <Edit className="h-3.5 w-3.5" />
                       </Button>
@@ -2430,21 +3687,9 @@ export default function AdminOrderDetailPageClient({
                 <Separator />
 
                 <div className="flex items-center justify-between pt-1">
-                  <span className="text-base font-medium">Total Solicitado</span>
-                  <span className="text-right text-xl font-medium tabular-nums">R$ {total.toFixed(2)}</span>
+                  <span className="text-base font-medium">Total</span>
+                  <span className="text-right text-xl font-medium tabular-nums">R$ {orderTotal.toFixed(2)}</span>
                 </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-base font-medium text-emerald-700 dark:text-emerald-400">Valor Atendido</span>
-                  <span className="text-right text-xl font-medium tabular-nums text-emerald-700 dark:text-emerald-400">R$ {fulfilledTotal.toFixed(2)}</span>
-                </div>
-
-                {total > 0 && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">% Atendida</span>
-                    <span className="text-sm font-medium tabular-nums text-amber-600">{((fulfilledTotal / total) * 100).toFixed(1)}%</span>
-                  </div>
-                )}
               </div>
             </CardContent>
           </Card>
@@ -2498,83 +3743,123 @@ export default function AdminOrderDetailPageClient({
                     <Label className="text-muted-foreground">Observações Internas</Label>
                     <p className="mt-1">{order.internalNotes || 'Nenhuma observação interna'}</p>
                   </div>
-                  <Button variant="outline" size="sm" onClick={() => setEditingNotes(true)}>
-                    <Edit className="h-4 w-4 mr-2" />
-                    Editar Observações
-                  </Button>
+                  {canEditOrder ? (
+                    <Button variant="outline" size="sm" onClick={() => setEditingNotes(true)}>
+                      <Edit className="h-4 w-4 mr-2" />
+                      Editar Observações
+                    </Button>
+                  ) : null}
                 </div>
               )}
             </CardContent>
           </Card>
 
-          {isLocalDemoOrderId(order.id) ? (
-            <Card className="rounded-xl border-border/20 shadow-none">
-              <CardHeader>
-                <CardTitle className="text-base">Gateway de Pagamento</CardTitle>
-              </CardHeader>
-              <CardContent className="border-t border-border/20 pt-6">
-                <p className="text-sm text-muted-foreground">
-                  Pedido de demonstração: pagamentos reais ficam disponíveis em pedidos integrados ao backend.
-                </p>
-              </CardContent>
-            </Card>
-          ) : (
-            <OrderPaymentsCard
-              orderId={orderId}
-              paymentStatus={order?.paymentStatus}
-            />
-          )}
+          <OrderPaymentsCard
+            orderId={orderId}
+            storeId={order?.storeId ?? null}
+            paymentStatus={order?.paymentStatus}
+            initialPayments={initialPayments}
+            initialPaymentLinks={initialPaymentLinks}
+            readOnly={!canEditOrder}
+            paymentLinkLocked={hasPendingFulfillmentCompletion}
+            paymentLinkLockReason={fulfillmentCompletionBlockMessage}
+          />
+
+          {canEditOrder || canSendMessages ? (
+            <div className="print:hidden pl-1 space-y-1">
+              {canSendMessages ? (
+                <Button
+                  type="button"
+                  variant="link"
+                  className="h-auto p-0 text-xs font-normal text-muted-foreground inline-flex items-center gap-1.5"
+                  onClick={() => setCommunicationPanel('message')}
+                >
+                  <Send className="h-3.5 w-3.5" />
+                  Disparo de Mensagem ao Cliente
+                </Button>
+              ) : null}
+              {canEditOrder ? (
+                <Button
+                  type="button"
+                  variant="link"
+                  className="h-auto p-0 text-xs font-normal text-muted-foreground inline-flex items-center gap-1.5"
+                  onClick={() => setCommunicationPanel('webhook')}
+                >
+                  <Webhook className="h-3.5 w-3.5" />
+                  Disparo Manual de Webhook
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+          </div>
         </div>
       </div>
 
-      {/* ── Floating Save + Actions ────────────────────────────────────── */}
-      <div className="print:hidden fixed bottom-[88px] md:bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3">
-        {/* Save button */}
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3, delay: 0.1 }}
-        >
+      <div className="print:hidden fixed bottom-22 md:bottom-6 right-4 md:right-6 z-50 flex items-center gap-3">
+        {canEditOrder ? (
           <Button
-            onClick={handleSaveOrderChanges}
-            disabled={isSaving}
-            className="h-14 px-6 rounded-full bg-primary hover:bg-primary/90 shadow-[0_4px_24px_rgba(0,0,0,0.25)] text-sm font-semibold gap-2"
+            onClick={handleFloatingSaveClick}
+            disabled={isSaving || isFloatingSaveLoading}
+            className="h-14 w-30 px-6 rounded-full bg-primary hover:bg-primary/90 shadow-[0_4px_24px_rgba(0,0,0,0.25)] text-sm font-semibold gap-2"
           >
-            <Save className="h-5 w-5" />
-            <span>Salvar</span>
+            {isSaving || isFloatingSaveLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Save className="h-5 w-5" />}
+            <span>{isSaving || isFloatingSaveLoading ? 'Salvando...' : 'Salvar'}</span>
           </Button>
-        </motion.div>
+        ) : null}
 
-        {/* Actions FAB */}
         <FloatingActionMenu
           className="relative bottom-auto right-auto"
-          triggerLabel="Ações"
-          align="center"
           options={[
+            ...(canEditOrder && !isOrderConfirmed && order.status !== 'RELEASED'
+              ? [
+                  {
+                    label: 'Adicionar Produto',
+                    Icon: <Plus className="h-4 w-4" />,
+                    onClick: () => {
+                      setAddProductOpen(true);
+                    },
+                  },
+                ]
+              : []),
+            ...(canEditOrder && order.status !== 'RELEASED'
+              ? [
+                  {
+                    label: 'Marcar Todos Atendidos',
+                    Icon: <Check className="h-4 w-4" />,
+                    onClick: () => {
+                      void handleMarkAllFulfilled();
+                    },
+                  },
+                ]
+              : []),
             {
-              label: 'Adicionar Produto',
-              Icon: <Search className="h-4 w-4" />,
-              onClick: () => setAddProductOpen(true),
-            },
-            {
-              label: 'Marcar Todos Atendidos',
-              Icon: <Check className="h-4 w-4" />,
-              onClick: handleMarkAllFulfilled,
-            },
-            {
-              label: 'Exportar PDF',
+              label: 'Imprimir Pedido',
               Icon: <FileText className="h-4 w-4" />,
-              onClick: handleExportPdf,
+              onClick: () => {
+                void handleExportPdf();
+              },
+            },
+            {
+              label: 'Imprimir Romaneio',
+              Icon: <FileText className="h-4 w-4" />,
+              onClick: () => {
+                void handlePrintRomaneio();
+              },
             },
             {
               label: 'Imprimir Etiqueta',
               Icon: <Printer className="h-4 w-4" />,
-              onClick: handlePrintLabel,
+              onClick: () => {
+                void handlePrintLabel();
+              },
             },
             {
               label: 'WhatsApp',
               Icon: <Send className="h-4 w-4" />,
-              onClick: handleSendWhatsApp,
+              onClick: () => {
+                handleOpenWhatsApp();
+              },
             },
           ]}
         />
@@ -2594,6 +3879,6 @@ export default function AdminOrderDetailPageClient({
           }
         }
       `}</style>
-    </AdminPage>
+    </div>
   );
 }

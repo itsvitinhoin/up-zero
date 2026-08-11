@@ -1,8 +1,26 @@
 import { cookies, headers } from 'next/headers'
+import { connection } from 'next/server'
 import type { SessionUser, UserRole } from './types'
 import { getCurrentB2bCustomerAction } from './actions/customers'
 
 const SESSION_COOKIE = 'b2b_session'
+const ADMIN_STORE_CACHE_TTL_MS = 5000
+const ADMIN_SESSION_CACHE_TTL_MS = 5000
+const ADMIN_ME_TIMEOUT_MS = 5000
+
+async function requestNowMs(): Promise<number> {
+  await connection()
+  return Date.now()
+}
+
+async function requestNowSec(): Promise<number> {
+  return Math.floor((await requestNowMs()) / 1000)
+}
+
+const adminStoreIdCache = new Map<string, { value: number; expiresAt: number }>()
+const adminStoreIdInFlight = new Map<string, Promise<number | null>>()
+const adminSessionCache = new Map<string, { value: SessionUser | null; expiresAt: number }>()
+const adminSessionInFlight = new Map<string, Promise<SessionUser | null>>()
 
 function normalizeStoreId(value: unknown): number | null {
   const parsed = Number(value)
@@ -33,6 +51,205 @@ function extractRouteStoreId(pathname: string | null | undefined): number | null
   return normalizeStoreId(firstPathSegment)
 }
 
+function buildAdminSessionFromPayload(payload: Record<string, unknown>): SessionUser | null {
+  const roleRaw = String(payload.role ?? payload.userRole ?? '').toUpperCase()
+  if (roleRaw && !roleRaw.includes('ADMIN')) {
+    return null
+  }
+
+  const id = String(
+    payload.admin_id
+    ?? payload.adminId
+    ?? payload.user_id
+    ?? payload.userId
+    ?? payload.id
+    ?? payload.sub
+    ?? ''
+  ).trim()
+
+  const email = String(
+    payload.email
+    ?? payload.preferred_username
+    ?? payload.username
+    ?? ''
+  ).trim()
+
+  const name = String(payload.name ?? payload.given_name ?? '').trim()
+
+  if (!id && !email) {
+    return null
+  }
+
+  return {
+    id: id || email,
+    name: name || email || 'Admin',
+    email: email || 'admin@local',
+    role: 'ADMIN' as UserRole,
+  }
+}
+
+async function isJwtExpired(payload: Record<string, unknown>): Promise<boolean> {
+  const expRaw = Number(payload.exp)
+  if (!Number.isFinite(expRaw) || expRaw <= 0) {
+    return false
+  }
+
+  return expRaw <= await requestNowSec()
+}
+
+async function resolveAdminSessionFromToken(
+  adminToken: string | undefined,
+  requestedStoreId: number | null
+): Promise<SessionUser | null> {
+  if (!adminToken) return null
+
+  await connection()
+
+  const cacheKey = `${adminToken}::${requestedStoreId ?? 'none'}`
+  const cachedEntry = adminSessionCache.get(cacheKey)
+  const nowMs = await requestNowMs()
+  if (cachedEntry && cachedEntry.expiresAt > nowMs) {
+    return cachedEntry.value
+  }
+
+  const inFlight = adminSessionInFlight.get(cacheKey)
+  if (inFlight) {
+    return inFlight
+  }
+
+  const resolveSessionPromise = (async (): Promise<SessionUser | null> => {
+    const decodedPayload = decodeJwtPayload(adminToken)
+    if (!decodedPayload || await isJwtExpired(decodedPayload)) {
+      return null
+    }
+
+    const tokenStoreId = normalizeStoreId(
+      decodedPayload.store_id
+      ?? decodedPayload.storeId
+      ?? decodedPayload.store
+      ?? decodedPayload.storeID
+    )
+
+    if (requestedStoreId && tokenStoreId && tokenStoreId !== requestedStoreId) {
+      return null
+    }
+
+    const base = (process.env.NEXT_PUBLIC_RUST_URL ?? '').trim()
+    if (base) {
+      try {
+        const response = await fetchWithTimeout(new URL('/admin/me', base), {
+          headers: {
+            cookie: `adminAuthToken=${adminToken}`,
+          },
+          cache: 'no-store',
+        }, ADMIN_ME_TIMEOUT_MS)
+
+        if (response.ok) {
+          const admin = await response.json()
+          const adminStoreId = normalizeStoreId(admin?.store_id ?? admin?.storeId)
+          if (requestedStoreId && adminStoreId && adminStoreId !== requestedStoreId) {
+            return null
+          }
+
+          const id = String(admin?.id ?? admin?.admin_id ?? decodedPayload.sub ?? '').trim()
+          const email = String(admin?.email ?? decodedPayload.email ?? '').trim()
+          const name = String(admin?.name ?? (email || 'Admin')).trim()
+
+          if (!id && !email) {
+            return null
+          }
+
+          return {
+            id: id || email,
+            name,
+            email: email || 'admin@local',
+            role: 'ADMIN' as UserRole,
+          }
+        }
+
+        if (response.status === 401 || response.status === 403) {
+          return null
+        }
+      } catch {
+        // ignore and fallback to decoded token
+      }
+    }
+
+    return buildAdminSessionFromPayload(decodedPayload)
+  })()
+
+  adminSessionInFlight.set(cacheKey, resolveSessionPromise)
+
+  try {
+    const resolved = await resolveSessionPromise
+    adminSessionCache.set(cacheKey, {
+      value: resolved,
+      expiresAt: nowMs + ADMIN_SESSION_CACHE_TTL_MS,
+    })
+    return resolved
+  } finally {
+    adminSessionInFlight.delete(cacheKey)
+  }
+}
+
+async function isLocalhostRequest(): Promise<boolean> {
+  try {
+    const h = await headers()
+    const host = String(h.get('x-forwarded-host') || h.get('host') || '').toLowerCase().trim()
+    if (!host) return false
+
+    const hostname = host.split(':')[0]
+    return hostname === 'localhost' || hostname === '127.0.0.1'
+  } catch {
+    return false
+  }
+}
+
+async function fetchWithTimeout(input: URL | string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function resolveAdminAuthCookieOptions() {
+  const expiresInRaw = Number(process.env.JWT_EXP_SECONDS || 604800)
+  const expiresIn = Number.isFinite(expiresInRaw) && expiresInRaw > 0 ? expiresInRaw : 604800
+  const cookieDomain = process.env.COOKIE_DOMAIN?.trim() || ''
+  const localhostRequest = await isLocalhostRequest()
+  const shouldUseCrossSiteCookie = Boolean(cookieDomain) && !localhostRequest
+
+  return {
+    secure: shouldUseCrossSiteCookie || (process.env.APP_ENV || '').toLowerCase() === 'production',
+    sameSite: (shouldUseCrossSiteCookie ? 'none' : 'lax') as 'none' | 'lax',
+    domain: shouldUseCrossSiteCookie ? cookieDomain : undefined,
+    maxAge: expiresIn,
+  }
+}
+
+async function persistAdminAuthCookie(token: string): Promise<void> {
+  if (!token) return
+
+  const cookieStore = await cookies()
+  const options = await resolveAdminAuthCookieOptions()
+
+  cookieStore.set('adminAuthToken', token, {
+    httpOnly: true,
+    secure: options.secure,
+    sameSite: options.sameSite,
+    maxAge: options.maxAge,
+    path: '/',
+    domain: options.domain,
+  })
+}
+
 async function resolveCurrentStoreId(storeId?: number | string | null): Promise<number | null> {
   const explicitStoreId = normalizeStoreId(storeId)
   if (explicitStoreId) return explicitStoreId
@@ -58,6 +275,8 @@ async function resolveCurrentStoreId(storeId?: number | string | null): Promise<
 }
 
 export async function getAdminStoreIdFromToken(): Promise<number | null> {
+  await connection()
+
   const cookieStore = await cookies()
   const adminToken = cookieStore.get('adminAuthToken')?.value
 
@@ -65,36 +284,64 @@ export async function getAdminStoreIdFromToken(): Promise<number | null> {
     return normalizeStoreId(process.env.STORE_ID)
   }
 
-  const base = (process.env.NEXT_PUBLIC_RUST_URL ?? '').trim()
-  if (base) {
-    try {
-      const response = await fetch(new URL('/admin/me', base), {
-        headers: {
-          cookie: `adminAuthToken=${adminToken}`,
-        },
-        cache: 'no-store',
-      })
-
-      if (response.ok) {
-        const admin = await response.json()
-        const fromAdmin = normalizeStoreId(admin?.store_id ?? admin?.storeId)
-        if (fromAdmin) return fromAdmin
-      }
-    } catch {
-      // ignore and fallback to env
-    }
+  const cachedEntry = adminStoreIdCache.get(adminToken)
+  const nowMs = await requestNowMs()
+  if (cachedEntry && cachedEntry.expiresAt > nowMs) {
+    return cachedEntry.value
   }
 
-  const decodedPayload = decodeJwtPayload(adminToken)
-  const fromToken = normalizeStoreId(
-    decodedPayload?.store_id
-    ?? decodedPayload?.storeId
-    ?? decodedPayload?.store
-    ?? decodedPayload?.storeID
-  )
-  if (fromToken) return fromToken
+  const inFlight = adminStoreIdInFlight.get(adminToken)
+  if (inFlight) {
+    return inFlight
+  }
 
-  return null
+  const resolveStorePromise = (async (): Promise<number | null> => {
+    const base = (process.env.NEXT_PUBLIC_RUST_URL ?? '').trim()
+    if (base) {
+      try {
+        const response = await fetchWithTimeout(new URL('/admin/me', base), {
+          headers: {
+            cookie: `adminAuthToken=${adminToken}`,
+          },
+          cache: 'no-store',
+        }, ADMIN_ME_TIMEOUT_MS)
+
+        if (response.ok) {
+          const admin = await response.json()
+          const fromAdmin = normalizeStoreId(admin?.store_id ?? admin?.storeId)
+          if (fromAdmin) return fromAdmin
+        }
+      } catch {
+        // ignore and fallback to token/env
+      }
+    }
+
+    const decodedPayload = decodeJwtPayload(adminToken)
+    const fromToken = normalizeStoreId(
+      decodedPayload?.store_id
+      ?? decodedPayload?.storeId
+      ?? decodedPayload?.store
+      ?? decodedPayload?.storeID
+    )
+    if (fromToken) return fromToken
+
+    return normalizeStoreId(process.env.STORE_ID)
+  })()
+
+  adminStoreIdInFlight.set(adminToken, resolveStorePromise)
+
+  try {
+    const resolved = await resolveStorePromise
+    if (resolved) {
+      adminStoreIdCache.set(adminToken, {
+        value: resolved,
+        expiresAt: nowMs + ADMIN_STORE_CACHE_TTL_MS,
+      })
+    }
+    return resolved
+  } finally {
+    adminStoreIdInFlight.delete(adminToken)
+  }
 }
 
 // Simple hash for demo - in production use bcrypt
@@ -108,8 +355,9 @@ function verifyPassword(password: string, hash: string): boolean {
 
 export async function createSession(userId: string): Promise<string> {
   // In production, use JWT or secure session tokens
-  const token = Buffer.from(JSON.stringify({ userId, createdAt: Date.now() })).toString('base64')
-  
+  const createdAt = await requestNowMs()
+  const token = Buffer.from(JSON.stringify({ userId, createdAt })).toString('base64')
+
   const cookieStore = await cookies()
   cookieStore.set(SESSION_COOKIE, token, {
     httpOnly: true,
@@ -118,7 +366,7 @@ export async function createSession(userId: string): Promise<string> {
     maxAge: 60 * 60 * 24 * 7, // 7 days
     path: '/',
   })
-  
+
   return token
 }
 
@@ -131,11 +379,21 @@ export async function destroySession(): Promise<void> {
 
 export async function getSession(storeId?: number | string | null): Promise<SessionUser | null> {
   try {
+    await connection()
     const cookieStore = await cookies()
     const token = cookieStore.get(SESSION_COOKIE)?.value
     const adminToken = cookieStore.get('adminAuthToken')?.value
     const b2bToken = cookieStore.get('b2bAuthToken')?.value
     const requestedStoreId = await resolveCurrentStoreId(storeId)
+    let adminSessionPromise: Promise<SessionUser | null> | null = null
+
+    const resolveAdminSession = async (): Promise<SessionUser | null> => {
+      if (!adminToken) return null
+      if (!adminSessionPromise) {
+        adminSessionPromise = resolveAdminSessionFromToken(adminToken, requestedStoreId)
+      }
+      return adminSessionPromise
+    }
 
     const resolveB2bFromToken = async (): Promise<SessionUser | null> => {
       if (!b2bToken) return null
@@ -169,21 +427,15 @@ export async function getSession(storeId?: number | string | null): Promise<Sess
         return null
       }
     }
-    
+
     // Fallback: se não tem sessão local, prioriza b2bAuthToken para storefront e depois adminAuthToken
     if (!token) {
       const b2bSession = await resolveB2bFromToken()
       if (b2bSession) return b2bSession
 
-      if (adminToken) {
-        return {
-          id: 'admin-session',
-          name: 'Admin',
-          email: 'admin@local',
-          role: 'ADMIN' as UserRole,
-        }
-      }
-      
+      const adminSession = await resolveAdminSession()
+      if (adminSession) return adminSession
+
       // Fallback em desenvolvimento: retorna um admin se nenhuma sessão foi encontrada
       // Comentado: Preferir mostrar null em vez de fallback fictício
       // if (process.env.NODE_ENV === 'development') {
@@ -194,10 +446,10 @@ export async function getSession(storeId?: number | string | null): Promise<Sess
       //     role: 'ADMIN' as UserRole,
       //   }
       // }
-      
+
       return null
     }
-    
+
     try {
       const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf-8')) as Record<string, unknown>
       const roleRaw = String(decoded.role || decoded.userRole || '').toUpperCase()
@@ -224,27 +476,15 @@ export async function getSession(storeId?: number | string | null): Promise<Sess
       const b2bSession = await resolveB2bFromToken()
       if (b2bSession) return b2bSession
 
-      if (adminToken) {
-        return {
-          id: 'admin-session',
-          name: 'Admin',
-          email: 'admin@local',
-          role: 'ADMIN' as UserRole,
-        }
-      }
+      const adminSession = await resolveAdminSession()
+      if (adminSession) return adminSession
     }
 
     const b2bSession = await resolveB2bFromToken()
     if (b2bSession) return b2bSession
 
-    if (adminToken) {
-      return {
-        id: 'admin-session',
-        name: 'Admin',
-        email: 'admin@local',
-        role: 'ADMIN' as UserRole,
-      }
-    }
+    const adminSession = await resolveAdminSession()
+    if (adminSession) return adminSession
 
     return null
   } catch {
@@ -286,19 +526,7 @@ export async function authenticateUser(email: string, password: string): Promise
     const token = data?.token || cookieToken
     if (!token) return null
 
-    const cookieStore = await cookies()
-    const expiresIn = Number(process.env.JWT_EXP_SECONDS || 604800)
-    const cookieDomain = process.env.COOKIE_DOMAIN?.trim()
-    const isProd = (process.env.APP_ENV || '').toLowerCase() === 'production'
-
-    cookieStore.set('adminAuthToken', token, {
-      httpOnly: true,
-      secure: isProd || Boolean(cookieDomain),
-      sameSite: cookieDomain ? 'none' : 'lax',
-      maxAge: expiresIn,
-      path: '/',
-      domain: cookieDomain || undefined,
-    })
+    await persistAdminAuthCookie(token)
 
     return {
       id: String(data?.admin?.id || 'admin-session'),

@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { cookies } from 'next/headers'
 import { getAdminStoreIdFromToken } from '@/lib/auth'
+import { checkUserPermission } from '@/lib/actions/permissions'
 import type { ApiResponse, Branch, BranchStatus, CreateBranchInput, UpdateBranchInput } from '@/lib/types'
 
 export interface AdminUserOption {
@@ -11,8 +12,6 @@ export interface AdminUserOption {
   email: string
   role: string
 }
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
 
 function resolveBackendBaseUrl(): string | null {
   const base = (process.env.NEXT_PUBLIC_RUST_URL ?? '').trim()
@@ -34,12 +33,26 @@ async function readBackendError(response: Response, fallback: string): Promise<s
       if (payload?.message) return payload.message
       if (payload?.error) return payload.error
     } catch {
-      // plain text
+      return text
     }
     return text
   } catch {
     return fallback
   }
+}
+
+async function canEditSettings(): Promise<boolean> {
+  try {
+    const result = await checkUserPermission('settings.edit')
+    return result?.has_permission === true
+  } catch {
+    return false
+  }
+}
+
+async function ensureCanEditSettings(): Promise<ApiResponse<never> | null> {
+  if (await canEditSettings()) return null
+  return { success: false, error: 'Você não tem permissão para editar configurações' }
 }
 
 function transformBranch(raw: Record<string, unknown>): Branch {
@@ -119,14 +132,6 @@ function buildBranchPayload(input: CreateBranchInput | UpdateBranchInput): Recor
   return payload
 }
 
-// ── Actions ───────────────────────────────────────────────────────────────────
-
-/**
- * Fetch active admin users for the responsible-person dropdown in the branch form.
- * Uses the existing /admin/users endpoint (same as the Users page).
- * Returns a minimal shape — only what the dropdown needs.
- * Backend endpoint: GET /admin/users?store_id={storeId}&perPage=200
- */
 export async function getAdminUsersForSelectAction(): Promise<ApiResponse<AdminUserOption[]>> {
   const base = resolveBackendBaseUrl()
   const storeId = await getAdminStoreIdFromToken()
@@ -180,10 +185,6 @@ export async function getAdminUsersForSelectAction(): Promise<ApiResponse<AdminU
   }
 }
 
-/**
- * List all branches for the current store.
- * Backend endpoint: GET /stores/{storeId}/branches
- */
 export async function getBranchesAction(): Promise<ApiResponse<Branch[]>> {
   const base = resolveBackendBaseUrl()
   const storeId = await getAdminStoreIdFromToken()
@@ -200,7 +201,6 @@ export async function getBranchesAction(): Promise<ApiResponse<Branch[]>> {
     })
 
     if (response.status === 404) {
-      // Backend endpoint not yet implemented — return empty gracefully
       return { success: true, data: [] }
     }
 
@@ -219,7 +219,7 @@ export async function getBranchesAction(): Promise<ApiResponse<Branch[]>> {
     const branches = list
       .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
       .map(transformBranch)
-      .filter(b => b.deletedAt === null)
+      .filter((branch) => branch.deletedAt === null)
 
     return { success: true, data: branches }
   } catch {
@@ -227,10 +227,6 @@ export async function getBranchesAction(): Promise<ApiResponse<Branch[]>> {
   }
 }
 
-/**
- * Get a single branch by id.
- * Backend endpoint: GET /stores/{storeId}/branches/{branchId}
- */
 export async function getBranchAction(branchId: string): Promise<ApiResponse<Branch>> {
   const base = resolveBackendBaseUrl()
   const storeId = await getAdminStoreIdFromToken()
@@ -253,18 +249,15 @@ export async function getBranchAction(branchId: string): Promise<ApiResponse<Bra
 
     const raw = await response.json() as Record<string, unknown>
     return { success: true, data: transformBranch(raw) }
-  } catch (err) {
-    return { success: false, error: String(err) }
+  } catch (error) {
+    return { success: false, error: String(error) }
   }
 }
 
-/**
- * Create a new branch.
- * Backend endpoint: POST /stores/{storeId}/branches
- *
- * Slug must be unique per store and URL-friendly.
- */
 export async function createBranchAction(input: CreateBranchInput): Promise<ApiResponse<Branch>> {
+  const permissionError = await ensureCanEditSettings()
+  if (permissionError) return permissionError
+
   const base = resolveBackendBaseUrl()
   const storeId = await getAdminStoreIdFromToken()
   const token = await getAuthCookie()
@@ -294,19 +287,18 @@ export async function createBranchAction(input: CreateBranchInput): Promise<ApiR
     revalidatePath('/branches')
     revalidatePath('/')
     return { success: true, data: transformBranch(raw) }
-  } catch (err) {
-    return { success: false, error: String(err) }
+  } catch (error) {
+    return { success: false, error: String(error) }
   }
 }
 
-/**
- * Update an existing branch.
- * Backend endpoint: PATCH /stores/{storeId}/branches/{branchId}
- */
 export async function updateBranchAction(
   branchId: string,
   input: UpdateBranchInput,
 ): Promise<ApiResponse<Branch>> {
+  const permissionError = await ensureCanEditSettings()
+  if (permissionError) return permissionError
+
   const base = resolveBackendBaseUrl()
   const storeId = await getAdminStoreIdFromToken()
   const token = await getAuthCookie()
@@ -336,16 +328,15 @@ export async function updateBranchAction(
     revalidatePath('/branches')
     revalidatePath('/')
     return { success: true, data: transformBranch(raw) }
-  } catch (err) {
-    return { success: false, error: String(err) }
+  } catch (error) {
+    return { success: false, error: String(error) }
   }
 }
 
-/**
- * Soft-delete a branch (sets deleted_at, does not remove record).
- * Backend endpoint: DELETE /stores/{storeId}/branches/{branchId}
- */
 export async function deleteBranchAction(branchId: string): Promise<ApiResponse<void>> {
+  const permissionError = await ensureCanEditSettings()
+  if (permissionError) return permissionError
+
   const base = resolveBackendBaseUrl()
   const storeId = await getAdminStoreIdFromToken()
   const token = await getAuthCookie()
@@ -368,15 +359,11 @@ export async function deleteBranchAction(branchId: string): Promise<ApiResponse<
     revalidatePath('/branches')
     revalidatePath('/')
     return { success: true }
-  } catch (err) {
-    return { success: false, error: String(err) }
+  } catch (error) {
+    return { success: false, error: String(error) }
   }
 }
 
-/**
- * Toggle a branch active/inactive.
- * Backend endpoint: PATCH /stores/{storeId}/branches/{branchId}  { status }
- */
 export async function toggleBranchStatusAction(
   branchId: string,
   status: BranchStatus,
@@ -384,12 +371,10 @@ export async function toggleBranchStatusAction(
   return updateBranchAction(branchId, { status })
 }
 
-/**
- * Set a branch as the default for the store.
- * Backend endpoint: POST /stores/{storeId}/branches/{branchId}/set-default
- * Falls back to PATCH if the dedicated endpoint doesn't exist.
- */
 export async function setDefaultBranchAction(branchId: string): Promise<ApiResponse<Branch>> {
+  const permissionError = await ensureCanEditSettings()
+  if (permissionError) return permissionError
+
   const base = resolveBackendBaseUrl()
   const storeId = await getAdminStoreIdFromToken()
   const token = await getAuthCookie()
@@ -399,7 +384,6 @@ export async function setDefaultBranchAction(branchId: string): Promise<ApiRespo
   }
 
   try {
-    // Try dedicated set-default endpoint first
     const response = await fetch(`${base}/stores/${storeId}/branches/${branchId}/set-default`, {
       method: 'POST',
       headers: { cookie: `adminAuthToken=${token}` },
@@ -412,22 +396,19 @@ export async function setDefaultBranchAction(branchId: string): Promise<ApiRespo
       return { success: true, data: transformBranch(raw) }
     }
 
-    // Fallback: PATCH with is_default flag
     return updateBranchAction(branchId, { isDefault: true })
-  } catch (err) {
-    return { success: false, error: String(err) }
+  } catch (error) {
+    return { success: false, error: String(error) }
   }
 }
 
-/**
- * Duplicate an existing branch with a new name and slug.
- * Backend endpoint: POST /stores/{storeId}/branches/{branchId}/duplicate
- * Falls back to client-side create if the dedicated endpoint doesn't exist.
- */
 export async function duplicateBranchAction(
   branchId: string,
   overrides: { name: string; slug: string },
 ): Promise<ApiResponse<Branch>> {
+  const permissionError = await ensureCanEditSettings()
+  if (permissionError) return permissionError
+
   const base = resolveBackendBaseUrl()
   const storeId = await getAdminStoreIdFromToken()
   const token = await getAuthCookie()
@@ -437,7 +418,6 @@ export async function duplicateBranchAction(
   }
 
   try {
-    // Try dedicated duplicate endpoint first
     const response = await fetch(`${base}/stores/${storeId}/branches/${branchId}/duplicate`, {
       method: 'POST',
       headers: {
@@ -454,7 +434,6 @@ export async function duplicateBranchAction(
       return { success: true, data: transformBranch(raw) }
     }
 
-    // Fallback: fetch source and create copy
     const sourceResult = await getBranchAction(branchId)
     if (!sourceResult.success || !sourceResult.data) {
       return { success: false, error: 'Filial de origem não encontrada' }
@@ -464,7 +443,7 @@ export async function duplicateBranchAction(
     return createBranchAction({
       name: overrides.name,
       slug: overrides.slug,
-      status: 'inactive', // duplicates start inactive
+      status: 'inactive',
       isDefault: false,
       city: source.city,
       state: source.state,
@@ -479,7 +458,7 @@ export async function duplicateBranchAction(
       pricingTableId: source.pricingTableId,
       salesChannelCode: source.salesChannelCode,
     })
-  } catch (err) {
-    return { success: false, error: String(err) }
+  } catch (error) {
+    return { success: false, error: String(error) }
   }
 }

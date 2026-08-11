@@ -7,8 +7,9 @@ import {
 } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle, CardToolbar } from '@/components/ui/card'
 import { SectionHeader, currencyTooltipFormatter } from '@/components/dashboard/shared'
-import { fmt } from '@/lib/dashboard-mock-data'
-import { useDashboardData } from '@/contexts/dashboard-data'
+import {
+  MONTHLY_REVENUE, SEASONALITY_BY_CATEGORY, SEASONALITY_ORDERS_BY_MONTH, fmt,
+} from '@/lib/dashboard-mock-data'
 
 const MONTHS = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'] as const
 const MONTH_LABELS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
@@ -21,19 +22,18 @@ const QUARTERLY = [
   { month: 'Q4 (Out–Dez)', requested: 293700, fulfilled: 250400, orders: 96 },
 ]
 
+// Max value across all heatmap cells
+const allValues = SEASONALITY_BY_CATEGORY.flatMap(row =>
+  MONTHS.map(m => row[m])
+)
+const maxVal = Math.max(...allValues)
+
+const avgOrders =
+  SEASONALITY_ORDERS_BY_MONTH.reduce((s, d) => s + d.orders, 0) /
+  SEASONALITY_ORDERS_BY_MONTH.length
+
 export default function DashboardSeasonality() {
   const [view, setView] = useState<'monthly' | 'quarterly'>('monthly')
-  const { monthlyRevenue: MONTHLY_REVENUE, seasonalityByCategory: SEASONALITY_BY_CATEGORY, seasonalityOrdersByMonth: SEASONALITY_ORDERS_BY_MONTH } = useDashboardData()
-
-  const allValues = SEASONALITY_BY_CATEGORY.flatMap(row =>
-    MONTHS.map(m => row[m])
-  )
-  const maxVal = allValues.length > 0 ? Math.max(...allValues) : 1
-
-  const avgOrders =
-    SEASONALITY_ORDERS_BY_MONTH.length > 0
-      ? SEASONALITY_ORDERS_BY_MONTH.reduce((s, d) => s + d.orders, 0) / SEASONALITY_ORDERS_BY_MONTH.length
-      : 0
 
   const chartData = view === 'monthly' ? MONTHLY_REVENUE : QUARTERLY
 
