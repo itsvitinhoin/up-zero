@@ -33,32 +33,32 @@ export async function POST(req: NextRequest) {
     optInConfirmed?: boolean
   }
 
-  const state = getState()
+  const state = await getState()
   const phoneNumber = state.phoneNumbers.find((item) => item.id === state.integration.phoneNumberId)
   const template = state.templates.find((item) => item.id === (body.templateId ?? state.integration.selectedTemplateId))
   const recipient = normalizePhone(body.recipientPhone ?? '')
 
   if (!state.integration.phoneNumberId || !phoneNumber) {
     const error = 'No WhatsApp phone number is selected.'
-    addLog({ type: 'message_sent', status: 'failed', description: `Failed: ${error}`, recommendedAction: 'Select a connected WhatsApp phone number.' })
+    await addLog({ type: 'message_sent', status: 'failed', description: `Failed: ${error}`, recommendedAction: 'Select a connected WhatsApp phone number.' })
     return NextResponse.json({ ok: false, error }, { status: 400 })
   }
 
   if (!template || template.status !== 'APPROVED') {
     const error = 'An APPROVED template is required to initiate a WhatsApp conversation.'
-    addLog({ type: 'message_sent', status: 'failed', description: `Failed: ${error}`, recommendedAction: 'Select an approved template.' })
+    await addLog({ type: 'message_sent', status: 'failed', description: `Failed: ${error}`, recommendedAction: 'Select an approved template.' })
     return NextResponse.json({ ok: false, error }, { status: 400 })
   }
 
   if (!recipient) {
     const error = 'Recipient WhatsApp number is invalid.'
-    addLog({ type: 'message_sent', status: 'failed', description: `Failed: ${error}`, recommendedAction: 'Use country code + area code + phone number.' })
+    await addLog({ type: 'message_sent', status: 'failed', description: `Failed: ${error}`, recommendedAction: 'Use country code + area code + phone number.' })
     return NextResponse.json({ ok: false, error }, { status: 400 })
   }
 
   if (!body.optInConfirmed) {
     const error = 'WhatsApp opt-in confirmation is required before sending.'
-    addLog({ type: 'message_sent', status: 'failed', description: `Failed: ${error}`, safePayload: { recipient: maskPhone(recipient) }, recommendedAction: 'Confirm the recipient opted in to WhatsApp messages.' })
+    await addLog({ type: 'message_sent', status: 'failed', description: `Failed: ${error}`, safePayload: { recipient: maskPhone(recipient) }, recommendedAction: 'Confirm the recipient opted in to WhatsApp messages.' })
     return NextResponse.json({ ok: false, error }, { status: 400 })
   }
 
@@ -73,7 +73,7 @@ export async function POST(req: NextRequest) {
 
   if (!result.ok) {
     const action = recommendedSendAction(result.error)
-    addLog({
+    await addLog({
       type: 'message_sent',
       status: 'failed',
       description: 'Failed: Meta did not accept the test WhatsApp message.',
@@ -85,8 +85,8 @@ export async function POST(req: NextRequest) {
   }
 
   const messageId = result.data?.messages?.[0]?.id ?? createId('wamid')
-  updateIntegration({ lastTestMessageId: messageId })
-  addInboxMessage({
+  await updateIntegration({ lastTestMessageId: messageId })
+  await addInboxMessage({
     id: createId('msg'),
     metaMessageId: messageId,
     conversationId: `conv-${recipient}`,
@@ -98,7 +98,7 @@ export async function POST(req: NextRequest) {
     timestamp: new Date().toISOString(),
     templateId: template.id,
   })
-  addLog({
+  await addLog({
     type: 'message_sent',
     status: 'success',
     description: 'WhatsApp template message sent through Meta.',

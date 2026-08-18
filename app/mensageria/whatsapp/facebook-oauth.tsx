@@ -10,15 +10,11 @@ import { cn } from '@/lib/utils'
 import type { WaOnboardingType } from '@/lib/whatsapp/types'
 import type { WabaVerifyResult } from '@/app/api/mensageria/connections/verify-waba/route'
 
-// ─── Required scopes for this flow ───────────────────────────────────────────
-// These must be configured in Meta for Developers → Your App → Embedded Signup
-// (under NEXT_PUBLIC_FACEBOOK_CONFIG_ID), AND must have Advanced Access approved
-// in App Review for production traffic.
-
-const REQUIRED_SCOPES = [
+// The Configuration ID owns the permission set for Embedded Signup. Do not pass
+// a manual `scope` to FB.login: permissions that are valid in other Facebook
+// Login flows can be rejected by the WhatsApp configuration before signup opens.
+const EMBEDDED_SIGNUP_CONFIG_PERMISSIONS = [
   'public_profile',
-  'email',
-  'business_management',
   'whatsapp_business_management',
   'whatsapp_business_messaging',
 ]
@@ -102,6 +98,10 @@ export interface WaOAuthCredentials {
   onboardingType: WaOnboardingType
   /** Raw platform_type from Meta phone number API */
   platformType?: string
+  /** Health fields returned by the Meta phone-number endpoint */
+  status?: string
+  qualityRating?: string
+  codeVerificationStatus?: string
   /** Sanitized scopes returned by /debug_token when available. No token value is exposed. */
   grantedPermissions?: string[]
 }
@@ -125,6 +125,7 @@ function uniquePermissions(...groups: Array<Array<string | undefined> | undefine
 export function FacebookOAuthButton({ onSuccess, isReconnect = false, className }: Props) {
   const appId = process.env.NEXT_PUBLIC_FACEBOOK_APP_ID
   const configId = process.env.NEXT_PUBLIC_FACEBOOK_CONFIG_ID
+  const graphVersion = process.env.NEXT_PUBLIC_META_GRAPH_VERSION || 'v24.0'
 
   const [step, setStep] = useState<FlowStep>(!appId || !configId ? 'no-config' : 'ready')
   const [error, setError] = useState('')
@@ -224,7 +225,7 @@ export function FacebookOAuthButton({ onSuccess, isReconnect = false, className 
         appId,
         cookie: true,
         xfbml: false,
-        version: 'v19.0',
+        version: graphVersion,
       })
     }
 
@@ -267,13 +268,13 @@ export function FacebookOAuthButton({ onSuccess, isReconnect = false, className 
     document.head.appendChild(script)
 
     return () => { cancelled = true }
-  }, [appId, step])
+  }, [appId, graphVersion, step])
 
   // ── Server-side WABA verification ────────────────────────────────────────
   async function fetchClientGrantedPermissions(accessToken: string | null) {
     if (!accessToken) return [] as string[]
     try {
-      const response = await fetch(`https://graph.facebook.com/v19.0/me/permissions?access_token=${encodeURIComponent(accessToken)}`)
+      const response = await fetch(`https://graph.facebook.com/${graphVersion}/me/permissions?access_token=${encodeURIComponent(accessToken)}`)
       const data = await response.json() as FacebookPermissionResponse
       return (data.data ?? []).filter((item) => item.status === 'granted' && item.permission).map((item) => item.permission!)
     } catch (error) {
@@ -393,6 +394,9 @@ export function FacebookOAuthButton({ onSuccess, isReconnect = false, className 
           businessId: info.business_id,
           onboardingType,
           platformType: result.phoneDetails?.platformType,
+          status: result.phoneDetails?.status,
+          qualityRating: result.phoneDetails?.qualityRating,
+          codeVerificationStatus: result.phoneDetails?.codeVerificationStatus,
           grantedPermissions: uniquePermissions(result.tokenDiag?.grantedScopes, clientGrantedPermissions),
         }
 
@@ -467,7 +471,8 @@ export function FacebookOAuthButton({ onSuccess, isReconnect = false, className 
     addStep(1, 'FB.login chamado', 'info', {
       app_id: appId ?? null,
       config_id: configId ?? null,
-      scope: REQUIRED_SCOPES.join(', '),
+      permissions_source: 'Meta Embedded Signup Configuration ID',
+      expected_permissions: EMBEDDED_SIGNUP_CONFIG_PERMISSIONS.join(', '),
     })
 
     // Step 2: Embedded Signup popup will open
@@ -542,8 +547,8 @@ export function FacebookOAuthButton({ onSuccess, isReconnect = false, className 
         config_id: configId,
         response_type: 'code',
         override_default_response_type: true,
-        // Explicitly request all required scopes — merged with config_id's permissions
-        scope: REQUIRED_SCOPES.join(','),
+        // The official Meta sample delegates permissions to config_id. Supplying
+        // `email` or `business_management` here causes an Invalid Scopes dialog.
         extras: {
           setup: {},
           featureType: '',
@@ -642,28 +647,11 @@ export function FacebookOAuthButton({ onSuccess, isReconnect = false, className 
             <span>{error}</span>
           </div>
 
-          {/* Diagnostic: business_management absent from code_exchange token — informational only */}
-          {verifyResult?.tokenDiag?.hasBusinessManagement === false && (
-            <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-700/40 dark:bg-amber-900/20 px-3 py-2.5 text-xs text-amber-800 dark:text-amber-300 leading-snug">
-              <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-              <div className="space-y-1">
-                <span className="font-medium">
-                  <code className="font-mono">business_management</code> not found in the code_exchange token (diagnostic only).
-                </span>
-                <span className="block font-normal">
-                  This token is used for diagnostics only — WABA API calls use <code className="font-mono">FACEBOOK_SYSTEM_USER_TOKEN</code>.
-                  {' '}If the system user token has this scope, the connection may still succeed.
-                  {' '}To resolve: ensure your Config ID requests <code className="font-mono">business_management</code> and Advanced Access is approved.
-                </span>
-              </div>
-            </div>
-          )}
-
           {/* Advanced Access warning — shown for explicit advanced_access_missing failure */}
           {verifyResult?.failureReason === 'advanced_access_missing' && (
             <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-700/50 dark:bg-amber-900/20 px-3 py-2.5 text-xs text-amber-800 dark:text-amber-300 leading-snug">
               <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-              <span><code className="font-mono">business_management</code> requires Advanced Access approval for this app. Request it at: <strong>Meta for Developers → App Review → Permissions and Features</strong>.</span>
+              <span><code className="font-mono">whatsapp_business_management</code> requer Advanced Access para uso em produção. Solicite em: <strong>Meta for Developers → App Review → Permissions and Features</strong>.</span>
             </div>
           )}
 
@@ -1124,8 +1112,6 @@ function VerifyDiagnosticPanel({
               <div className="space-y-0.5 font-mono text-[10px]">
                 <div className="text-[9px] uppercase tracking-wide text-muted-foreground mb-1">Solicitados / Concedidos</div>
                 <ScopeRow label="public_profile" granted={td.grantedScopes.includes('public_profile')} />
-                <ScopeRow label="email" granted={td.grantedScopes.includes('email')} />
-                <ScopeRow label="business_management" granted={td.hasBusinessManagement} note={!td.hasBusinessManagement ? 'Advanced Access required' : undefined} />
                 <ScopeRow label="whatsapp_business_management" granted={td.hasWhatsappManagement} />
                 <ScopeRow label="whatsapp_business_messaging" granted={td.hasWhatsappMessaging} />
               </div>
@@ -1140,12 +1126,6 @@ function VerifyDiagnosticPanel({
               {td.missingScopes.length > 0 && (
                 <div className="px-2 py-1 rounded bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 text-[10px]">
                   <span className="font-semibold">Ausentes:</span> {td.missingScopes.join(', ')}
-                </div>
-              )}
-              {td.missingScopes.includes('business_management') && (
-                <div className="px-2 py-1 rounded bg-rose-50 dark:bg-rose-900/20 text-rose-700 dark:text-rose-300 text-[10px] leading-snug">
-                  <span className="font-semibold">business_management requires Advanced Access approval for this app.</span>{' '}
-                  Request it at: Meta for Developers → App Review → Permissions and Features.
                 </div>
               )}
             </div>

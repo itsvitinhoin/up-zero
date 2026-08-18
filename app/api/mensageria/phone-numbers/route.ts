@@ -10,7 +10,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Você não tem permissão para visualizar mensageria' }, { status: 403 })
   }
 
-  const state = getState()
+  const state = await getState()
   const wabaId = new URL(req.url).searchParams.get('wabaId') ?? state.integration.wabaId
 
   if (!wabaId) {
@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
   const result = await listPhoneNumbers(wabaId)
 
   if (!result.ok) {
-    addLog({
+    await addLog({
       type: 'phone_selected',
       status: 'failed',
       description: 'Failed: WhatsApp phone numbers could not be loaded from Meta.',
@@ -31,10 +31,19 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ data: state.phoneNumbers, error: result.error, source: 'local' })
   }
 
-  updateState((next) => {
-    next.phoneNumbers = result.data ?? []
+  await updateState((next) => {
+    const removedIds = new Set(next.removedPhoneNumberIds)
+    const incoming = (result.data ?? [])
+      .filter((phone) => !removedIds.has(phone.id))
+      .map((phone) => ({ ...phone, wabaId }))
+    const incomingIds = new Set(incoming.map((phone) => phone.id))
+    next.phoneNumbers = [
+      ...incoming,
+      ...next.phoneNumbers.filter((phone) => phone.wabaId !== wabaId && !incomingIds.has(phone.id)),
+    ]
     next.integration.lastSyncAt = new Date().toISOString()
   })
-  addLog({ type: 'phone_selected', status: 'info', description: 'WhatsApp phone numbers loaded from Meta.', safePayload: { wabaId: maskId(wabaId), count: result.data?.length ?? 0 } })
-  return NextResponse.json({ data: result.data ?? [], source: 'meta' })
+  await addLog({ type: 'phone_selected', status: 'info', description: 'WhatsApp phone numbers loaded from Meta.', safePayload: { wabaId: maskId(wabaId), count: result.data?.length ?? 0 } })
+  const next = await getState()
+  return NextResponse.json({ data: next.phoneNumbers.filter((phone) => phone.wabaId === wabaId), source: 'meta' })
 }

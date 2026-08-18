@@ -196,7 +196,11 @@ export default async function RootLayout({
 
   const requestHeaders = await headers()
   const requestPath = String(requestHeaders.get('x-next-url') || requestHeaders.get('next-url') || '')
-  const isPublicRequestPath = requestPath.startsWith('/login') || requestPath.startsWith('/privacy')
+  const isPublicRequestPath =
+    requestPath.startsWith('/login')
+    || requestPath.startsWith('/privacy')
+    || requestPath.startsWith('/terms')
+    || requestPath.startsWith('/data-deletion')
   const isSettingsRoute = requestPath.startsWith('/settings')
 
   // Paraleliza session, cookies e storeId

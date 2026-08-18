@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState, useTransition } from 'react'
+import { useRouter } from 'next/navigation'
 import {
   CheckCircle2,
   Copy,
@@ -9,8 +10,10 @@ import {
   MapPin,
   Pencil,
   Plus,
+  RefreshCw,
   Save,
   Settings,
+  ShieldCheck,
   Sparkles,
   Trash2,
   UsersRound,
@@ -35,13 +38,14 @@ import {
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import { updateB2CSettingsAction } from '@/lib/actions/b2c-leads'
+import { syncB2CResellerSourceAction, updateB2CSettingsAction } from '@/lib/actions/b2c-leads'
 import type {
   B2CDistributionMode,
   B2CDistributionSettings,
   B2CResellerLevel,
   B2CResellerList,
   B2CResellerListPriority,
+  B2CResellerDataSource,
   EligibleB2CReseller,
 } from '@/lib/b2c-leads/types'
 import { cn } from '@/lib/utils'
@@ -69,15 +73,19 @@ const PRIORITY_TONES: Record<B2CResellerListPriority, string> = {
 export function AdminB2CSettingsPageClient({
   initialSettings,
   resellers,
+  resellerSource,
   initialError,
 }: {
   initialSettings: B2CDistributionSettings
   resellers: EligibleB2CReseller[]
+  resellerSource: B2CResellerDataSource | null
   initialError: string | null
 }) {
+  const router = useRouter()
   const [settings, setSettings] = useState(initialSettings)
   const [editingList, setEditingList] = useState<B2CResellerList | null>(null)
   const [isPending, startTransition] = useTransition()
+  const [isSyncPending, startSyncTransition] = useTransition()
 
   const activeLists = useMemo(() => settings.resellerLists.filter((list) => list.enabled), [settings.resellerLists])
   const activeResellerIds = useMemo(
@@ -145,6 +153,18 @@ export function AdminB2CSettingsPageClient({
     })
   }
 
+  const syncResellers = () => {
+    startSyncTransition(async () => {
+      const result = await syncB2CResellerSourceAction()
+      if (!result.success) {
+        toast.error(result.error || 'Não foi possível sincronizar os revendedores.')
+        return
+      }
+      toast.success(`${result.data?.count || 0} revendedores sincronizados em modo somente leitura.`)
+      router.refresh()
+    })
+  }
+
   return (
     <div className="space-y-6 p-6 pb-28 lg:p-8 lg:pb-28">
       <div>
@@ -158,6 +178,39 @@ export function AdminB2CSettingsPageClient({
       {initialError ? (
         <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">{initialError}</div>
       ) : null}
+
+      <Card className="border-emerald-200 bg-emerald-50/60 dark:border-emerald-900 dark:bg-emerald-950/20">
+        <CardContent className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-200">
+              <ShieldCheck className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm font-medium">Fonte de revendedores em modo seguro</p>
+                <Badge variant="outline" className="rounded-full border-emerald-300 bg-background/70 text-emerald-800 dark:border-emerald-800 dark:text-emerald-200">
+                  {resellerSource?.source === 'API_READ_ONLY' ? 'API real · somente leitura' : 'Dados simulados locais'}
+                </Badge>
+              </div>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                {resellerSource?.source === 'API_READ_ONLY'
+                  ? `${resellerSource.count} revendedores disponíveis. Nenhum dado bruto ou alteração é enviado para a plataforma real.`
+                  : `${resellers.length} revendedores prontos para simulação. Cadastros, pedidos e atribuições B2C ficam apenas no sandbox.`}
+              </p>
+            </div>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            className="shrink-0 rounded-full"
+            disabled={!resellerSource?.configured || isSyncPending}
+            onClick={syncResellers}
+          >
+            <RefreshCw className={cn('mr-2 h-4 w-4', isSyncPending && 'animate-spin')} />
+            {resellerSource?.configured ? 'Sincronizar agora' : 'API ainda não configurada'}
+          </Button>
+        </CardContent>
+      </Card>
 
       <Card id="distribution-mode" className="scroll-mt-6 border-border/50">
         <CardHeader>

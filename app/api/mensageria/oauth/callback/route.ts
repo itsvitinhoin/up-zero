@@ -14,8 +14,8 @@ export async function GET(req: NextRequest) {
   const error = params.get('error') || params.get('error_description')
 
   if (error) {
-    updateIntegration({ oauthStatus: 'failed', lastError: { message: error } })
-    addLog({
+    await updateIntegration({ oauthStatus: 'failed', lastError: { message: error } })
+    await addLog({
       type: 'oauth_completed',
       status: 'failed',
       description: 'Failed: Meta OAuth callback returned an error.',
@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(new URL('/mensageria?tab=connection', req.url))
   }
 
-  addLog({
+  await addLog({
     type: 'oauth_completed',
     status: hasCode ? 'info' : 'needs_attention',
     description: hasCode

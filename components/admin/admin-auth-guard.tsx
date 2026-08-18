@@ -12,7 +12,11 @@ export default function AdminAuthGuard({ isLoggedIn, children }: AdminAuthGuardP
   const pathname = usePathname()
   const router = useRouter()
 
-  const isPublicRoute = pathname === '/login' || pathname === '/privacy'
+  const isPublicRoute =
+    pathname === '/login'
+    || pathname === '/privacy'
+    || pathname === '/terms'
+    || pathname === '/data-deletion'
 
   useEffect(() => {
     if (!isLoggedIn && !isPublicRoute) {

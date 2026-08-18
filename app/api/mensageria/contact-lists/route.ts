@@ -11,7 +11,7 @@ export async function GET() {
     return NextResponse.json({ error: 'Você não tem permissão para visualizar mensageria' }, { status: 403 })
   }
 
-  const state = getState()
+  const state = await getState()
   return NextResponse.json({ contacts: state.contacts, lists: state.contactLists })
 }
 
@@ -68,14 +68,14 @@ export async function POST(req: NextRequest) {
       createdAt: now,
       updatedAt: now,
     }
-    saveContact(contact)
-    addLog({
+    await saveContact(contact)
+    await addLog({
       type: 'contact_created',
       status: contact.optInWhatsapp ? 'success' : 'needs_attention',
       description: contact.optInWhatsapp ? 'Contact saved with WhatsApp opt-in.' : 'Contact saved without WhatsApp opt-in.',
       recommendedAction: contact.optInWhatsapp ? 'Add the contact to a list or campaign.' : 'Do not send campaigns until opt-in is confirmed.',
     })
-    return NextResponse.json(getState())
+    return NextResponse.json(await getState())
   }
 
   const list: ContactList = {
@@ -87,15 +87,15 @@ export async function POST(req: NextRequest) {
     createdAt: now,
     updatedAt: now,
   }
-  saveContactList(list)
-  addLog({
+  await saveContactList(list)
+  await addLog({
     type: 'contact_list_created',
     status: 'success',
     description: 'Contact list saved.',
     safePayload: { name: list.name, contacts: list.contactIds.length },
     recommendedAction: 'Associate this list with a campaign and verify opt-in before sending.',
   })
-  return NextResponse.json(getState())
+  return NextResponse.json(await getState())
 }
 
 export async function PATCH(req: NextRequest) {
@@ -107,11 +107,11 @@ export async function PATCH(req: NextRequest) {
   const body = await req.json().catch(() => ({})) as Partial<ContactList> & { id?: string }
   if (!body.id) return NextResponse.json({ error: 'List id is required.' }, { status: 400 })
 
-  const existing = getState().contactLists.find((list) => list.id === body.id)
+  const existing = (await getState()).contactLists.find((list) => list.id === body.id)
   if (!existing) return NextResponse.json({ error: 'List not found.' }, { status: 404 })
 
-  saveContactList({ ...existing, ...body, updatedAt: new Date().toISOString() })
-  return NextResponse.json(getState())
+  await saveContactList({ ...existing, ...body, updatedAt: new Date().toISOString() })
+  return NextResponse.json(await getState())
 }
 
 export async function DELETE(req: NextRequest) {
@@ -122,6 +122,6 @@ export async function DELETE(req: NextRequest) {
 
   const { id } = await req.json().catch(() => ({})) as { id?: string }
   if (!id) return NextResponse.json({ error: 'List id is required.' }, { status: 400 })
-  deleteContactList(id)
-  return NextResponse.json(getState())
+  await deleteContactList(id)
+  return NextResponse.json(await getState())
 }

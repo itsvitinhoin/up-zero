@@ -1,4 +1,5 @@
 import http from 'node:http'
+import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { loadEnvFile } from 'node:process'
@@ -175,11 +176,19 @@ function loadState() {
     return {
       ...parsed,
       store: parsed.store || {},
+      products: Array.isArray(parsed.products) ? parsed.products : [],
+      clients: Array.isArray(parsed.clients) ? parsed.clients : [],
       b2cLeads: Array.isArray(parsed.b2cLeads) ? parsed.b2cLeads : [],
       b2cSettings: normalizeB2CSettings(parsed.b2cSettings),
     }
   } catch {
-    return { store: {}, b2cLeads: [], b2cSettings: normalizeB2CSettings(null) }
+    return {
+      store: {},
+      products: [],
+      clients: [],
+      b2cLeads: [],
+      b2cSettings: normalizeB2CSettings(null),
+    }
   }
 }
 
@@ -205,6 +214,541 @@ function uniqueStrings(value) {
 function finiteNonNegative(value, fallback = 0) {
   const number = Number(value)
   return Number.isFinite(number) && number >= 0 ? number : fallback
+}
+
+function positiveInteger(value, fallback = null) {
+  const number = Number(value)
+  return Number.isInteger(number) && number > 0 ? number : fallback
+}
+
+function slugify(value) {
+  return normalizeText(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
+const SAFE_RESELLER_CITY_COORDINATES = {
+  'sao paulo|SP': [-23.5505, -46.6333],
+  'campinas|SP': [-22.9056, -47.0608],
+  'rio de janeiro|RJ': [-22.9068, -43.1729],
+  'belo horizonte|MG': [-19.9167, -43.9345],
+  'salvador|BA': [-12.9777, -38.5016],
+  'recife|PE': [-8.0476, -34.877],
+  'fortaleza|CE': [-3.7319, -38.5267],
+  'brasilia|DF': [-15.7939, -47.8828],
+  'curitiba|PR': [-25.4284, -49.2733],
+  'porto alegre|RS': [-30.0346, -51.2177],
+}
+
+const SAFE_SANDBOX_RESELLERS = [
+  {
+    id: '9001',
+    name: 'Cliente Demo B2B',
+    email: 'cliente.demo@upvitrine.local',
+    phone: '11999999999',
+    city: 'São Paulo',
+    state: 'SP',
+    address: 'Avenida Paulista, 1000',
+    neighborhood: 'Bela Vista',
+    latitude: -23.5642,
+    longitude: -46.6527,
+    specialties: ['Conjuntos', 'Vestidos', 'Lançamentos'],
+    orderedProducts: ['03021-conjunto', '03042-vestido', '03019-blusa'],
+    ordersCount: 12,
+    totalSpent: 18940,
+    lastOrderAt: '2026-08-05T12:00:00.000Z',
+    eligible: true,
+    eligibilityReason: 'Conta local conectada à caixa de oportunidades da vitrine',
+  },
+  {
+    id: 'safe-reseller-2',
+    name: 'Aurora Concept',
+    email: 'aurora@sandbox.local',
+    phone: '11987654321',
+    city: 'São Paulo',
+    state: 'SP',
+    address: 'Rua das Palmeiras, 245',
+    neighborhood: 'Jardins',
+    latitude: -23.5614,
+    longitude: -46.6726,
+    specialties: ['Moda feminina', 'Festa', 'Conjuntos'],
+    orderedProducts: ['03021-conjunto', '03042-vestido', '03073-blusa'],
+    ordersCount: 5,
+    totalSpent: 8420,
+    lastOrderAt: '2026-07-29T12:00:00.000Z',
+    eligible: true,
+    eligibilityReason: 'Revendedor simulado aprovado e com pedidos',
+  },
+  {
+    id: 'safe-reseller-3',
+    name: 'Casa Nativa',
+    email: 'casa.nativa@sandbox.local',
+    phone: '31988776655',
+    city: 'Belo Horizonte',
+    state: 'MG',
+    address: 'Rua da Bahia, 1200',
+    neighborhood: 'Centro',
+    latitude: -19.9256,
+    longitude: -43.9387,
+    specialties: ['Multimarcas', 'Vestidos', 'Linha nobre'],
+    orderedProducts: ['03042-vestido', '03019-blusa', '03024-blusa'],
+    ordersCount: 9,
+    totalSpent: 15490,
+    lastOrderAt: '2026-07-17T12:00:00.000Z',
+    eligible: true,
+    eligibilityReason: 'Revendedor simulado aprovado e com pedidos',
+  },
+]
+
+function normalizeLookup(value) {
+  return normalizeText(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+}
+
+function safeResellerConfig() {
+  const mode = normalizeText(process.env.SAFE_RESELLER_MODE).toLowerCase() === 'api' ? 'API' : 'SANDBOX'
+  const apiUrl = normalizeText(process.env.SAFE_RESELLER_API_URL)
+  const apiKey = normalizeText(process.env.SAFE_RESELLER_API_KEY || process.env.UPZERO_API_KEY)
+  const authMode = normalizeText(process.env.SAFE_RESELLER_API_AUTH).toLowerCase() === 'bearer' ? 'bearer' : 'x-api-key'
+  const storeId = normalizeText(process.env.SAFE_RESELLER_API_STORE_ID)
+  return {
+    mode,
+    apiUrl,
+    apiKey,
+    authMode,
+    storeId,
+    configured: mode === 'API' && Boolean(apiUrl && apiKey),
+  }
+}
+
+function safeCollection(payload) {
+  if (Array.isArray(payload)) return payload
+  if (!payload || typeof payload !== 'object') return []
+  for (const key of ['items', 'data', 'customers', 'resellers', 'results']) {
+    if (Array.isArray(payload[key])) return payload[key]
+  }
+  return []
+}
+
+function safeResellerCoordinates(city, state, index) {
+  const key = `${normalizeLookup(city)}|${normalizeText(state).toUpperCase()}`
+  const center = SAFE_RESELLER_CITY_COORDINATES[key] || SAFE_RESELLER_CITY_COORDINATES['sao paulo|SP']
+  const offset = ((index % 7) - 3) * 0.006
+  return { latitude: center[0] + offset, longitude: center[1] - offset }
+}
+
+function normalizeSafeReseller(customer, index) {
+  const wholesale = customer?.wholesale_profile || customer?.wholesaleProfile || customer?.profile || {}
+  const id = normalizeText(customer?.id || customer?.customer_id || wholesale?.customer_id)
+  const name = normalizeText(
+    wholesale?.trade_name
+    || wholesale?.tradeName
+    || wholesale?.company_name
+    || wholesale?.companyName
+    || customer?.trade_name
+    || customer?.company_name
+    || customer?.name,
+  )
+  if (!id || !name) return null
+
+  const city = normalizeText(wholesale?.address_city || wholesale?.city || customer?.address_city || customer?.city)
+  const stateCode = normalizeText(wholesale?.address_state || wholesale?.state || customer?.address_state || customer?.state).toUpperCase().slice(0, 2)
+  const coordinates = safeResellerCoordinates(city, stateCode, index)
+  const status = normalizeText(customer?.status || wholesale?.status || 'APPROVED').toUpperCase()
+  const ordersCount = finiteNonNegative(customer?.orders_count ?? customer?.ordersCount ?? customer?.order_count)
+  const totalSpent = finiteNonNegative(customer?.total_spent ?? customer?.totalSpent ?? customer?.lifetime_value)
+  const lastOrderAt = customer?.last_order_at || customer?.lastOrderAt || null
+  const specialties = uniqueStrings(customer?.specialties || wholesale?.specialties || customer?.segments || wholesale?.segment)
+  const orderedProducts = uniqueStrings(customer?.ordered_products || customer?.orderedProducts || customer?.product_slugs)
+  const eligible = status === 'APPROVED'
+
+  return {
+    id,
+    name,
+    email: normalizeText(customer?.email) || null,
+    phone: digitsOnly(customer?.phone || wholesale?.phone) || null,
+    city: city || null,
+    state: stateCode || null,
+    document: '',
+    address: normalizeText(wholesale?.address_street || customer?.address_street || customer?.address) || (city ? `Atendimento em ${city}` : 'Atendimento online'),
+    neighborhood: normalizeText(wholesale?.address_neighborhood || customer?.address_neighborhood || customer?.neighborhood) || 'Revendedor autorizado',
+    latitude: Number.isFinite(Number(customer?.latitude || wholesale?.latitude)) ? Number(customer?.latitude || wholesale?.latitude) : coordinates.latitude,
+    longitude: Number.isFinite(Number(customer?.longitude || wholesale?.longitude)) ? Number(customer?.longitude || wholesale?.longitude) : coordinates.longitude,
+    specialties: specialties.length > 0 ? specialties : ['Revendedor autorizado'],
+    orderedProducts,
+    ordersCount,
+    totalSpent,
+    lastOrderAt,
+    eligible,
+    eligibilityReason: eligible ? 'Cadastro aprovado na fonte somente leitura' : `Status na fonte: ${status || 'não informado'}`,
+  }
+}
+
+function safeDirectoryFallback() {
+  const saved = state.b2cSettings?.resellerDirectory || []
+  const byId = new Map(SAFE_SANDBOX_RESELLERS.map((reseller) => [String(reseller.id), reseller]))
+  for (const reseller of saved) {
+    const id = String(reseller.id)
+    byId.set(id, { ...(byId.get(id) || {}), ...reseller })
+  }
+  return [...byId.values()]
+}
+
+async function readSafeResellerDirectory({ requireApi = false } = {}) {
+  const config = safeResellerConfig()
+  if (!config.configured) {
+    if (requireApi) {
+      return {
+        ok: false,
+        source: 'SANDBOX',
+        configured: false,
+        error: 'Configure SAFE_RESELLER_MODE=api, SAFE_RESELLER_API_URL e a chave local para sincronizar.',
+        resellers: safeDirectoryFallback(),
+      }
+    }
+    return { ok: true, source: 'SANDBOX', configured: false, resellers: safeDirectoryFallback() }
+  }
+
+  try {
+    const url = new URL(config.apiUrl)
+    if (url.protocol !== 'https:') throw new Error('A URL da fonte real precisa usar HTTPS.')
+    if (config.storeId && !url.searchParams.has('store_id')) url.searchParams.set('store_id', config.storeId)
+    const headers = { Accept: 'application/json' }
+    if (config.authMode === 'bearer') headers.Authorization = `Bearer ${config.apiKey}`
+    else headers['x-api-key'] = config.apiKey
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers,
+      redirect: 'error',
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!response.ok) throw new Error(`A fonte respondeu HTTP ${response.status}.`)
+    const payload = await response.json()
+    const resellers = safeCollection(payload)
+      .map((customer, index) => normalizeSafeReseller(customer, index))
+      .filter(Boolean)
+    if (resellers.length === 0) throw new Error('A fonte não retornou revendedores reconhecíveis.')
+    return { ok: true, source: 'API_READ_ONLY', configured: true, resellers }
+  } catch (error) {
+    return {
+      ok: false,
+      source: 'SANDBOX',
+      configured: true,
+      error: error instanceof Error ? error.message : 'Falha ao consultar a fonte somente leitura.',
+      resellers: safeDirectoryFallback(),
+    }
+  }
+}
+
+function publicSafeReseller(reseller) {
+  return {
+    id: String(reseller.id),
+    name: normalizeText(reseller.name),
+    phone: digitsOnly(reseller.phone),
+    city: normalizeText(reseller.city),
+    state: normalizeText(reseller.state).toUpperCase().slice(0, 2),
+    address: normalizeText(reseller.address) || (reseller.city ? `Atendimento em ${reseller.city}` : 'Atendimento online'),
+    neighborhood: normalizeText(reseller.neighborhood) || 'Revendedor autorizado',
+    latitude: Number(reseller.latitude),
+    longitude: Number(reseller.longitude),
+    online: reseller.online !== false,
+    specialties: uniqueStrings(reseller.specialties),
+    orderedProducts: uniqueStrings(reseller.orderedProducts),
+    ordersCount: finiteNonNegative(reseller.ordersCount),
+  }
+}
+
+function nextStateId(collection, floor) {
+  const highest = (Array.isArray(collection) ? collection : []).reduce((max, entry) => {
+    const id = positiveInteger(entry?.id, 0)
+    return Math.max(max, id)
+  }, floor)
+  return highest + 1
+}
+
+function hashSandboxPassword(password) {
+  const salt = randomBytes(16)
+  const digest = scryptSync(String(password), salt, 32)
+  return `${salt.toString('hex')}:${digest.toString('hex')}`
+}
+
+function verifySandboxPassword(password, storedHash) {
+  try {
+    const [saltHex, digestHex] = String(storedHash || '').split(':')
+    if (!saltHex || !digestHex) return false
+    const expected = Buffer.from(digestHex, 'hex')
+    const actual = scryptSync(String(password), Buffer.from(saltHex, 'hex'), expected.length)
+    return expected.length === actual.length && timingSafeEqual(expected, actual)
+  } catch {
+    return false
+  }
+}
+
+function createSandboxClientToken(client) {
+  const now = Math.floor(Date.now() / 1000)
+  const payload = Buffer.from(JSON.stringify({
+    sub: String(client.id),
+    email: client.email,
+    store_id: SANDBOX_STORE_ID,
+    customer_type: client.customer_type,
+    iat: now,
+    exp: now + (7 * 24 * 60 * 60),
+  })).toString('base64url')
+  const signature = createHmac('sha256', adminPassword).update(payload).digest('base64url')
+  return `sandbox-client.${payload}.${signature}`
+}
+
+function readSandboxClientFromRequest(req) {
+  const cookie = String(req.headers.cookie || '')
+  const cookieToken = cookie
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith('clientAuthToken='))
+    ?.slice('clientAuthToken='.length)
+  const authorization = String(req.headers.authorization || '')
+  const bearerToken = authorization.toLowerCase().startsWith('bearer ')
+    ? authorization.slice(7).trim()
+    : ''
+  const token = cookieToken || bearerToken
+  if (!token) return null
+
+  try {
+    const [prefix, payloadPart, signature] = token.split('.')
+    if (prefix !== 'sandbox-client' || !payloadPart || !signature) return null
+    const expected = createHmac('sha256', adminPassword).update(payloadPart).digest('base64url')
+    const expectedBuffer = Buffer.from(expected)
+    const actualBuffer = Buffer.from(signature)
+    if (expectedBuffer.length !== actualBuffer.length || !timingSafeEqual(expectedBuffer, actualBuffer)) {
+      return null
+    }
+    const payload = JSON.parse(Buffer.from(payloadPart, 'base64url').toString('utf8'))
+    if (
+      Number(payload?.store_id) !== SANDBOX_STORE_ID
+      || Number(payload?.exp) <= Math.floor(Date.now() / 1000)
+    ) {
+      return null
+    }
+    return state.clients.find((client) => String(client.id) === String(payload.sub)) || null
+  } catch {
+    return null
+  }
+}
+
+function publicSandboxClient(client) {
+  return {
+    id: client.id,
+    store_id: SANDBOX_STORE_ID,
+    name: client.name,
+    email: client.email,
+    phone: client.phone || null,
+    cpf: client.cpf_cnpj || null,
+    cpf_cnpj: client.cpf_cnpj || null,
+    customer_type: client.customer_type || 'RETAIL',
+    account_type: client.customer_type || 'RETAIL',
+    status: client.status || 'APPROVED',
+    address_zip: client.address_zip || null,
+    address_street: client.address_street || null,
+    address_number: client.address_number || null,
+    address_complement: client.address_complement || null,
+    address_neighborhood: client.address_neighborhood || null,
+    address_city: client.address_city || null,
+    address_state: client.address_state || null,
+    created_at: client.created_at,
+    updated_at: client.updated_at,
+  }
+}
+
+let sourceStorePromise = null
+let sourceAttributeIndexPromise = null
+
+async function getSourceStore() {
+  if (!sourceStorePromise) {
+    sourceStorePromise = fetch(`${UPSTREAM}/stores/${SOURCE_STORE_ID}`, {
+      headers: { Accept: 'application/json' },
+    }).then(async (response) => {
+      if (!response.ok) throw new Error('Não foi possível carregar a loja de referência')
+      return response.json()
+    }).catch((error) => {
+      sourceStorePromise = null
+      throw error
+    })
+  }
+  return sourceStorePromise
+}
+
+async function getSourceAttributeValueIndex() {
+  if (!sourceAttributeIndexPromise) {
+    sourceAttributeIndexPromise = (async () => {
+      const sourceStore = await getSourceStore()
+      const apiKey = normalizeText(sourceStore?.storefront_api_key)
+      if (!apiKey) return new Map()
+
+      const url = new URL('/v1/product-attributes/with-values', UPSTREAM)
+      url.searchParams.set('store_id', String(SOURCE_STORE_ID))
+      const response = await fetch(url, {
+        headers: { Accept: 'application/json', 'x-api-key': apiKey },
+      })
+      if (!response.ok) return new Map()
+
+      const attributes = await response.json()
+      const index = new Map()
+      for (const attribute of Array.isArray(attributes) ? attributes : []) {
+        for (const value of Array.isArray(attribute?.values) ? attribute.values : []) {
+          const valueId = positiveInteger(value?.id)
+          if (!valueId) continue
+          index.set(valueId, {
+            id: valueId,
+            value_id: valueId,
+            attribute_id: positiveInteger(attribute?.id),
+            attribute_code: normalizeText(attribute?.code) || normalizeText(attribute?.name),
+            attribute_name: normalizeText(attribute?.name) || normalizeText(attribute?.code),
+            value_name: normalizeText(value?.name) || normalizeText(value?.code),
+            value_code: normalizeText(value?.code) || normalizeText(value?.name),
+            value_meta: value?.meta && typeof value.meta === 'object' ? value.meta : {},
+            value_sort_order: finiteNonNegative(value?.sort_order),
+          })
+        }
+      }
+      return index
+    })().catch((error) => {
+      sourceAttributeIndexPromise = null
+      throw error
+    })
+  }
+  return sourceAttributeIndexPromise
+}
+
+function fallbackVariantAttributes() {
+  return [
+    {
+      id: 9_910_001,
+      value_id: 9_910_001,
+      attribute_id: 9_900_001,
+      attribute_code: 'color',
+      attribute_name: 'Cor',
+      value_name: 'Padrão',
+      value_code: 'padrao',
+      value_meta: { hex: '#9CA3AF' },
+      value_sort_order: 0,
+    },
+    {
+      id: 9_920_001,
+      value_id: 9_920_001,
+      attribute_id: 9_900_002,
+      attribute_code: 'size',
+      attribute_name: 'Tamanho',
+      value_name: 'Único',
+      value_code: 'unico',
+      value_meta: {},
+      value_sort_order: 0,
+    },
+  ]
+}
+
+async function normalizeLocalProduct(input, existing = null) {
+  const attributeIndex = await getSourceAttributeValueIndex().catch(() => new Map())
+  const now = new Date().toISOString()
+  const productId = positiveInteger(input?.id)
+    || positiveInteger(existing?.id)
+    || nextStateId(state.products, 9_000_000)
+  const code = normalizeText(input?.code) || normalizeText(existing?.code) || `LOCAL-${productId}`
+  const name = normalizeText(input?.name) || normalizeText(existing?.name) || code
+  const slug = slugify(input?.slug || `${code}-${name}`) || `produto-${productId}`
+  const rawVariants = Array.isArray(input?.variants) && input.variants.length > 0
+    ? input.variants
+    : Array.isArray(existing?.variants) && existing.variants.length > 0
+      ? existing.variants
+      : [{ sku: code, price_cents: 0, stock_qty: 999, active: true, attribute_values: [] }]
+
+  let nextVariantId = nextStateId(
+    state.products.flatMap((product) => Array.isArray(product?.variants) ? product.variants : []),
+    9_100_000,
+  )
+  const variants = rawVariants.map((variant, index) => {
+    const rawAttributes = Array.isArray(variant?.attribute_values) ? variant.attribute_values : []
+    let attributeValues = rawAttributes.map((entry) => {
+      if (entry && typeof entry === 'object') return entry
+      return attributeIndex.get(positiveInteger(entry)) || null
+    }).filter(Boolean)
+    if (attributeValues.length === 0) attributeValues = fallbackVariantAttributes()
+
+    const variantId = positiveInteger(variant?.id) || nextVariantId++
+    const images = uniqueStrings(variant?.images)
+    return {
+      id: variantId,
+      product_id: productId,
+      sku: normalizeText(variant?.sku) || `${code}-${index + 1}`,
+      price_cents: Math.round(finiteNonNegative(variant?.price_cents)),
+      cost_cents: Math.round(finiteNonNegative(variant?.cost_cents)),
+      promo_cents: Math.round(finiteNonNegative(variant?.promo_cents)),
+      stock_qty: Math.round(finiteNonNegative(variant?.stock_qty, 999)),
+      reserved_qty: Math.round(finiteNonNegative(variant?.reserved_qty)),
+      active: variant?.active !== false,
+      is_highlighted: variant?.is_highlighted === true,
+      ncm: normalizeText(variant?.ncm) || null,
+      barcode: normalizeText(variant?.barcode) || null,
+      weight_grams: finiteNonNegative(variant?.weight_grams) || null,
+      combination_key: attributeValues.map((entry) => entry.value_id || entry.id).join(','),
+      meta: variant?.meta && typeof variant.meta === 'object' ? variant.meta : {},
+      attribute_values: attributeValues,
+      images,
+    }
+  })
+
+  return {
+    id: productId,
+    store_id: SANDBOX_STORE_ID,
+    code,
+    slug,
+    name,
+    description: normalizeText(input?.description) || null,
+    composition: normalizeText(input?.composition) || null,
+    location: normalizeText(input?.location) || null,
+    measurement_table_id: positiveInteger(input?.measurement_table_id),
+    active: input?.active !== false,
+    category_ids: (Array.isArray(input?.category_ids) ? input.category_ids : [])
+      .map((value) => positiveInteger(value))
+      .filter(Boolean),
+    tags: uniqueStrings(input?.tags),
+    meta: input?.meta && typeof input.meta === 'object' ? input.meta : {},
+    image_grouping_rule: input?.image_grouping_rule || JSON.stringify({ type: 'product' }),
+    video_grouping_rule: input?.video_grouping_rule || JSON.stringify({ type: 'product' }),
+    variants,
+    created_at: existing?.created_at || now,
+    updated_at: now,
+  }
+}
+
+function localProductFull(product) {
+  const productImages = uniqueStrings(product?.variants?.flatMap((variant) => variant.images || []))
+  return {
+    product: { ...product, variants: undefined },
+    variants: product.variants || [],
+    image_groups: productImages.length > 0
+      ? [{ id: `local-images-${product.id}`, image_key: 'product', images: productImages, variants: [] }]
+      : [],
+    video_groups: [],
+  }
+}
+
+function matchesLocalProduct(product, requestUrl) {
+  const search = normalizeText(requestUrl.searchParams.get('search')).toLowerCase()
+  const status = normalizeText(requestUrl.searchParams.get('status')).toLowerCase()
+  const categoryId = positiveInteger(requestUrl.searchParams.get('category_id'))
+  const categorySlug = normalizeText(requestUrl.searchParams.get('category_slug')).toLowerCase()
+
+  if (status === 'active' && product.active === false) return false
+  if (status === 'inactive' && product.active !== false) return false
+  if (categoryId && !(product.category_ids || []).includes(categoryId)) return false
+  if (categorySlug && !product.tags?.some((tag) => slugify(tag) === categorySlug)) return false
+  if (search) {
+    const haystack = `${product.name} ${product.code} ${product.slug}`.toLowerCase()
+    if (!haystack.includes(search)) return false
+  }
+  return true
 }
 
 function normalizeB2CSettings(value) {
@@ -282,6 +826,7 @@ function normalizeB2CSettings(value) {
     resellerLevels,
     filters: normalizedGlobalFilters,
     resellerDirectory: directory,
+    resellerSourceSyncedAt: input.resellerSourceSyncedAt || null,
     updatedAt: input.updatedAt || null,
   }
 }
@@ -420,7 +965,13 @@ function findDuplicateLead(input) {
 
 function corsHeaders(req) {
   const origin = req.headers.origin
-  const allowed = origin === 'http://localhost:3000' || origin === 'http://localhost:3001'
+  const allowedOrigins = new Set([
+    'http://localhost:3000',
+    'http://localhost:3001',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:3001',
+  ])
+  const allowed = allowedOrigins.has(origin)
   return {
     'Access-Control-Allow-Origin': allowed ? origin : 'http://localhost:3000',
     'Access-Control-Allow-Credentials': 'true',
@@ -573,6 +1124,50 @@ async function proxyRead(req, res, requestUrl) {
   res.end(raw)
 }
 
+async function fetchMappedJson(req, requestUrl) {
+  const upstreamUrl = remapUrl(requestUrl)
+  const headers = { ...req.headers }
+  delete headers.host
+  delete headers.cookie
+  delete headers.origin
+  delete headers.referer
+  delete headers['content-length']
+
+  const response = await fetch(upstreamUrl, {
+    method: 'GET',
+    headers,
+    redirect: 'manual',
+  })
+  const contentType = response.headers.get('content-type') || ''
+  if (!response.ok || !contentType.includes('application/json')) {
+    return { response, payload: null }
+  }
+
+  return {
+    response,
+    payload: remapJson(await response.json()),
+  }
+}
+
+function mergeProductsByIdentity(localProducts, upstreamProducts) {
+  const localIdentity = new Set(
+    localProducts.flatMap((product) => [
+      `id:${product.id}`,
+      `code:${normalizeText(product.code).toLowerCase()}`,
+      `slug:${normalizeText(product.slug).toLowerCase()}`,
+    ]),
+  )
+  const filteredUpstream = upstreamProducts.filter((product) => {
+    const identities = [
+      `id:${product?.id}`,
+      `code:${normalizeText(product?.code).toLowerCase()}`,
+      `slug:${normalizeText(product?.slug).toLowerCase()}`,
+    ]
+    return !identities.some((identity) => localIdentity.has(identity))
+  })
+  return [...localProducts, ...filteredUpstream]
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const requestUrl = new URL(req.url || '/', `http://localhost:${PORT}`)
@@ -584,12 +1179,25 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (requestUrl.pathname === '/sandbox/status') {
+      const resellerConfig = safeResellerConfig()
       return sendJson(req, res, 200, {
         environment: 'sandbox',
         isolated: true,
         sandbox_store_id: SANDBOX_STORE_ID,
         source_store_id: SOURCE_STORE_ID,
         upstream_write_policy: 'blocked',
+        reseller_data: {
+          mode: resellerConfig.mode,
+          configured: resellerConfig.configured,
+          upstream_method: 'GET_ONLY',
+          raw_payload_persisted: false,
+        },
+        counts: {
+          products: state.products.length,
+          clients: state.clients.length,
+          b2c_leads: state.b2cLeads.length,
+          b2c_orders: state.b2cLeads.filter((lead) => Array.isArray(lead.items) && lead.items.length > 0).length,
+        },
       })
     }
 
@@ -668,9 +1276,308 @@ const server = http.createServer(async (req, res) => {
       return fetchSandboxStore(req, res)
     }
 
+    if (requestUrl.pathname === '/v1/clients/identify' && method === 'POST') {
+      const body = await readJson(req)
+      const identifier = normalizeText(body.identifier).toLowerCase()
+      const identifierDigits = digitsOnly(identifier)
+      const client = state.clients.find((entry) =>
+        normalizeText(entry.email).toLowerCase() === identifier
+        || (identifierDigits && digitsOnly(entry.cpf_cnpj) === identifierDigits),
+      )
+      return sendJson(req, res, 200, client
+        ? {
+          exists: true,
+          email: client.email,
+          name: client.name,
+          cpfCnpj: client.cpf_cnpj,
+          cpf_cnpj: client.cpf_cnpj,
+          customer_type: client.customer_type,
+          account_type: client.customer_type,
+        }
+        : { exists: false })
+    }
+
+    if (requestUrl.pathname === '/v1/clients' && method === 'POST') {
+      const body = await readJson(req)
+      if (body.store_id != null && Number(body.store_id) !== SANDBOX_STORE_ID) {
+        return sendJson(req, res, 409, { error: 'Cadastro permitido apenas na loja sandbox 1043.' })
+      }
+
+      const name = normalizeText(body.name)
+      const email = normalizeText(body.email).toLowerCase()
+      const cpfCnpj = digitsOnly(body.cpf || body.cpf_cnpj)
+      const phone = digitsOnly(body.phone)
+      const password = normalizeText(body.password)
+      if (!name || !email || cpfCnpj.length !== 11 || password.length < 6) {
+        return sendJson(req, res, 400, {
+          error: 'INVALID_CLIENT',
+          message: 'Nome, e-mail, CPF e senha com ao menos 6 caracteres são obrigatórios.',
+        })
+      }
+      if (state.clients.some((entry) =>
+        normalizeText(entry.email).toLowerCase() === email || digitsOnly(entry.cpf_cnpj) === cpfCnpj,
+      )) {
+        return sendJson(req, res, 409, { error: 'CLIENT_ALREADY_EXISTS', message: 'Consumidor já cadastrado.' })
+      }
+
+      const now = new Date().toISOString()
+      const client = {
+        id: nextStateId(state.clients, 9_500_000),
+        store_id: SANDBOX_STORE_ID,
+        name,
+        email,
+        phone: phone || null,
+        cpf_cnpj: cpfCnpj,
+        password_hash: hashSandboxPassword(password),
+        customer_type: 'RETAIL',
+        status: 'APPROVED',
+        extra_fields: body.extra_fields && typeof body.extra_fields === 'object' ? body.extra_fields : {},
+        created_at: now,
+        updated_at: now,
+      }
+      state.clients.unshift(client)
+      saveState(state)
+      return sendJson(req, res, 201, publicSandboxClient(client))
+    }
+
+    if (requestUrl.pathname === '/v1/clients/login' && method === 'POST') {
+      const body = await readJson(req)
+      const email = normalizeText(body.email).toLowerCase()
+      const client = state.clients.find((entry) => normalizeText(entry.email).toLowerCase() === email)
+      if (!client || !verifySandboxPassword(body.password, client.password_hash)) {
+        return sendJson(req, res, 401, { error: 'E-mail ou senha inválidos' })
+      }
+      const token = createSandboxClientToken(client)
+      return sendJson(req, res, 200, { data: publicSandboxClient(client) }, {
+        'Set-Cookie': `clientAuthToken=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`,
+      })
+    }
+
+    if (requestUrl.pathname === '/v1/clients/me' && method === 'GET') {
+      const client = readSandboxClientFromRequest(req)
+      if (!client) return sendJson(req, res, 401, { error: 'Não autenticado' })
+      return sendJson(req, res, 200, publicSandboxClient(client))
+    }
+
+    if (requestUrl.pathname === '/v1/storefront/clients/recover-password' && method === 'POST') {
+      return sendJson(req, res, 200, {
+        ok: true,
+        message: 'Em ambiente local nenhum e-mail é enviado. Use novamente a senha cadastrada.',
+      })
+    }
+
+    if (requestUrl.pathname === '/products/sync' && method === 'POST') {
+      if (!isAuthenticated(req)) return sendJson(req, res, 401, { error: 'Não autenticado' })
+      const body = await readJson(req)
+      if (body.store_id != null && Number(body.store_id) !== SANDBOX_STORE_ID) {
+        return sendJson(req, res, 409, { error: 'Apenas a loja sandbox 1043 aceita gravações locais.' })
+      }
+
+      const existing = state.products.find((product) =>
+        (positiveInteger(body.id) && Number(product.id) === Number(body.id))
+        || (normalizeText(body.code) && normalizeText(product.code).toLowerCase() === normalizeText(body.code).toLowerCase()),
+      ) || null
+      const product = await normalizeLocalProduct({ ...body, store_id: SANDBOX_STORE_ID }, existing)
+      const slugConflict = state.products.find((entry) =>
+        Number(entry.id) !== Number(product.id)
+        && normalizeText(entry.slug).toLowerCase() === normalizeText(product.slug).toLowerCase(),
+      )
+      if (slugConflict) {
+        return sendJson(req, res, 409, { error: `Já existe um produto local com o slug ${product.slug}` })
+      }
+
+      const existingIndex = state.products.findIndex((entry) => Number(entry.id) === Number(product.id))
+      if (existingIndex >= 0) state.products[existingIndex] = product
+      else state.products.unshift(product)
+      saveState(state)
+      return sendJson(req, res, existing ? 200 : 201, localProductFull(product))
+    }
+
+    const productFullMatch = requestUrl.pathname.match(/^\/products\/([^/]+)\/full$/)
+    if (productFullMatch && method === 'GET') {
+      const lookup = decodeURIComponent(productFullMatch[1])
+      const localProduct = state.products.find((product) =>
+        String(product.id) === lookup
+        || normalizeText(product.code).toLowerCase() === lookup.toLowerCase()
+        || normalizeText(product.slug).toLowerCase() === lookup.toLowerCase(),
+      )
+      if (localProduct) return sendJson(req, res, 200, localProductFull(localProduct))
+      return proxyRead(req, res, requestUrl)
+    }
+
+    const productDeleteMatch = requestUrl.pathname.match(/^\/products\/([^/]+)$/)
+    if (productDeleteMatch && method === 'DELETE') {
+      if (!isAuthenticated(req)) return sendJson(req, res, 401, { error: 'Não autenticado' })
+      const lookup = decodeURIComponent(productDeleteMatch[1])
+      const before = state.products.length
+      state.products = state.products.filter((product) =>
+        String(product.id) !== lookup
+        && normalizeText(product.code).toLowerCase() !== lookup.toLowerCase(),
+      )
+      if (state.products.length === before) {
+        return sendJson(req, res, 404, { error: 'Produto local não encontrado' })
+      }
+      saveState(state)
+      return sendJson(req, res, 200, { deleted: true })
+    }
+
+    if (requestUrl.pathname === '/products' && method === 'GET') {
+      const page = Math.max(1, positiveInteger(requestUrl.searchParams.get('page'), 1))
+      const localProducts = state.products.filter((product) => matchesLocalProduct(product, requestUrl))
+      const { response, payload } = await fetchMappedJson(req, requestUrl)
+      const upstreamProducts = Array.isArray(payload) ? payload : []
+      const items = mergeProductsByIdentity(page === 1 ? localProducts : [], upstreamProducts)
+      const upstreamTotal = Number(response.headers.get('x-total-count'))
+      const total = (Number.isFinite(upstreamTotal) ? upstreamTotal : upstreamProducts.length) + localProducts.length
+      return sendJson(req, res, 200, items, { 'X-Total-Count': String(total) })
+    }
+
+    if (
+      (requestUrl.pathname === '/products-paginated'
+        || requestUrl.pathname === '/internal/admin/products-paginated')
+      && method === 'GET'
+    ) {
+      const page = Math.max(1, positiveInteger(requestUrl.searchParams.get('page'), 1))
+      const limit = Math.max(1, positiveInteger(requestUrl.searchParams.get('limit'), 24))
+      const localProducts = state.products.filter((product) => matchesLocalProduct(product, requestUrl))
+      const { payload } = await fetchMappedJson(req, requestUrl)
+      const upstreamItems = Array.isArray(payload?.items) ? payload.items : []
+      const upstreamTotal = Number(payload?.total)
+      const items = mergeProductsByIdentity(page === 1 ? localProducts : [], upstreamItems)
+      const total = (Number.isFinite(upstreamTotal) ? upstreamTotal : upstreamItems.length) + localProducts.length
+      const upstreamSummary = payload?.summary && typeof payload.summary === 'object' ? payload.summary : {}
+      const localActive = localProducts.filter((product) => product.active !== false).length
+      const localInactive = localProducts.length - localActive
+      const localFeatured = localProducts.filter((product) =>
+        product.meta?.is_featured === true
+        || product.variants?.some((variant) => variant.is_highlighted === true),
+      ).length
+      return sendJson(req, res, 200, {
+        ...(payload && typeof payload === 'object' ? payload : {}),
+        items,
+        total,
+        page,
+        limit,
+        summary: {
+          ...upstreamSummary,
+          total: finiteNonNegative(upstreamSummary.total, Number.isFinite(upstreamTotal) ? upstreamTotal : upstreamItems.length) + localProducts.length,
+          active: finiteNonNegative(upstreamSummary.active) + localActive,
+          inactive: finiteNonNegative(upstreamSummary.inactive) + localInactive,
+          featured: finiteNonNegative(upstreamSummary.featured) + localFeatured,
+        },
+      })
+    }
+
+    if ((requestUrl.pathname === '/v1/products/catalog' || requestUrl.pathname === '/v1/products') && method === 'GET') {
+      const page = Math.max(1, positiveInteger(requestUrl.searchParams.get('page'), 1))
+      const limit = Math.max(1, positiveInteger(requestUrl.searchParams.get('limit'), 24))
+      const localProducts = state.products
+        .filter((product) => product.active !== false)
+        .filter((product) => matchesLocalProduct(product, requestUrl))
+      const { payload } = await fetchMappedJson(req, requestUrl)
+      const upstreamItems = Array.isArray(payload?.items)
+        ? payload.items
+        : Array.isArray(payload)
+          ? payload
+          : []
+      const items = mergeProductsByIdentity(page === 1 ? localProducts : [], upstreamItems)
+      const upstreamTotal = Number(payload?.total)
+      const total = (Number.isFinite(upstreamTotal) ? upstreamTotal : upstreamItems.length) + localProducts.length
+      return sendJson(req, res, 200, {
+        ...(payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}),
+        items,
+        total,
+        page,
+        limit,
+      })
+    }
+
+    const storefrontProductMatch = requestUrl.pathname.match(/^\/v1\/product\/data\/([^/]+)$/)
+    if (storefrontProductMatch && method === 'GET') {
+      const lookup = decodeURIComponent(storefrontProductMatch[1]).toLowerCase()
+      const localProduct = state.products.find((product) =>
+        String(product.id) === lookup
+        || normalizeText(product.code).toLowerCase() === lookup
+        || normalizeText(product.slug).toLowerCase() === lookup,
+      )
+      if (localProduct) return sendJson(req, res, 200, localProductFull(localProduct))
+      return proxyRead(req, res, requestUrl)
+    }
+
     if (requestUrl.pathname === '/b2c/settings' && method === 'GET') {
       if (!isAuthenticated(req)) return sendJson(req, res, 401, { error: 'Não autenticado' })
       return sendJson(req, res, 200, state.b2cSettings)
+    }
+
+    if (requestUrl.pathname === '/b2c/resellers' && method === 'GET') {
+      const isAdmin = isAuthenticated(req)
+      const isConsumerPortal = req.headers['x-sandbox-consumer-portal'] === 'upzero-local'
+      if (!isAdmin && !isConsumerPortal) return sendJson(req, res, 401, { error: 'Acesso inválido' })
+
+      const result = await readSafeResellerDirectory()
+      const resellers = isAdmin
+        ? result.resellers.map((reseller) => ({
+            id: String(reseller.id),
+            name: normalizeText(reseller.name),
+            email: normalizeText(reseller.email) || null,
+            phone: digitsOnly(reseller.phone) || null,
+            city: normalizeText(reseller.city) || null,
+            state: normalizeText(reseller.state).toUpperCase().slice(0, 2) || null,
+            document: '',
+            ordersCount: finiteNonNegative(reseller.ordersCount),
+            totalSpent: finiteNonNegative(reseller.totalSpent),
+            lastOrderAt: reseller.lastOrderAt || null,
+            eligible: reseller.eligible === true,
+            eligibilityReason: normalizeText(reseller.eligibilityReason),
+            level: state.b2cSettings.resellerLevels?.[String(reseller.id)] || reseller.level || 'BRONZE',
+          }))
+        : result.resellers.map(publicSafeReseller)
+
+      return sendJson(req, res, 200, {
+        mode: 'SAFE_READ_ONLY',
+        source: result.source,
+        configured: result.configured,
+        readOnly: true,
+        rawPayloadPersisted: false,
+        count: resellers.length,
+        lastSyncAt: state.b2cSettings.resellerSourceSyncedAt || null,
+        error: result.error || null,
+        resellers,
+      })
+    }
+
+    if (requestUrl.pathname === '/b2c/resellers/sync' && method === 'POST') {
+      if (!isAuthenticated(req)) return sendJson(req, res, 401, { error: 'Não autenticado' })
+      const result = await readSafeResellerDirectory({ requireApi: true })
+      if (!result.ok) {
+        return sendJson(req, res, 409, {
+          error: 'SAFE_RESELLER_SYNC_UNAVAILABLE',
+          message: result.error,
+          source: result.source,
+          configured: result.configured,
+        })
+      }
+
+      const syncedAt = new Date().toISOString()
+      state.b2cSettings = normalizeB2CSettings({
+        ...state.b2cSettings,
+        resellerDirectory: result.resellers.map((reseller) => ({
+          ...reseller,
+          level: state.b2cSettings.resellerLevels?.[String(reseller.id)] || 'BRONZE',
+        })),
+        resellerSourceSyncedAt: syncedAt,
+      })
+      state.b2cSettings.resellerSourceSyncedAt = syncedAt
+      saveState(state)
+      return sendJson(req, res, 200, {
+        mode: 'SAFE_READ_ONLY',
+        source: result.source,
+        configured: true,
+        readOnly: true,
+        rawPayloadPersisted: false,
+        count: result.resellers.length,
+        lastSyncAt: syncedAt,
+      })
     }
 
     if (requestUrl.pathname === '/b2c/settings' && (method === 'PATCH' || method === 'PUT')) {
@@ -679,6 +1586,29 @@ const server = http.createServer(async (req, res) => {
       state.b2cSettings = normalizeB2CSettings({ ...body, updatedAt: new Date().toISOString() })
       saveState(state)
       return sendJson(req, res, 200, state.b2cSettings)
+    }
+
+    if (requestUrl.pathname === '/b2c/consumer-requests' && method === 'GET') {
+      if (req.headers['x-sandbox-consumer-portal'] !== 'upzero-local') {
+        return sendJson(req, res, 401, { error: 'Acesso de consumidor inválido' })
+      }
+      const email = normalizeText(requestUrl.searchParams.get('email')).toLowerCase()
+      const document = digitsOnly(requestUrl.searchParams.get('document'))
+      if (!email && !document) {
+        return sendJson(req, res, 400, { error: 'E-mail ou documento é obrigatório' })
+      }
+      const requests = state.b2cLeads
+        .filter((lead) =>
+          Number(lead.storeId) === SANDBOX_STORE_ID
+          && Array.isArray(lead.items)
+          && lead.items.length > 0
+          && (
+            (email && normalizeText(lead.email).toLowerCase() === email)
+            || (document && digitsOnly(lead.document) === document)
+          ),
+        )
+        .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
+      return sendJson(req, res, 200, requests)
     }
 
     if (requestUrl.pathname === '/b2c/leads' && method === 'GET') {

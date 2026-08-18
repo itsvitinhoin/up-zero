@@ -67,10 +67,20 @@ export const ADMIN_NAVIGATION: AdminNavigationItem[] = [
     ],
   },
   {
-    name: 'Mensageria',
+    name: 'WhatsApp',
     icon: MessageSquare,
     children: [
-      { name: 'Automações', href: '/mensageria', exact: true },
+      { name: 'Dashboard', href: '/whatsapp', exact: true },
+      { name: 'Conexões', href: '/whatsapp/connections', exact: true },
+      { name: 'Templates', href: '/whatsapp/templates', exact: true },
+      { name: 'Conversas', href: '/whatsapp/conversations', exact: true },
+      { name: 'Automações', href: '/whatsapp/automations', exact: true },
+    ],
+  },
+  {
+    name: 'Comunicação',
+    icon: MessageSquare,
+    children: [
       { name: 'Smart Lists', href: '/smart-lists', exact: true },
       { name: 'Campanhas', href: '/campaigns', exact: true },
     ],

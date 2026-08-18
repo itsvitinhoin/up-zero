@@ -85,7 +85,9 @@ export function canAccessNavHref(
   }
 
   if (
-    normalizedHref === '/mensageria'
+    normalizedHref === '/whatsapp'
+    || normalizedHref.startsWith('/whatsapp/')
+    || normalizedHref === '/mensageria'
     || normalizedHref.startsWith('/mensageria/')
     || normalizedHref === '/smart-lists'
     || normalizedHref.startsWith('/smart-lists/')

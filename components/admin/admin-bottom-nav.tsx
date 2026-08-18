@@ -43,6 +43,7 @@ import type { SessionUser } from '@/lib/types'
 import { logoutAction } from '@/lib/actions/auth'
 import { useState, useEffect } from 'react'
 import { getStorefrontHref } from '@/lib/storefront-url'
+import { SiWhatsapp } from 'react-icons/si'
 
 type AdminBottomNavProps = {
   session?: SessionUser | null
@@ -61,7 +62,7 @@ const MORE_NAV = [
   { name: 'Clientes B2C', href: '/b2c-leads', icon: Users },
   { name: 'Pedidos B2C', href: '/b2c-orders', icon: ShoppingCart },
   { name: 'Links de pagamento', href: '/payment-links', icon: Link2 },
-  { name: 'Automações', href: '/mensageria', icon: MessageSquare },
+  { name: 'WhatsApp', href: '/whatsapp', icon: SiWhatsapp },
   { name: 'Carrinhos abandonados', href: '/carrinhos-abandonados', icon: RotateCcw },
   { name: 'Notas fiscais', href: '/orders/invoices', icon: Receipt },
   { name: 'Etiquetas', href: '/orders/labels', icon: Tag },

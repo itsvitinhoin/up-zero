@@ -1232,7 +1232,6 @@ function AutomationsTab({ state, reload }: { state: UiState; reload: () => Promi
     eventType: 'order.payment_confirmed',
     templateId: '',
     status: 'Draft',
-    onlyWithOptIn: true,
     state: '',
     orderStatus: '',
     paymentStatus: '',
@@ -1260,7 +1259,6 @@ function AutomationsTab({ state, reload }: { state: UiState; reload: () => Promi
         delayMinutes: Number(form.delayMinutes),
         variableMapping,
         conditions: {
-          onlyWithOptIn: form.onlyWithOptIn,
           state: form.state || undefined,
           orderStatus: form.orderStatus || undefined,
           paymentStatus: form.paymentStatus || undefined,
@@ -1286,7 +1284,7 @@ function AutomationsTab({ state, reload }: { state: UiState; reload: () => Promi
       <SectionHeader
         eyebrow="Mensagens automaticas"
         title="Automações por evento do E-Commerce"
-        description="Status de cadastro, pedido, pagamento e entrega podem disparar templates aprovados via WhatsApp, respeitando opt-in e configuracao atual."
+        description="Status de cadastro, pedido, pagamento e entrega podem disparar templates aprovados via WhatsApp conforme a configuração atual."
       />
 
       <AdminPanel title="Eventos disponiveis" description="Cada evento mostra se existe automacao ativa, ultima execucao e quantidade de disparos registrados.">
@@ -1300,7 +1298,7 @@ function AutomationsTab({ state, reload }: { state: UiState; reload: () => Promi
       </AdminPanel>
 
       <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
-        <AdminPanel title="Criar automacao" description="Escolha o evento, as condicoes e o template aprovado. O envio real so acontece se numero, template e opt-in estiverem prontos.">
+        <AdminPanel title="Criar automacao" description="Escolha o evento, as condições e o template aprovado. O envio acontece quando número e template estiverem prontos.">
           <div className="space-y-3">
             <Field label="Nome da automacao"><Input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="Ex: Pos-pagamento aprovado" /></Field>
             <SelectBlock label="Evento do e-commerce" value={form.eventType} onChange={(value) => setForm((prev) => ({ ...prev, eventType: value }))} placeholder="Selecionar evento" items={ECOMMERCE_EVENT_DEFINITIONS.map((event) => ({ value: event.type, label: event.label, hint: event.type }))} />
@@ -1322,7 +1320,6 @@ function AutomationsTab({ state, reload }: { state: UiState; reload: () => Promi
               <Field label="Status do pedido"><Input value={form.orderStatus} onChange={(e) => setForm((prev) => ({ ...prev, orderStatus: e.target.value.toUpperCase() }))} placeholder="CONFIRMED, SHIPPED..." /></Field>
               <Field label="Status pagamento"><Input value={form.paymentStatus} onChange={(e) => setForm((prev) => ({ ...prev, paymentStatus: e.target.value.toLowerCase() }))} placeholder="paid, unpaid..." /></Field>
             </div>
-            <label className="flex items-center gap-2 text-sm"><Checkbox checked={form.onlyWithOptIn} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, onlyWithOptIn: Boolean(checked) }))} />Somente clientes com opt-in WhatsApp</label>
             <Field label="Mapeamento de variaveis (variavel=caminho no evento)"><Textarea rows={5} value={form.variableMapping} onChange={(e) => setForm((prev) => ({ ...prev, variableMapping: e.target.value }))} /></Field>
             <Button onClick={createAutomation} disabled={!form.name || !form.eventType} className="gap-2"><Zap className="h-4 w-4" />Criar automacao</Button>
           </div>

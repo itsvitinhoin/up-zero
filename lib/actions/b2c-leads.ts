@@ -8,6 +8,7 @@ import type {
   B2CLead,
   B2CLeadReseller,
   B2CLeadStatus,
+  B2CResellerDataSource,
 } from '@/lib/b2c-leads/types'
 import { hasAdminPermission } from '@/lib/server-admin-permissions'
 
@@ -68,6 +69,46 @@ export async function getB2CSettingsAction(): Promise<ApiResponse<B2CDistributio
     return { success: true, data: await response.json() as B2CDistributionSettings }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : 'Erro ao carregar configurações B2C' }
+  }
+}
+
+export async function getB2CResellerSourceAction(): Promise<ApiResponse<B2CResellerDataSource>> {
+  if (!await hasAdminPermission('customers.view')) return { success: false, error: 'Acesso não autorizado aos revendedores B2C.' }
+  const base = sandboxBaseUrl()
+  if (!base) return { success: false, error: 'A fonte segura de revendedores está disponível somente no sandbox local.' }
+
+  const cookie = await sandboxCookieHeader()
+  try {
+    const response = await fetch(`${base}/b2c/resellers?store_id=1043`, {
+      headers: cookie ? { cookie } : {},
+      cache: 'no-store',
+    })
+    if (!response.ok) return { success: false, error: await readError(response, 'Erro ao carregar revendedores B2C') }
+    return { success: true, data: await response.json() as B2CResellerDataSource }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Erro ao carregar revendedores B2C' }
+  }
+}
+
+export async function syncB2CResellerSourceAction(): Promise<ApiResponse<Omit<B2CResellerDataSource, 'resellers' | 'error'>>> {
+  if (!await hasAdminPermission('settings.edit')) return { success: false, error: 'Você não possui permissão para sincronizar revendedores.' }
+  const base = sandboxBaseUrl()
+  if (!base) return { success: false, error: 'A sincronização segura está disponível somente no sandbox local.' }
+
+  const cookie = await sandboxCookieHeader()
+  try {
+    const response = await fetch(`${base}/b2c/resellers/sync`, {
+      method: 'POST',
+      headers: cookie ? { cookie } : {},
+      cache: 'no-store',
+    })
+    if (!response.ok) return { success: false, error: await readError(response, 'Erro ao sincronizar revendedores') }
+    revalidatePath('/settings/b2c')
+    revalidatePath('/b2c')
+    revalidatePath('/b2c-orders')
+    return { success: true, data: await response.json() }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Erro ao sincronizar revendedores' }
   }
 }
 

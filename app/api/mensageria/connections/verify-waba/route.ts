@@ -29,7 +29,8 @@ import type { WaOnboardingType } from '@/lib/whatsapp/types'
 import { NextRequest, NextResponse } from 'next/server'
 import { checkUserPermission } from '@/lib/actions/permissions'
 
-const GRAPH = 'https://graph.facebook.com/v19.0'
+const GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v24.0'
+const GRAPH = `https://graph.facebook.com/${GRAPH_VERSION}`
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -208,8 +209,6 @@ export async function POST(req: NextRequest): Promise<NextResponse<WabaVerifyRes
   const steps: WabaVerifyResult['steps'] = []
   const requiredScopes = [
     'public_profile',
-    'email',
-    'business_management',
     'whatsapp_business_management',
     'whatsapp_business_messaging',
   ]

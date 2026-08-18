@@ -9,7 +9,7 @@ export async function GET() {
     return NextResponse.json({ error: 'Você não tem permissão para visualizar mensageria' }, { status: 403 })
   }
 
-  const state = getState()
+  const state = await getState()
   return NextResponse.json({
     ...state,
     reviewChecklist: buildReviewChecklist(state),
