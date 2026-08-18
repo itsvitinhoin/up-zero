@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS whatsapp_state (
+  store_scope TEXT PRIMARY KEY,
+  state JSONB NOT NULL,
+  revision BIGINT NOT NULL DEFAULT 1,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

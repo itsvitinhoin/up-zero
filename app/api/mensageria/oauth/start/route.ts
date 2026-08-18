@@ -10,8 +10,8 @@ export async function GET() {
     return NextResponse.json({ error: 'Você não tem permissão para gerenciar configurações de mensageria' }, { status: 403 })
   }
 
-  updateIntegration({ oauthStatus: 'started', status: 'started' })
-  addLog({
+  await updateIntegration({ oauthStatus: 'started', status: 'started' })
+  await addLog({
     type: 'oauth_started',
     status: 'info',
     description: 'Meta OAuth flow started.',

@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server'
 import { isLocalAdminToken, verifyLocalAdminToken } from './lib/local-admin-session'
 
 const ADMIN_AUTH_COOKIE = 'adminAuthToken'
-const PUBLIC_PATHS = new Set(['/login', '/privacy', '/no-access'])
+const PUBLIC_PATHS = new Set(['/login', '/privacy', '/terms', '/data-deletion', '/no-access'])
 
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
   try {

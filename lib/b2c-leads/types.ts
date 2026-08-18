@@ -131,7 +131,20 @@ export interface B2CDistributionSettings {
     prioritizeSameState: boolean
   }
   resellerDirectory: B2CDistributionResellerSnapshot[]
+  resellerSourceSyncedAt?: string | null
   updatedAt: string | null
+}
+
+export interface B2CResellerDataSource {
+  mode: 'SAFE_READ_ONLY'
+  source: 'API_READ_ONLY' | 'SANDBOX'
+  configured: boolean
+  readOnly: true
+  rawPayloadPersisted: false
+  count: number
+  lastSyncAt: string | null
+  error: string | null
+  resellers: EligibleB2CReseller[]
 }
 
 export const DEFAULT_B2C_DISTRIBUTION_SETTINGS: B2CDistributionSettings = {

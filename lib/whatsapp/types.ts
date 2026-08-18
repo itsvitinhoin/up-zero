@@ -1,7 +1,5 @@
 export const META_REQUIRED_PERMISSIONS = [
   'public_profile',
-  'email',
-  'business_management',
   'whatsapp_business_management',
   'whatsapp_business_messaging',
 ] as const
@@ -21,15 +19,20 @@ export type TemplateStatus = 'APPROVED' | 'PENDING' | 'REJECTED' | 'PAUSED' | 'U
 export type CampaignStatus = 'Draft' | 'Scheduled' | 'Sending' | 'Sent' | 'Failed' | 'Paused' | 'Cancelled'
 export type AutomationStatus = 'Draft' | 'Active' | 'Paused' | 'Failed'
 export type AutomationRunStatus = 'queued' | 'sent' | 'delivered' | 'read' | 'responded' | 'failed' | 'blocked' | 'ignored'
+export type AutomationJobStatus = 'scheduled' | 'processing' | 'sent' | 'failed' | 'blocked' | 'ignored' | 'cancelled'
 export type MessageDirection = 'inbound' | 'outbound'
 export type MessageStatus = 'queued' | 'sent' | 'delivered' | 'read' | 'failed' | 'received'
+export type MessageMediaType = 'image' | 'video' | 'audio' | 'document' | 'sticker'
 export type WaOnboardingType = 'new_number' | 'existing_app_number' | 'migration_required' | 'connected'
 export type ECommerceEventType =
   | 'customer.created'
+  | 'customer.rejected'
+  | 'customer.approved'
   | 'customer.updated'
+  | 'cart_created'
+  | 'cart_abandoned'
+  | 'cart_converted'
   | 'customer.registration_incomplete'
-  | 'customer.whatsapp_opt_in_missing'
-  | 'customer.whatsapp_opt_in_confirmed'
   | 'order.created'
   | 'order.updated'
   | 'order.reserved'
@@ -40,6 +43,12 @@ export type ECommerceEventType =
   | 'order.shipped'
   | 'order.delivered'
   | 'order.cancelled'
+  | 'payment_link.created'
+  | 'payment_link.updated'
+  | 'payment_link.cancelled'
+  | 'payment_link.expired'
+  | 'payment_link.completed'
+  | 'payment_link.payment_failed'
 
 export interface SafeError {
   message: string
@@ -68,10 +77,13 @@ export interface WhatsAppBusinessAccount {
   businessId?: string
   currency?: string
   timezoneId?: string
+  webhookSubscribedAt?: string
 }
 
 export interface WhatsAppPhoneNumber {
   id: string
+  wabaId?: string
+  businessId?: string
   displayPhoneNumber: string
   verifiedName?: string
   qualityRating?: string
@@ -87,6 +99,7 @@ export interface WhatsAppIntegration {
   businessId?: string
   wabaId?: string
   phoneNumberId?: string
+  fallbackPhoneNumberId?: string
   selectedTemplateId?: string
   lastSyncAt?: string
   webhookVerifiedAt?: string
@@ -114,6 +127,7 @@ export interface TemplateButton {
 export interface WhatsAppTemplate {
   id: string
   metaTemplateId?: string
+  wabaId?: string
   name: string
   category: TemplateCategory
   language: string
@@ -124,6 +138,7 @@ export interface WhatsAppTemplate {
   footer?: string
   buttons: TemplateButton[]
   exampleValues: Record<string, string>
+  variableMapping?: Record<string, string>
   rejectionReason?: string
   source: 'meta' | 'local_draft'
   createdAt: string
@@ -141,11 +156,23 @@ export interface InboxMessage {
   status: MessageStatus
   timestamp: string
   templateId?: string
+  media?: {
+    type: MessageMediaType
+    metaMediaId: string
+    mimeType?: string
+    filename?: string
+    caption?: string
+    sha256?: string
+    voice?: boolean
+    size?: number
+  }
   error?: SafeError
 }
 
 export interface InboxConversation {
   id: string
+  phoneNumberId?: string
+  wabaId?: string
   contactName?: string
   maskedPhone: string
   phone: string
@@ -247,12 +274,16 @@ export interface AutomationRule {
   name: string
   eventType: ECommerceEventType
   conditions: ContactFilters & {
-    onlyWithOptIn?: boolean
     minOrderTotal?: number
   }
   templateId?: string
+  phoneNumberId?: string
+  wabaId?: string
   variableMapping: Record<string, string>
   delayMinutes: number
+  activateWhenTemplateApproved?: boolean
+  senderStrategy?: 'fixed_phone' | 'seller_then_fallback' | 'fallback_only'
+  fallbackPhoneNumberId?: string
   allowedWindow?: {
     start: string
     end: string
@@ -277,11 +308,42 @@ export interface AutomationRunLog {
   maskedPhone?: string
   orderId?: string
   templateId?: string
+  phoneNumberId?: string
+  wabaId?: string
   messageId?: string
   description: string
   safePayload?: Record<string, unknown>
   error?: SafeError
   recommendedAction?: string
+}
+
+export interface ECommerceWebhookEvent {
+  id: string
+  eventId: string
+  eventType: ECommerceEventType
+  payloadHash: string
+  externalCustomerId?: string
+  externalOrderId?: string
+  externalCartId?: string
+  occurredAt: string
+  receivedAt: string
+}
+
+export interface AutomationJob {
+  id: string
+  automationId: string
+  eventId: string
+  eventType: ECommerceEventType
+  status: AutomationJobStatus
+  scheduledAt: string
+  createdAt: string
+  updatedAt: string
+  processedAt?: string
+  sourcePayload: Record<string, unknown>
+  externalCartId?: string
+  resultMessageId?: string
+  errorMessage?: string
+  cancelReason?: string
 }
 
 export type WhatsAppLogType =
@@ -301,6 +363,7 @@ export type WhatsAppLogType =
   | 'automation_created'
   | 'automation_updated'
   | 'automation_paused'
+  | 'automation_deleted'
   | 'automation_triggered'
   | 'automation_error'
   | 'ecommerce_event_received'
@@ -323,20 +386,74 @@ export interface WhatsAppLog {
   recommendedAction?: string
 }
 
+export type AiInsightSeverity = 'critical' | 'high' | 'medium' | 'low'
+export type AiRiskLevel = 'critical' | 'high' | 'medium' | 'low'
+
+export interface WhatsAppAiAnalysis {
+  id: string
+  model: string
+  analyzedAt: string
+  periodStart: string
+  periodEnd: string
+  phoneNumberId?: string
+  conversationCount: number
+  messageCount: number
+  serviceScore: number
+  riskLevel: AiRiskLevel
+  executiveSummary: string
+  bottlenecks: Array<{
+    title: string
+    severity: AiInsightSeverity
+    evidence: string
+    impact: string
+    recommendedAction: string
+    metricName: string
+    metricValue: string
+  }>
+  customerSignals: Array<{
+    title: string
+    evidence: string
+    opportunity: string
+  }>
+  tone: Array<{
+    label: string
+    share: number
+    explanation: string
+  }>
+  priorities: Array<{
+    title: string
+    owner: string
+    deadline: string
+    expectedImpact: string
+  }>
+}
+
+export interface WhatsAppAiSettings {
+  provider: 'openai'
+  model: string
+  contentAnalysisEnabled: boolean
+  updatedAt: string
+  lastAnalysis?: WhatsAppAiAnalysis
+}
+
 export interface WhatsAppState {
   version: 2
   integration: WhatsAppIntegration
   businesses: MetaBusiness[]
   wabas: WhatsAppBusinessAccount[]
   phoneNumbers: WhatsAppPhoneNumber[]
+  removedPhoneNumberIds: string[]
   templates: WhatsAppTemplate[]
   conversations: InboxConversation[]
   contacts: Contact[]
   contactLists: ContactList[]
   campaigns: Campaign[]
   automations: AutomationRule[]
+  automationJobs: AutomationJob[]
   automationLogs: AutomationRunLog[]
+  ecommerceEvents: ECommerceWebhookEvent[]
   logs: WhatsAppLog[]
+  ai: WhatsAppAiSettings
 }
 
 export interface ReviewChecklistItem {

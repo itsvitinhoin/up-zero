@@ -1,7 +1,7 @@
 import 'server-only'
 
 import { adminMockCustomers, withAdminMockCustomers } from '@/lib/admin-mock-data'
-import { getB2CLeadsAction, getB2CSettingsAction } from '@/lib/actions/b2c-leads'
+import { getB2CLeadsAction, getB2CResellerSourceAction, getB2CSettingsAction } from '@/lib/actions/b2c-leads'
 import { getCustomersAction } from '@/lib/actions/customers'
 import { getCustomerOrderSummaryAction } from '@/lib/actions/orders'
 import {
@@ -11,9 +11,10 @@ import {
 } from '@/lib/b2c-leads/types'
 
 export async function getB2CAdminData() {
-  const [leadsResult, settingsResult, customersResult, orderSummaryResult] = await Promise.all([
+  const [leadsResult, settingsResult, resellerSourceResult, customersResult, orderSummaryResult] = await Promise.all([
     getB2CLeadsAction(),
     getB2CSettingsAction(),
+    getB2CResellerSourceAction(),
     getCustomersAction(),
     getCustomerOrderSummaryAction(),
   ])
@@ -57,8 +58,12 @@ export async function getB2CAdminData() {
       }
     })
 
-  const baseResellers = mappedResellers.some((reseller) => reseller.eligible)
-    ? mappedResellers
+  const safeSourceResellers = resellerSourceResult.success && resellerSourceResult.data
+    ? resellerSourceResult.data.resellers
+    : []
+  const sourceOrMappedResellers = safeSourceResellers.length > 0 ? safeSourceResellers : mappedResellers
+  const baseResellers = sourceOrMappedResellers.some((reseller) => reseller.eligible)
+    ? sourceOrMappedResellers
     : adminMockCustomers.map((customer, index): EligibleB2CReseller => {
         const summary = fallbackOrderSummary[customer.id] ?? { ordersCount: 0, totalSpent: 0 }
         return {
@@ -113,6 +118,8 @@ export async function getB2CAdminData() {
     leadsError: leadsResult.success ? null : leadsResult.error || 'Não foi possível carregar os dados B2C.',
     settings,
     settingsError: settingsResult.success ? null : settingsResult.error || 'Não foi possível carregar as configurações B2C.',
+    resellerSource: resellerSourceResult.success ? resellerSourceResult.data || null : null,
+    resellerSourceError: resellerSourceResult.success ? null : resellerSourceResult.error || 'Não foi possível carregar a fonte de revendedores.',
     resellers,
   }
 }

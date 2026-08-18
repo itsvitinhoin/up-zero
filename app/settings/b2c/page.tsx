@@ -12,7 +12,14 @@ export const metadata = {
 async function B2CSettingsPageContent() {
   await ensureAdminPermission('settings.view')
   const data = await getB2CAdminData()
-  return <AdminB2CSettingsPageClient initialSettings={data.settings} resellers={data.resellers} initialError={data.settingsError} />
+  return (
+    <AdminB2CSettingsPageClient
+      initialSettings={data.settings}
+      resellers={data.resellers}
+      resellerSource={data.resellerSource}
+      initialError={data.settingsError || data.resellerSourceError}
+    />
+  )
 }
 
 export default function B2CSettingsPage() {

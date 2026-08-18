@@ -39,8 +39,10 @@ import {
   Truck,
   UserCog,
   Users,
+  Zap,
 } from 'lucide-react'
 import { useTheme } from 'next-themes'
+import { SiWhatsapp } from 'react-icons/si'
 
 import { AdminBranchSelector } from '@/components/admin/admin-branch-selector'
 import {
@@ -131,9 +133,20 @@ const navSections: NavSection[] = [
     label: 'Comunicação',
     items: [
       { name: 'Links personalizados', href: '/custom-links', icon: Link2 },
-      { name: 'Automações', href: '/mensageria', icon: MessageSquare },
       { name: 'Smart Lists', href: '/smart-lists', icon: ListFilter },
       { name: 'Campanhas', href: '/campaigns', icon: Send },
+    ],
+  },
+  {
+    id: 'whatsapp',
+    icon: SiWhatsapp,
+    label: 'WhatsApp',
+    items: [
+      { name: 'Dashboard', href: '/whatsapp', exact: true, icon: LayoutDashboard },
+      { name: 'Conexões', href: '/whatsapp/connections', icon: Link2 },
+      { name: 'Templates', href: '/whatsapp/templates', icon: FileText },
+      { name: 'Conversas', href: '/whatsapp/conversations', icon: MessageSquare },
+      { name: 'Automações', href: '/whatsapp/automations', icon: Zap },
     ],
   },
   {
@@ -336,7 +349,7 @@ const navSections: NavSection[] = [
 
 const navGroups: NavGroup[] = [
   { heading: 'Principal', sectionIds: ['dashboard', 'clientes', 'b2c'] },
-  { heading: 'Operação', sectionIds: ['pedidos', 'offline', 'comunicacao', 'catalogo', 'assets', 'precos', 'wms', 'paginas'] },
+  { heading: 'Operação', sectionIds: ['pedidos', 'offline', 'comunicacao', 'whatsapp', 'catalogo', 'assets', 'precos', 'wms', 'paginas'] },
   { heading: 'Gestão', sectionIds: ['admin', 'settings'] },
 ]
 
@@ -358,9 +371,9 @@ function getSectionForPathname(pathname: string): string {
     pathname.startsWith('/carrinhos-abandonados')
   ) return 'pedidos'
   if (pathname.startsWith('/offline')) return 'offline'
+  if (pathname.startsWith('/whatsapp')) return 'whatsapp'
   if (
     pathname.startsWith('/custom-links') ||
-    pathname.startsWith('/mensageria') ||
     pathname.startsWith('/smart-lists') ||
     pathname.startsWith('/campaigns')
   ) return 'comunicacao'

@@ -10,7 +10,7 @@ export async function POST(req: NextRequest) {
   }
 
   const { campaignId } = await req.json().catch(() => ({})) as { campaignId?: string }
-  const state = getState()
+  const state = await getState()
   const campaign = state.campaigns.find((item) => item.id === campaignId)
   if (!campaign) return NextResponse.json({ error: 'Campaign not found.' }, { status: 404 })
 
@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
   const missingOptIn = contacts.filter((contact) => !contact.optInWhatsapp)
 
   if (!template || template.status !== 'APPROVED') {
-    addLog({
+    await addLog({
       type: 'campaign_error',
       status: 'failed',
       description: 'Campaign send blocked because no approved template is selected.',
@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (missingOptIn.length > 0) {
-    addLog({
+    await addLog({
       type: 'campaign_error',
       status: 'failed',
       description: 'Campaign send blocked because one or more contacts do not have WhatsApp opt-in.',
@@ -42,7 +42,7 @@ export async function POST(req: NextRequest) {
   }
 
   const sent = contacts.length
-  saveCampaign({
+  await saveCampaign({
     ...campaign,
     status: 'Sent',
     metrics: {
@@ -55,12 +55,12 @@ export async function POST(req: NextRequest) {
     },
     updatedAt: new Date().toISOString(),
   })
-  addLog({
+  await addLog({
     type: 'campaign_sent',
     status: 'info',
     description: 'Campaign marked as sent in local workflow. Bulk Meta dispatch requires production send worker configuration.',
     safePayload: { campaign: campaign.name, recipients: sent, template: template.name },
     recommendedAction: 'Connect a production-safe send worker before high-volume dispatch.',
   })
-  return NextResponse.json(getState())
+  return NextResponse.json(await getState())
 }

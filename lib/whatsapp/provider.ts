@@ -4,12 +4,13 @@ import type {
   TemplateButton,
   TemplateComponent,
   WhatsAppBusinessAccount,
+  MessageMediaType,
   WhatsAppPhoneNumber,
   WhatsAppTemplate,
 } from './types'
 import { sanitizeError } from './store'
 
-const GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v19.0'
+const GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v24.0'
 const GRAPH = `https://graph.facebook.com/${GRAPH_VERSION}`
 
 interface GraphError {
@@ -23,6 +24,15 @@ interface GraphError {
 interface GraphResponse<T> {
   data?: T
   error?: GraphError
+}
+
+interface GraphPhoneNumber {
+  id: string
+  display_phone_number?: string
+  verified_name?: string
+  quality_rating?: string
+  status?: string
+  code_verification_status?: string
 }
 
 export interface MetaCallResult<T> {
@@ -57,7 +67,11 @@ async function graphGet<T>(path: string): Promise<MetaCallResult<T>> {
       return { ok: false, error: sanitizeError(body.error ?? `Meta HTTP ${res.status}`) }
     }
 
-    return { ok: true, data: body.data as T }
+    const data = body.data !== undefined
+      ? body.data
+      : body as unknown as T
+
+    return { ok: true, data }
   } catch (error) {
     return { ok: false, error: sanitizeError(error, 'Check server network access to graph.facebook.com.') }
   }
@@ -84,6 +98,27 @@ async function graphPost<T>(path: string, payload: Record<string, unknown>): Pro
     }
 
     return { ok: true, data: body as T }
+  } catch (error) {
+    return { ok: false, error: sanitizeError(error, 'Check server network access to graph.facebook.com.') }
+  }
+}
+
+async function graphMultipartPost<T>(path: string, body: FormData): Promise<MetaCallResult<T>> {
+  const token = systemToken()
+  if (!token) return { ok: false, error: noTokenError() }
+
+  try {
+    const res = await fetch(`${GRAPH}${path}`, {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { Authorization: `Bearer ${token}` },
+      body,
+    })
+    const payload = (await res.json().catch(() => ({}))) as GraphResponse<T> & T
+    if (!res.ok || payload.error) {
+      return { ok: false, error: sanitizeError(payload.error ?? `Meta HTTP ${res.status}`) }
+    }
+    return { ok: true, data: payload as T }
   } catch (error) {
     return { ok: false, error: sanitizeError(error, 'Check server network access to graph.facebook.com.') }
   }
@@ -123,28 +158,57 @@ export async function listWabas(businessId: string): Promise<MetaCallResult<What
 
 export async function listPhoneNumbers(wabaId: string): Promise<MetaCallResult<WhatsAppPhoneNumber[]>> {
   const fields = 'id,display_phone_number,verified_name,quality_rating,status,code_verification_status'
-  const result = await graphGet<Array<{
-    id: string
-    display_phone_number?: string
-    verified_name?: string
-    quality_rating?: string
-    status?: string
-    code_verification_status?: string
-  }>>(`/${wabaId}/phone_numbers?fields=${fields}&limit=100`)
+  const result = await graphGet<GraphPhoneNumber[]>(`/${wabaId}/phone_numbers?fields=${fields}&limit=100`)
 
   if (!result.ok) return { ok: false, error: result.error }
 
   return {
     ok: true,
-    data: (result.data ?? []).map((phone) => ({
-      id: phone.id,
-      displayPhoneNumber: phone.display_phone_number || phone.id,
-      verifiedName: phone.verified_name,
-      qualityRating: phone.quality_rating,
-      status: phone.status,
-      codeVerificationStatus: phone.code_verification_status,
-    })),
+    data: (result.data ?? []).map((phone) => mapPhoneNumber(phone, wabaId)),
   }
+}
+
+function mapPhoneNumber(phone: GraphPhoneNumber, wabaId?: string): WhatsAppPhoneNumber {
+  return {
+    id: phone.id,
+    wabaId,
+    displayPhoneNumber: phone.display_phone_number || phone.id,
+    verifiedName: phone.verified_name,
+    qualityRating: phone.quality_rating,
+    status: phone.status,
+    codeVerificationStatus: phone.code_verification_status,
+  }
+}
+
+export async function getPhoneNumber(phoneNumberId: string, wabaId?: string): Promise<MetaCallResult<WhatsAppPhoneNumber>> {
+  const fields = 'id,display_phone_number,verified_name,quality_rating,status,code_verification_status'
+  const result = await graphGet<GraphPhoneNumber>(`/${phoneNumberId}?fields=${fields}`)
+  if (!result.ok) return { ok: false, error: result.error }
+
+  return {
+    ok: true,
+    data: mapPhoneNumber(result.data!, wabaId),
+  }
+}
+
+export async function registerPhoneNumber(
+  phoneNumberId: string,
+  pin: string,
+): Promise<MetaCallResult<{ success?: boolean | string }>> {
+  if (!/^\d{6}$/.test(pin)) {
+    return {
+      ok: false,
+      error: {
+        message: 'WHATSAPP_TWO_STEP_PIN must contain exactly 6 digits.',
+        action: 'Configure a 6-digit PIN in the server environment and redeploy.',
+      },
+    }
+  }
+
+  return graphPost<{ success?: boolean | string }>(`/${encodeURIComponent(phoneNumberId)}/register`, {
+    messaging_product: 'whatsapp',
+    pin,
+  })
 }
 
 function extractBody(components: TemplateComponent[]): string {
@@ -196,6 +260,7 @@ export async function listTemplates(wabaId: string): Promise<MetaCallResult<What
       return {
         id: `meta-${template.id}`,
         metaTemplateId: template.id,
+        wabaId,
         name: template.name,
         category: template.category === 'UTILITY' || template.category === 'AUTHENTICATION' ? template.category : 'MARKETING',
         language: template.language || 'en_US',
@@ -293,6 +358,71 @@ export async function sendTextMessage(input: {
       body: input.text,
     },
   })
+}
+
+export async function uploadMedia(input: {
+  phoneNumberId: string
+  file: Blob
+  filename: string
+  mimeType: string
+}): Promise<MetaCallResult<{ id?: string }>> {
+  const body = new FormData()
+  body.set('messaging_product', 'whatsapp')
+  body.set('type', input.mimeType)
+  body.set('file', input.file, input.filename)
+  return graphMultipartPost<{ id?: string }>(`/${input.phoneNumberId}/media`, body)
+}
+
+export async function sendMediaMessage(input: {
+  phoneNumberId: string
+  to: string
+  type: MessageMediaType
+  mediaId: string
+  caption?: string
+  filename?: string
+}): Promise<MetaCallResult<{ messages?: { id: string }[] }>> {
+  const media: Record<string, unknown> = { id: input.mediaId }
+  if (input.caption && input.type !== 'audio' && input.type !== 'sticker') media.caption = input.caption
+  if (input.filename && input.type === 'document') media.filename = input.filename
+
+  return graphPost<{ messages?: { id: string }[] }>(`/${input.phoneNumberId}/messages`, {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to: input.to.replace(/\D/g, ''),
+    type: input.type,
+    [input.type]: media,
+  })
+}
+
+export async function downloadMedia(mediaId: string): Promise<MetaCallResult<{
+  bytes: ArrayBuffer
+  mimeType: string
+  fileSize?: number
+  sha256?: string
+}>> {
+  const metadata = await graphGet<{ url?: string; mime_type?: string; file_size?: number; sha256?: string }>(`/${encodeURIComponent(mediaId)}`)
+  if (!metadata.ok || !metadata.data?.url) return { ok: false, error: metadata.error ?? { message: 'A Meta não retornou a URL da mídia.' } }
+  const token = systemToken()
+  if (!token) return { ok: false, error: noTokenError() }
+
+  try {
+    const response = await fetch(metadata.data.url, {
+      cache: 'no-store',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!response.ok) return { ok: false, error: sanitizeError(`Meta media HTTP ${response.status}`) }
+    return {
+      ok: true,
+      data: {
+        bytes: await response.arrayBuffer(),
+        mimeType: response.headers.get('content-type') || metadata.data.mime_type || 'application/octet-stream',
+        fileSize: metadata.data.file_size,
+        sha256: metadata.data.sha256,
+      },
+    }
+  } catch (error) {
+    return { ok: false, error: sanitizeError(error, 'Tente baixar a mídia novamente enquanto ela ainda estiver disponível na Meta.') }
+  }
 }
 
 export async function subscribeWabaToApp(wabaId: string): Promise<MetaCallResult<{ success?: boolean }>> {

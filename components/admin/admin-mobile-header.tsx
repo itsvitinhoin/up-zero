@@ -31,6 +31,8 @@ import {
   Receipt,
   RotateCcw,
   Truck,
+  Send,
+  Zap,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import AdminThemeSelector from '@/components/admin/admin-theme-selector'
@@ -51,6 +53,7 @@ import type { SessionUser } from '@/lib/types'
 import { logoutAction } from '@/lib/actions/auth'
 import { useAdminStore } from '@/contexts/admin-store-context'
 import { canAccessNavHref } from '@/lib/admin-navigation-permissions'
+import { SiWhatsapp } from 'react-icons/si'
 
 type AdminMobileHeaderProps = {
   session?: SessionUser | null
@@ -126,10 +129,20 @@ const navigation: MobileNavItem[] = [
     ],
   },
   {
-    name: 'Mensageria',
-    icon: MessageSquare,
+    name: 'WhatsApp',
+    icon: SiWhatsapp,
     children: [
-      { name: 'Automações', href: '/mensageria', icon: MessageSquare },
+      { name: 'Dashboard', href: '/whatsapp', icon: LayoutDashboard },
+      { name: 'Conexões', href: '/whatsapp/connections', icon: Link2 },
+      { name: 'Templates', href: '/whatsapp/templates', icon: FileText },
+      { name: 'Conversas', href: '/whatsapp/conversations', icon: MessageSquare },
+      { name: 'Automações', href: '/whatsapp/automations', icon: Zap },
+    ],
+  },
+  {
+    name: 'Comunicação',
+    icon: Send,
+    children: [
       { name: 'Smart Lists', href: '/smart-lists', icon: MessageSquare },
       { name: 'Campanhas', href: '/campaigns', icon: MessageSquare },
     ],

@@ -1,21 +1,23 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { subscribeWabaToApp } from '@/lib/whatsapp/provider'
-import { addLog, getState, maskId, updateIntegration } from '@/lib/whatsapp/store'
+import { addLog, getState, maskId, updateIntegration, updateState } from '@/lib/whatsapp/store'
 import { checkUserPermission } from '@/lib/actions/permissions'
 
 
-export async function POST() {
+export async function POST(req: NextRequest) {
   const permission = await checkUserPermission('messaging.manage_settings').catch(() => null)
   if (permission?.has_permission !== true) {
     return NextResponse.json({ error: 'Você não tem permissão para gerenciar configurações de mensageria' }, { status: 403 })
   }
 
-  const state = getState()
-  const wabaId = state.integration.wabaId
+  const state = await getState()
+  const body = await req.json().catch(() => ({})) as { wabaId?: string; phoneNumberId?: string }
+  const phone = body.phoneNumberId ? state.phoneNumbers.find((item) => item.id === body.phoneNumberId) : undefined
+  const wabaId = body.wabaId ?? phone?.wabaId ?? state.integration.wabaId
 
   if (!wabaId) {
     const error = 'No WhatsApp Business Account is selected.'
-    addLog({
+    await addLog({
       type: 'webhook_received',
       status: 'needs_attention',
       description: `Needs attention: ${error}`,
@@ -27,7 +29,7 @@ export async function POST() {
   const result = await subscribeWabaToApp(wabaId)
 
   if (!result.ok) {
-    addLog({
+    await addLog({
       type: 'webhook_received',
       status: 'failed',
       description: 'Failed: the selected WABA was not subscribed to this Meta app.',
@@ -38,8 +40,13 @@ export async function POST() {
     return NextResponse.json({ ok: false, error: result.error }, { status: 200 })
   }
 
-  updateIntegration({ webhookSubscribedAt: new Date().toISOString() })
-  addLog({
+  const subscribedAt = new Date().toISOString()
+  await updateState((next) => {
+    const waba = next.wabas.find((item) => item.id === wabaId)
+    if (waba) waba.webhookSubscribedAt = subscribedAt
+  })
+  if (state.integration.wabaId === wabaId) await updateIntegration({ webhookSubscribedAt: subscribedAt })
+  await addLog({
     type: 'webhook_received',
     status: 'success',
     description: 'Selected WABA subscribed to this Meta app for webhook events.',

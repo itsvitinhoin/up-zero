@@ -24,7 +24,7 @@ export async function GET() {
     return NextResponse.json({ error: 'Você não tem permissão para visualizar mensageria' }, { status: 403 })
   }
 
-  return NextResponse.json(getState().campaigns)
+  return NextResponse.json((await getState()).campaigns)
 }
 
 export async function POST(req: NextRequest) {
@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
     status?: CampaignStatus
     estimatedCost?: number
   }
-  const state = getState()
+  const state = await getState()
   const list = state.contactLists.find((item) => item.id === body.listId)
   const totalContacts = list?.contactIds.length ?? 0
   const now = new Date().toISOString()
@@ -62,13 +62,13 @@ export async function POST(req: NextRequest) {
     updatedAt: now,
   }
 
-  saveCampaign(campaign)
-  addLog({
+  await saveCampaign(campaign)
+  await addLog({
     type: 'campaign_created',
     status: 'success',
     description: 'Campaign saved.',
     safePayload: { campaign: campaign.name, status: campaign.status, contacts: totalContacts },
     recommendedAction: 'Review opt-in, approved template and cost before sending.',
   })
-  return NextResponse.json(getState(), { status: 201 })
+  return NextResponse.json(await getState(), { status: 201 })
 }

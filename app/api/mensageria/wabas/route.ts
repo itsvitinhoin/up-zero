@@ -10,7 +10,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Você não tem permissão para visualizar mensageria' }, { status: 403 })
   }
 
-  const state = getState()
+  const state = await getState()
   const businessId = new URL(req.url).searchParams.get('businessId') ?? state.integration.businessId
 
   if (!businessId) {
@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
   const result = await listWabas(businessId)
 
   if (!result.ok) {
-    addLog({
+    await addLog({
       type: 'waba_loaded',
       status: 'failed',
       description: 'Failed: WhatsApp Business Accounts could not be loaded from Meta.',
@@ -31,10 +31,15 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ data: state.wabas, error: result.error, source: 'local' })
   }
 
-  updateState((next) => {
-    next.wabas = result.data ?? []
+  await updateState((next) => {
+    const incoming = (result.data ?? []).map((waba) => {
+      const existing = next.wabas.find((item) => item.id === waba.id)
+      return { ...existing, ...waba, webhookSubscribedAt: existing?.webhookSubscribedAt }
+    })
+    const incomingIds = new Set(incoming.map((waba) => waba.id))
+    next.wabas = [...incoming, ...next.wabas.filter((waba) => waba.businessId !== businessId && !incomingIds.has(waba.id))]
     next.integration.lastSyncAt = new Date().toISOString()
   })
-  addLog({ type: 'waba_loaded', status: 'success', description: 'WABAs loaded from Meta.', safePayload: { businessId: maskId(businessId), count: result.data?.length ?? 0 } })
+  await addLog({ type: 'waba_loaded', status: 'success', description: 'WABAs loaded from Meta.', safePayload: { businessId: maskId(businessId), count: result.data?.length ?? 0 } })
   return NextResponse.json({ data: result.data ?? [], source: 'meta' })
 }
