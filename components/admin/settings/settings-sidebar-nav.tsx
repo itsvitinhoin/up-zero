@@ -85,7 +85,7 @@ function getSettingsNav(locale?: string): NavGroup[] {
         { label: "Popup", anchor: "popup" },
         { label: tAdmin(locale, "admin.nav.appearance.mainBanner"), anchor: "main-banner" },
         { label: tAdmin(locale, "admin.nav.appearance.miniBanners"), anchor: "mini-banners" },
-        { label: tAdmin(locale, "admin.nav.appearance.categoryBanners"), anchor: "category-banners" },
+        { label: "Banners do Tema", anchor: "category-banners" },
         { label: tAdmin(locale, "admin.nav.appearance.infoBanners"), anchor: "info-banners" },
         { label: tAdmin(locale, "admin.nav.appearance.homeCategories"), anchor: "home-categories" },
         { label: tAdmin(locale, "admin.nav.appearance.colors"), anchor: "site-colors" },

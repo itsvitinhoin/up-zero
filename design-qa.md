@@ -1,126 +1,118 @@
-# Design QA — B2C Admin
+# Design QA — editor visual do mega menu Groovy
 
-## Visual target
+## Evidence
 
-- Existing Admin settings page: `artifacts/design-qa/source-settings-b2b.png`
-- Implemented B2C settings page: `artifacts/design-qa/implementation-settings-b2c.png`
-- Side-by-side comparison: `artifacts/design-qa/comparison-settings-b2b-vs-b2c.png`
-- The supplied screenshot was used as the removal reference for the oversized hero and metric block.
+- Source visual truth path: `/var/folders/q3/9qymc_8s2s18sx2888mvrdz00000gn/T/codex-clipboard-d25c042f-cbbc-491f-ba61-55b077eb8fe7.png`
+- Flexibility reference path: `/var/folders/q3/9qymc_8s2s18sx2888mvrdz00000gn/T/codex-clipboard-87f991d2-d860-45d1-80d5-8e807716b060.png`
+- Source pixels: `2478 × 918`; the source is a wide desktop capture without the Admin sidebar.
+- Implementation URL: `http://localhost:3000/pages/menu/88`
+- Implementation screenshot: browser-rendered CUA captures made from the authenticated Chrome tab; the browser provider returned the images inline and did not expose a filesystem path.
+- Implementation capture pixels: `1512 × 692`.
+- CSS viewport/device density: normal desktop Chrome viewport; no synthetic mobile emulation or density scaling was applied.
+- State: Groovy store authenticated, menu `Header`, base list and visual editor opened for the first top-level item.
+- Density normalization: comparison used the common content region rather than raw pixel scale because the source omits the persistent sidebar and has a different desktop crop.
 
-## Visual review
+## Full-view comparison evidence
 
-- Header now follows the compact settings pattern already used by B2B: icon, title and supporting text without an extra hero card.
-- Typography uses the global Admin Geist stack and the existing type scale.
-- Section cards, borders, radii, spacing, icon treatments, switches and floating save action match the existing Admin components.
-- B2C Dashboard, Clientes and Pedidos now use the same page header, metric card density and filter styling as the established Admin pages.
-- Dark and light themes continue to use the existing semantic tokens; no fixed page background or independent theme was introduced.
-- Desktop layout was compared directly against the existing B2B settings page at the same browser viewport.
-- Responsive behavior uses the Admin breakpoints, stacked controls and existing mobile card lists; the list editor becomes a full-width sheet on small screens.
+The source and implementation were both opened and visually inspected. In the common content region, the implementation preserves the source hierarchy: page title and metadata on the left, `Visualizar` and `Adicionar Item` on the right, a large white bordered card, reorder guidance, and one horizontal row per menu item. The implementation intentionally adds a low-emphasis `Personalizar` action on each top-level row without changing the existing drag, status, or overflow controls.
 
-## Functional review
+## Focused region comparison evidence
 
-- Created a new reseller list through the UI.
-- Changed filter criteria and confirmed the live reseller result count.
-- Saved the list in the editor and confirmed it appeared in the settings page.
-- Reloaded without persisting the temporary QA list, then saved the default configuration through the local sandbox API.
-- Confirmed success feedback after persistence.
-- Confirmed the sidebar anchors for Distribuição, Listas de Revendedores and Regras da Roleta.
-- Confirmed reseller-list filters are used by the Admin assignment pool and by the sandbox automatic distribution algorithm.
+The visual-editor sheet was inspected in its enabled and disabled states. The focused comparison covered the desktop navigation preview, two independently editable link columns, editorial image, headline/CTA block, activation switch, layout selector, image field, text fields, and persistent save bar. The latest source and implementation were compared at the same open-editor desktop state: both keep the two-column navigation plus editorial card composition, while the implementation adds low-emphasis controls below each column instead of changing the visual hierarchy.
 
-## Assets
+## Required fidelity surfaces
 
-- No photographic or brand assets were required for this screen.
-- Interface icons use the project's existing Lucide icon system.
+- Fonts and typography: existing Admin font stack and hierarchy are preserved; headings, metadata, labels, and helper text match the surrounding product UI.
+- Spacing and layout rhythm: the base list remains aligned to the source; the editor uses a wide preview/inspector split and keeps the save action visible.
+- Colors and visual tokens: existing background, border, muted, foreground, destructive, and primary tokens are reused.
+- Image quality and asset fidelity: the editor resolves the Groovy theme's existing storefront editorial assets instead of showing broken relative URLs; uploaded images continue using the existing upload and Cloudflare rendering components.
+- Copy and content: all controls are in Portuguese and describe the actual behavior. The four Groovy presentation formats, optional description, CTA, and publishing state are explicit.
 
-final result: passed
+## Findings and comparison history
 
----
+- Pass 1 — [P2] Editorial image appeared broken in the Admin preview because the Groovy defaults use storefront-relative asset URLs.
+  - Fix: relative editorial assets are now resolved against the configured storefront origin for preview purposes without changing the saved value.
+  - Post-fix evidence: both the large preview image and upload-field preview render the existing Groovy campaign image.
+- Pass 1 — [P2] `aria-disabled` on the whole inspector incorrectly exposed edit/subitem actions as disabled when only the mega-menu fields should be inactive.
+  - Fix: removed the inherited disabled state and kept explicit `disabled` props only on controls governed by the activation switch.
+  - Post-fix evidence: `Editar item principal` and `Subitem` remain available while the format and editorial inputs correctly follow the switch.
+- Pass 1 — [P2] Next.js reported a current-time prerender issue while loading menu categories.
+  - Fix: the protected menu detail now calls `await connection()` before request-time data access, following the bundled Next.js 16 guidance.
+  - Post-fix evidence: the route reloaded without the issue overlay.
+- Pass 2: no remaining actionable P0/P1/P2 visual or interaction findings.
+- Pass 3 — [P1] The preview visually split existing children in half and only exposed an add action for an empty column, so the user could not intentionally add several category/page/URL links to a chosen group.
+  - Fix: each column now has a persistent `Adicionar link` action, its own editable title and an unlimited item count. New items return to the editor in the chosen column.
+  - Post-fix evidence: the authenticated Admin preview showed `Categorias / Conjuntos` and `Compre por / Blusas`, with an add action in both columns even while populated.
+- Pass 3 — [P2] The theme stored the mega-menu layout and editorial content but not the relationship between a real child menu item and its visual column.
+  - Fix: added `megaMenuNavigation`, keyed by parent menu item id and containing column titles plus child ids. The storefront resolves those ids against the real `Páginas > Menu` links.
+  - Post-fix evidence: after `Salvar e publicar`, the local storefront rendered the saved groups exactly as `Categorias > Conjuntos` and `Compre por > Blusas`.
+- Pass 3 — [P2] Reassigning a link between groups needed a direct interaction.
+  - Fix: each preview row exposes a keyboard-labelled move action on hover/focus. Moving `Conjuntos` to the second column immediately updated the preview counts from `1/1` to `0/2`; moving it back restored `1/1` without publishing the QA detour.
+- Pass 4: no remaining actionable P0/P1/P2 visual or interaction findings.
 
-# Design QA — Saúde da conexão WhatsApp
+## Primary interactions tested
 
-## Referência e implementação
+- Opened the editor from `Personalizar`.
+- Toggled the mega menu on and confirmed the preview transition.
+- Opened the format selector and switched from `Categorias` to `Mais vendidos`.
+- Confirmed editorial copy and image update with the selected format.
+- Opened the `Novo Sub-item` dialog and cancelled without changing production data.
+- Confirmed the link dialog accepts `Todos os produtos`, external URL, category, promotion, and institutional page types.
+- Tested both persistent `Adicionar link` actions and cancelled without creating QA data.
+- Tested moving an existing link between columns and restored its original position.
+- Published the real current grouping (no mock content) and confirmed the success toast.
+- Opened the matching storefront menu by keyboard focus and confirmed the published two-column structure, editorial asset and CTA.
+- Verified the connected storefront `/1043` with real Groovy products, categories, videos, navigation, identity, and footer data.
 
-- Referência enviada: `/var/folders/q3/9qymc_8s2s18sx2888mvrdz00000gn/T/codex-clipboard-4facd6ba-1622-416d-a9b4-c67d1ad72f08.png`.
-- Evidência sem interação: `design-qa-whatsapp-connection-health.png`.
-- Evidência com o diagnóstico aberto: `design-qa-whatsapp-connection-health-tooltip.png`.
-- Viewport final: 1265 × 720, tema claro, conexão com pendências.
+## Console errors checked
 
-## Comparação visual
+- The route-specific Next.js prerender issue found on the first pass was fixed.
+- Remaining chart-size warnings came from the previously visited dashboard and are unrelated to the menu route.
+- Targeted ESLint reported no errors in the edited Admin files.
+- The React review confirmed derived column state is computed during render rather than synchronized with a cascading effect; lookup-heavy rendering uses `Map`/`Set`, and the server action retains authorization checks.
+- Admin production build, storefront TypeScript validation and storefront production build with webpack completed successfully. The default Turbopack production build hit the known local port-binding sandbox restriction; it was not a source-code failure.
 
-- O card, o badge vermelho, a tipografia, as bordas e a hierarquia originais foram preservados.
-- O badge “Requer atenção” agora comunica interatividade com cursor de ajuda, foco por teclado e descrição acessível.
-- O tooltip usa o design system existente e apresenta cada pendência com motivo e orientação, sem introduzir uma nova navegação ou alterar a densidade do card.
-- A ação “Corrigir automaticamente” permanece agrupada com as demais ações da conexão e usa o mesmo padrão visual de botão secundário.
+## Follow-up polish
 
-## Fluxos validados
+- [P3] Consider a dedicated compact preview for mobile menu behavior in a later iteration; the supplied source and current requirement are desktop-focused.
 
-- Hover e foco no badge exibem a lista dinâmica de pendências.
-- A conexão de QA apresentou corretamente três motivos: status da Meta não confirmado, webhook pendente e verificação do número pendente.
-- A correção automática atualiza a saúde do Phone Number diretamente na Meta e tenta inscrever o aplicativo no webhook da WABA.
-- Pendências que exigem confirmação por SMS ou ligação são explicitamente identificadas como ação manual na Meta.
-- Build de produção concluído sem erro e navegador validado sem warnings ou erros de console.
+## Appearance cleanup and Groovy banner uploads
 
-final result: passed
+### Evidence
 
----
+- Source paths: `/var/folders/q3/9qymc_8s2s18sx2888mvrdz00000gn/T/codex-clipboard-6a2a777d-a9af-43e8-8ea8-507bae247dc1.png` and `/var/folders/q3/9qymc_8s2s18sx2888mvrdz00000gn/T/codex-clipboard-73093b87-d71a-4b22-9f1d-f60924738d0d.png`.
+- Source intent: remove the mega-menu editorial editor from Appearance, remove the obsolete category-banner mode selector and expose three direct upload slots for the Groovy Home banners.
+- Implementation URL: `http://localhost:3000/settings/appearance#category-banners`.
+- Implementation screenshot: authenticated Chrome CUA capture, rendered inline at `1512 × 692`; the browser provider did not expose a filesystem path.
+- Density normalization: the comparison used the full three-column content card because the supplied sources use different crops and desktop widths.
 
-# Design QA — Módulo WhatsApp
+### Comparison and findings
 
-## Referências comparadas
+- Pass 1 — [P1] The Appearance page duplicated mega-menu configuration that now belongs to `Páginas > Menu`.
+  - Fix: removed the complete mega-menu editorial block from Appearance. The menu editor remains the single editing surface for mega-menu links, layout and image.
+- Pass 1 — [P1] The old `Banners de Categoria` section exposed automatic/custom/disabled modes that do not map to the three fixed Groovy banner positions.
+  - Fix: replaced it with exactly three vertical upload cards, ordered left-to-right, each with status, image, optional destination URL and alternative text.
+- Pass 1 — [P2] Existing banner data could have been lost during the interface replacement.
+  - Fix: the editor normalizes and reuses the first three stored `categoryBanners`; the authenticated visual check showed the existing second image preserved while empty positions remained explicit upload placeholders.
+- Pass 1 — [P2] The generic category banner crop was horizontal (`1200×400`) and did not match the storefront composition.
+  - Fix: added a dedicated Groovy image type at `900×1200` (3:4 portrait), matching the three Home cards.
+- Pass 2: no remaining actionable P0/P1/P2 visual or interaction findings.
 
-- `/var/folders/q3/9qymc_8s2s18sx2888mvrdz00000gn/T/TemporaryItems/NSIRD_screencaptureui_4Ci03t/Captura de Tela 2026-08-14 às 11.36.41.png`
-- `/var/folders/q3/9qymc_8s2s18sx2888mvrdz00000gn/T/TemporaryItems/NSIRD_screencaptureui_gHchH3/Captura de Tela 2026-08-14 às 11.36.55.png`
-- `/var/folders/q3/9qymc_8s2s18sx2888mvrdz00000gn/T/TemporaryItems/NSIRD_screencaptureui_lUt7ab/Captura de Tela 2026-08-14 às 11.37.03.png`
-- `/var/folders/q3/9qymc_8s2s18sx2888mvrdz00000gn/T/TemporaryItems/NSIRD_screencaptureui_1CreMZ/Captura de Tela 2026-08-14 às 11.37.14.png`
+### Connection verification
 
-## Resultado visual
+- The new controls continue writing to `SiteCustomization.categoryBanners`; no parallel or presentation-only setting was introduced.
+- The existing settings save action already serializes and persists `categoryBanners`.
+- The storefront theme parser already reads `meta.categoryBanners`, and the Groovy Home component renders the first three active entries between the product carousels.
+- For themes without this capability, the card remains visible but greyed out with `Não disponível neste tema`, matching the template capability model.
 
-- Hierarquia dos insights, cards de métricas, barras analíticas e modal de conversas reproduzida dentro do design system atual do Admin.
-- Tipografia, bordas, raios, espaçamento, cores e densidade mantêm a identidade existente da UP Zero em Light e Dark.
-- Dashboard validado em desktop e viewport mobile de 390 × 844 sem sobreposição ou conteúdo cortado.
-- Navegação interna foi consolidada no menu lateral; a barra horizontal duplicada foi removida de todas as páginas.
-- Conexões, Templates, Conversas e Automações carregam corretamente com dados realistas de simulação local.
-- Modal “ver conversas” validado com tabela, RFV, total gasto, última compra, resumo e acesso à conversa.
-- Nenhum erro ou warning foi registrado no console durante a validação final.
+### Validation
 
-## Fluxos validados
+- Targeted ESLint passed for `CustomizationTab.tsx`, `image-upload.tsx` and `settings-sidebar-nav.tsx`.
+- The only ESLint errors in `admin-sidebar.tsx` are two pre-existing `set-state-in-effect` findings at lines 434 and 449, unrelated to the label-only change in this iteration.
+- `git diff --check` passed.
+- Admin production build completed successfully with all 148 static pages generated.
+- Authenticated browser QA confirmed the new section, three upload positions, preserved current image and fixed portrait recommendation.
 
-- Menu lateral e menu mobile do WhatsApp.
-- Cinco rotas do módulo.
-- Abertura de insight e modal de conversas.
-- Interface de múltiplas conexões e integração manual.
-- Seleção de número e criação de template.
-- Inbox estilo WhatsApp com classificação de lead e origem da mensagem.
-- Criação e ativação de automações com `seller_phone` e fallback.
-
-final result: passed
-
----
-
-# Design QA — WhatsApp / Templates e Conexões
-
-## Referência e implementação
-
-- Referência de remoção do submenu: `/var/folders/q3/9qymc_8s2s18sx2888mvrdz00000gn/T/TemporaryItems/NSIRD_screencaptureui_2xfEvM/Captura de Tela 2026-08-14 às 12.27.06.png`
-- Evidência da implementação: `artifacts/design-qa/whatsapp-templates-after.png`
-- Viewport visual final: 1400 × 900.
-
-## Comparação visual
-
-- A barra horizontal Dashboard / Conexões / Templates / Conversas / Automações não aparece mais no conteúdo; a navegação ficou concentrada no menu lateral.
-- A tela de Templates agora começa com os cards dos números e mantém o restante do módulo oculto até a seleção de uma conexão.
-- Após selecionar um número, o fluxo exibe contexto da conexão, criação, prévia e lista de modelos sem introduzir uma segunda navegação.
-- Campos opcionais estão identificados de forma discreta e a hierarquia usa os mesmos painéis, bordas, tipografia e espaçamento do Admin.
-- As variáveis numéricas ficam visualmente ligadas ao seletor de payload correspondente.
-
-## Fluxos validados
-
-- Estado inicial de Templates apenas com cards dos números.
-- Seleção do número e abertura progressiva do módulo.
-- Inserção sequencial de `{{1}}` e `{{2}}` no corpo.
-- Renderização de um seletor de payload para cada variável.
-- Preços em reais exibidos nas opções de categoria.
-- Fallback selecionável em Conexões e removido do formulário de Automações.
-- Build de produção concluído e nova aba do navegador validada sem erros no console.
+## Final result
 
 final result: passed

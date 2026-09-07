@@ -1,10 +1,12 @@
 import { Suspense } from 'react'
 import { redirect } from 'next/navigation'
+import { connection } from 'next/server'
 import AdminMenuPage from '@/components/admin/admin-pages-menu-client'
 import { getAdminSession } from '@/lib/actions/auth'
 import { getMenuAction, getMenuItemsAction } from '@/lib/actions/menus'
 import { getCategoriesAction } from '@/lib/actions/categories'
 import { getInstitutionalPagesAction } from '@/lib/actions/pages'
+import { getSiteSettingsAction } from '@/lib/actions/settings'
 import { AdminRouteSkeleton } from '@/components/admin/admin-route-skeleton'
 
 export const metadata = {
@@ -27,6 +29,7 @@ export default function AdminMenuDetailPage({ params }: AdminMenuDetailPageProps
 }
 
 async function AdminMenuDetailPageContent({ params }: AdminMenuDetailPageProps) {
+  await connection()
   const session = await getAdminSession()
 
   if (!session) {
@@ -40,11 +43,12 @@ async function AdminMenuDetailPageContent({ params }: AdminMenuDetailPageProps) 
     redirect('/pages/menu')
   }
 
-  const [menuResult, menuItemsResult, categoriesResult, pagesResult] = await Promise.all([
+  const [menuResult, menuItemsResult, categoriesResult, pagesResult, settingsResult] = await Promise.all([
     getMenuAction(menuId, session.storeId),
     getMenuItemsAction(menuId),
     getCategoriesAction(),
     getInstitutionalPagesAction(session.storeId),
+    getSiteSettingsAction(session.storeId, { include: { theme: true } }),
   ])
 
   if (!menuResult.success || !menuResult.menu) {
@@ -74,13 +78,16 @@ async function AdminMenuDetailPageContent({ params }: AdminMenuDetailPageProps) 
   return (
     <AdminMenuPage
       menuId={menuId}
-      storeId={session.storeId}
       menuName={menuResult.menu.name}
       menuCode={menuResult.menu.code || null}
       menuType={menuResult.menu.type}
       initialItems={initialItems}
       initialCategories={initialCategories}
       initialInstitutionalPages={initialInstitutionalPages}
+      activeTemplateKey={settingsResult.data?.customization.templateKey || 'classic'}
+      initialMegaMenuEditorial={settingsResult.data?.customization.megaMenuEditorial || {}}
+      initialMegaMenuAssignments={settingsResult.data?.customization.megaMenuAssignments || {}}
+      initialMegaMenuNavigation={settingsResult.data?.customization.megaMenuNavigation || {}}
     />
   )
 }

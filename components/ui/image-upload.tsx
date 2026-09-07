@@ -17,6 +17,7 @@ export const IMAGE_DIMENSIONS = {
   mainBannerMobile: { width: 1000, height: 1500, label: 'Banner Mobile', aspectRatio: '1000x1500px' },
   popupSquare: { width: 1500, height: 1500, label: 'Popup', aspectRatio: '1500x1500px' },
   categoryBanner: { width: 1200, height: 400, label: 'Banner de Categoria', aspectRatio: '1200x400px' },
+  groovyCategoryBanner: { width: 900, height: 1200, label: 'Banner do tema Groovy', aspectRatio: '900x1200px' },
   productImage: { width: 683, height: 1024, label: 'Imagem de Produto', aspectRatio: '683x1024px' },
   productThumbnail: { width: 320, height: 420, label: 'Miniatura', aspectRatio: '320x420px' },
   pageContent: { width: 1200, height: 800, label: 'Imagem de Página', aspectRatio: '1200x800px' },

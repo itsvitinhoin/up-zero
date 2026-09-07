@@ -101,6 +101,8 @@ export function useSettingsSaveHandlers({
     formData.append("forceUppercaseText", String(settings.customization.forceUppercaseText ?? false));
     formData.append("menuTransparent", String(settings.customization.menuTransparent ?? false));
     formData.append("megaMenuEditorial", JSON.stringify(settings.customization.megaMenuEditorial || {}));
+    formData.append("megaMenuAssignments", JSON.stringify(settings.customization.megaMenuAssignments || {}));
+    formData.append("megaMenuNavigation", JSON.stringify(settings.customization.megaMenuNavigation || {}));
     formData.append("announcementBar", JSON.stringify(settings.customization.announcementBar || getDefaultAnnouncementBar()));
     formData.append("popupCoupon", JSON.stringify(settings.customization.popupCoupon || getDefaultPopupCoupon()));
     formData.append("mainBanners", JSON.stringify(settings.customization.mainBanners || []));

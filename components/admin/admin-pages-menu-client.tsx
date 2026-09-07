@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useMemo } from "react";
+import { AdminMegaMenuEditor } from "@/components/admin/admin-mega-menu-editor";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -18,9 +19,17 @@ import {
 import { Plus, Trash2, FileText, FolderTree, Link as LinkIcon, ArrowLeft, Eye, Loader2, MoreVertical, Pencil, ChevronRight, ChevronDown, GripVertical, Save } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
-import { createMenuItemAction, deleteMenuItemAction, updateMenuItemAction, getMenuItemsAction, updateMenuItemsOrderAction } from "@/lib/actions/menus";
+import { createMenuItemAction, deleteMenuItemAction, updateMenuItemAction, getMenuItemsAction, updateMenuItemsOrderAction, type MenuType } from "@/lib/actions/menus";
 import { useAdminStore } from "@/contexts/admin-store-context";
-import type { MenuItem, Category, InstitutionalPage } from "@/lib/types";
+import type {
+  MenuItem,
+  Category,
+  InstitutionalPage,
+  MegaMenuAssignments,
+  MegaMenuEditorialItem,
+  MegaMenuEditorialKey,
+  MegaMenuNavigation,
+} from "@/lib/types";
 
 interface MenuItemWithChildren extends MenuItem {
   children: MenuItemWithChildren[];
@@ -38,24 +47,30 @@ type MenuFormType = MenuItem["type"] | "all-products" | "promotion";
 
 interface AdminMenuPageProps {
   menuId: number;
-  storeId: number;
   menuName: string;
   menuCode?: string | null;
-  menuType: "retail" | "wholesale";
+  menuType: MenuType;
   initialItems?: MenuItem[];
   initialCategories?: Category[];
   initialInstitutionalPages?: InstitutionalPage[];
+  activeTemplateKey?: "classic" | "groovy";
+  initialMegaMenuEditorial?: Partial<Record<MegaMenuEditorialKey, MegaMenuEditorialItem>>;
+  initialMegaMenuAssignments?: MegaMenuAssignments;
+  initialMegaMenuNavigation?: MegaMenuNavigation;
 }
 
 export default function AdminMenuPage({
   menuId,
-  storeId,
   menuName,
   menuCode,
   menuType,
   initialItems = [],
   initialCategories = [],
   initialInstitutionalPages = [],
+  activeTemplateKey = "classic",
+  initialMegaMenuEditorial = {},
+  initialMegaMenuAssignments = {},
+  initialMegaMenuNavigation = {},
 }: AdminMenuPageProps) {
   const { session } = useAdminStore();
   const [isLoading, setIsLoading] = useState(false);
@@ -68,6 +83,12 @@ export default function AdminMenuPage({
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
   const [hasOrderChanges, setHasOrderChanges] = useState(false);
+  const [megaMenuEditorial, setMegaMenuEditorial] = useState(initialMegaMenuEditorial);
+  const [megaMenuAssignments, setMegaMenuAssignments] = useState(initialMegaMenuAssignments);
+  const [megaMenuNavigation, setMegaMenuNavigation] = useState(initialMegaMenuNavigation);
+  const [selectedMegaMenuItemId, setSelectedMegaMenuItemId] = useState<string | null>(null);
+  const [megaMenuEditorOpen, setMegaMenuEditorOpen] = useState(false);
+  const [returnToMegaMenuItemId, setReturnToMegaMenuItemId] = useState<string | null>(null);
 
   const categoryTree = useMemo(() => {
     type CategoryNode = Category & { children: CategoryNode[] };
@@ -170,6 +191,14 @@ export default function AdminMenuPage({
   );
 
   const menuTree = buildMenuTree(menuItems);
+  const selectedMegaMenuItem = selectedMegaMenuItemId
+    ? menuTree.find((item) => item.id === selectedMegaMenuItemId) || null
+    : null;
+
+  function openMegaMenuEditor(item: MenuItemWithChildren) {
+    setSelectedMegaMenuItemId(item.id);
+    setMegaMenuEditorOpen(true);
+  }
 
   function toggleExpanded(id: string) {
     setExpandedItems((prev) => {
@@ -230,6 +259,16 @@ export default function AdminMenuPage({
     setFormParentId(item.parentId || null);
     setFormSale(item.href.includes("sale=true"));
     setDialogOpen(true);
+  }
+
+  function closeItemDialog() {
+    setDialogOpen(false);
+    resetForm();
+    if (returnToMegaMenuItemId) {
+      setSelectedMegaMenuItemId(returnToMegaMenuItemId);
+      setMegaMenuEditorOpen(true);
+      setReturnToMegaMenuItemId(null);
+    }
   }
 
   function handleTypeChange(type: MenuFormType) {
@@ -377,9 +416,15 @@ export default function AdminMenuPage({
       }
     }
 
+    const megaMenuItemIdToReopen = returnToMegaMenuItemId;
     setDialogOpen(false);
     resetForm();
     await refreshMenuItems();
+    if (megaMenuItemIdToReopen) {
+      setSelectedMegaMenuItemId(megaMenuItemIdToReopen);
+      setMegaMenuEditorOpen(true);
+      setReturnToMegaMenuItemId(null);
+    }
     setIsBusy(false);
   }
 
@@ -537,6 +582,9 @@ export default function AdminMenuPage({
           onDragOver={(e) => handleDragOver(e, item.id)}
           onDragLeave={handleDragLeave}
           onDrop={(e) => handleDrop(e, item.id, item.parentId ?? null)}
+          onClick={() => {
+            if (level === 0) openMegaMenuEditor(item);
+          }}
           className={`flex items-center gap-2 p-3 rounded-lg border border-border/50 transition-all ${canEditPages ? "cursor-move" : "cursor-default"} ${
             isDragging ? "opacity-50 border-dashed" : ""
           } ${isDragOver ? "border-primary/70 bg-primary/5" : ""} ${
@@ -549,7 +597,10 @@ export default function AdminMenuPage({
           {hasChildren ? (
             <button
               type="button"
-              onClick={() => toggleExpanded(item.id)}
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleExpanded(item.id);
+              }}
               className="p-0.5 hover:bg-muted rounded shrink-0"
             >
               {isExpanded ? (
@@ -577,11 +628,26 @@ export default function AdminMenuPage({
               {!item.isActive && (
                 <Badge variant="outline" className="text-xs">Inativo</Badge>
               )}
+              {level === 0 && megaMenuAssignments[item.id] ? (
+                <Badge variant="outline" className="text-xs">Mega menu</Badge>
+              ) : null}
             </div>
             <p className="text-sm text-muted-foreground">{item.href}</p>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-2 shrink-0" onClick={(event) => event.stopPropagation()}>
+            {level === 0 ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="hidden gap-2 text-muted-foreground md:inline-flex"
+                onClick={() => openMegaMenuEditor(item)}
+              >
+                <Eye className="h-4 w-4" />
+                Personalizar
+              </Button>
+            ) : null}
             {canEditPages ? (
               <Switch
                 checked={item.isActive}
@@ -681,7 +747,13 @@ export default function AdminMenuPage({
               Visualizar
             </Button>
           </Link>
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+          <Dialog
+            open={dialogOpen}
+            onOpenChange={(nextOpen) => {
+              if (nextOpen) setDialogOpen(true);
+              else closeItemDialog();
+            }}
+          >
             {canCreatePages ? (
               <DialogTrigger asChild>
                 <Button onClick={() => openAddDialog()} className="h-10" disabled={isBusy}>
@@ -787,7 +859,7 @@ export default function AdminMenuPage({
                     placeholder="/produtos ou https://exemplo.com"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Use "/" para links internos ou "https://" para links externos
+                    Use <code>/</code> para links internos ou <code>https://</code> para links externos
                   </p>
                 </div>
 
@@ -807,7 +879,7 @@ export default function AdminMenuPage({
                   )}
               </div>
               <DialogFooter>
-                <Button variant="outline" onClick={() => setDialogOpen(false)}>
+                <Button variant="outline" onClick={closeItemDialog}>
                   Cancelar
                 </Button>
                 <Button onClick={handleSaveItem} disabled={isBusy}>
@@ -841,6 +913,33 @@ export default function AdminMenuPage({
           </CardContent>
         </Card>
       )}
+
+      <AdminMegaMenuEditor
+        key={`${selectedMegaMenuItem?.id || "none"}-${selectedMegaMenuItem ? megaMenuAssignments[selectedMegaMenuItem.id] || "unassigned" : "none"}`}
+        open={megaMenuEditorOpen}
+        onOpenChange={setMegaMenuEditorOpen}
+        item={selectedMegaMenuItem}
+        rootItems={menuTree}
+        activeTemplateKey={activeTemplateKey}
+        editorialConfig={megaMenuEditorial}
+        assignments={megaMenuAssignments}
+        navigationConfig={megaMenuNavigation}
+        onSaved={({ assignments, editorialConfig, navigationConfig }) => {
+          setMegaMenuAssignments(assignments);
+          setMegaMenuEditorial(editorialConfig);
+          setMegaMenuNavigation(navigationConfig);
+        }}
+        onEditItem={(item) => {
+          setReturnToMegaMenuItemId(selectedMegaMenuItem?.id || null);
+          setMegaMenuEditorOpen(false);
+          openEditDialog(item);
+        }}
+        onAddSubItem={(parentId) => {
+          setReturnToMegaMenuItemId(parentId);
+          setMegaMenuEditorOpen(false);
+          openAddDialog(parentId);
+        }}
+      />
     </div>
   );
 }

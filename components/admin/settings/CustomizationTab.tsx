@@ -21,22 +21,27 @@ import { Heebo, Inter, Montserrat, Poppins, Zen_Kaku_Gothic_New } from "next/fon
 import { Save, Megaphone, AlertCircle, ImageIcon, Palette, Check, ChevronDown, ChevronUp, Plus, Smartphone, TicketPercent, Trash2, Menu, Package, LayoutTemplate } from "lucide-react";
 import { ImageUpload } from "@/components/ui/image-upload";
 import { VideoUpload } from "@/components/ui/video-upload";
-import type { SiteSettings, Category, SiteCustomization, BannerConfig, CategoryBannerConfig, InfoBannerConfig, HomeCategoryConfig, ProductCustomField, AnnouncementBarItem, MegaMenuEditorialKey } from "@/lib/types";
+import type { SiteSettings, Category, SiteCustomization, BannerConfig, CategoryBannerConfig, InfoBannerConfig, HomeCategoryConfig, ProductCustomField, AnnouncementBarItem } from "@/lib/types";
 import { tAdmin } from "@/lib/i18n/admin";
-import { GROOVY_MEGA_MENU_EDITORIAL, isTemplateCapabilityAvailable, resolveAdminTemplate } from "@/lib/storefront-templates";
+import { isTemplateCapabilityAvailable, resolveAdminTemplate } from "@/lib/storefront-templates";
 
 const inter = Inter({ subsets: ["latin"], weight: ["400", "600"] });
 const poppins = Poppins({ subsets: ["latin"], weight: ["400", "600"] });
 const montserrat = Montserrat({ subsets: ["latin"], weight: ["400", "600"] });
 const zenKaku = Zen_Kaku_Gothic_New({ subsets: ["latin"], weight: ["400", "700"] });
 const heebo = Heebo({ subsets: ["latin"], weight: ["400", "600"] });
+const GROOVY_CATEGORY_BANNER_COUNT = 3;
 
-const MEGA_MENU_EDITORIAL_LABELS: Record<MegaMenuEditorialKey, string> = {
-  newArrivals: "Novidades",
-  clothing: "Roupas",
-  bestSellers: "Mais vendidos",
-  restocks: "Reposições",
-};
+function createGroovyCategoryBanner(index: number): CategoryBannerConfig {
+  return {
+    categoryId: `groovy-category-banner-${index + 1}`,
+    imageUrl: "",
+    altText: `Banner de categoria ${index + 1}`,
+    linkUrl: "/produtos",
+    isActive: true,
+    mode: "custom",
+  };
+}
 
 function getDefaultAnnouncementBar(locale = "en") {
   return {
@@ -137,22 +142,6 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
     setSettings({ ...settings, customization: { ...settings.customization, ...updates } });
   }
 
-  function updateMegaMenuEditorial(
-    key: MegaMenuEditorialKey,
-    updates: Partial<NonNullable<SiteCustomization["megaMenuEditorial"]>[MegaMenuEditorialKey]>,
-  ) {
-    const current = {
-      ...GROOVY_MEGA_MENU_EDITORIAL,
-      ...(settings.customization.megaMenuEditorial || {}),
-    };
-    updateCustomization({
-      megaMenuEditorial: {
-        ...current,
-        [key]: { ...current[key], ...updates },
-      },
-    });
-  }
-
   function updateAnnouncementBar(updates: Partial<SiteCustomization["announcementBar"]>) {
     updateCustomization({
       announcementBar: {
@@ -173,9 +162,16 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
 
   const currentAnnouncementBar = settings.customization.announcementBar || getDefaultAnnouncementBar(locale);
   const currentPopupCoupon = settings.customization.popupCoupon || getDefaultPopupCoupon();
-  const categoryBanners = Array.isArray(settings.customization.categoryBanners)
-    ? settings.customization.categoryBanners
-    : [];
+  const groovyCategoryBanners = useMemo(() => {
+    const storedBanners = Array.isArray(settings.customization.categoryBanners)
+      ? settings.customization.categoryBanners
+      : [];
+
+    return Array.from(
+      { length: GROOVY_CATEGORY_BANNER_COUNT },
+      (_, index) => storedBanners[index] || createGroovyCategoryBanner(index),
+    );
+  }, [settings.customization.categoryBanners]);
   const announcementItems: AnnouncementBarItem[] = Array.isArray(currentAnnouncementBar.items)
     ? currentAnnouncementBar.items.map((item) => typeof item === "string" ? { text: item, ctaText: null, url: null } : item)
     : getDefaultAnnouncementBar(locale).items;
@@ -277,10 +273,16 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
     syncMiniBanners(nextBanners);
   }
 
-  function updateCategoryBanner(index: number, updates: Partial<CategoryBannerConfig>) {
-    const newBanners = [...categoryBanners];
-    newBanners[index] = { ...newBanners[index], ...updates };
-    updateCustomization({ categoryBanners: newBanners });
+  function updateGroovyCategoryBanner(index: number, updates: Partial<CategoryBannerConfig>) {
+    const nextBanners = groovyCategoryBanners.map((banner, currentIndex) => (
+      currentIndex === index
+        ? { ...banner, ...updates, mode: "custom" as const }
+        : banner
+    ));
+    updateCustomization({
+      categoryBannerMode: "custom",
+      categoryBanners: nextBanners,
+    });
   }
 
   function updateHomeCategory(index: number, updates: Partial<HomeCategoryConfig>) {
@@ -534,65 +536,6 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                   onCheckedChange={(checked) => updateCustomization({ menuTransparent: checked })}
                 />
               </div>
-
-              {activeTemplate.key === "groovy" ? (
-                <>
-                  <Separator />
-                  <div className="space-y-1">
-                    <h3 className="text-sm font-semibold">Destaques editoriais do mega menu</h3>
-                    <p className="text-sm text-muted-foreground">
-                      Configure a mídia e o CTA exibidos na terceira coluna dos menus do Groovy.
-                    </p>
-                  </div>
-                  <div className="grid gap-4 xl:grid-cols-2">
-                    {(Object.keys(MEGA_MENU_EDITORIAL_LABELS) as MegaMenuEditorialKey[]).map((key) => {
-                      const editorial = {
-                        ...GROOVY_MEGA_MENU_EDITORIAL[key],
-                        ...(settings.customization.megaMenuEditorial?.[key] || {}),
-                      };
-
-                      return (
-                        <div key={key} className="space-y-4 rounded-lg border p-4">
-                          <div className="flex items-center justify-between gap-3">
-                            <p className="font-medium">{MEGA_MENU_EDITORIAL_LABELS[key]}</p>
-                            <Badge variant="outline">Mega menu</Badge>
-                          </div>
-                          <ImageUpload
-                            value={editorial.imageUrl}
-                            onChange={(url) => updateMegaMenuEditorial(key, { imageUrl: url })}
-                            imageType="categoryBanner"
-                            folder="banners/mega-menu"
-                          />
-                          <div className="grid gap-3 sm:grid-cols-2">
-                            <div className="space-y-2">
-                              <Label>Chamada</Label>
-                              <Input value={editorial.eyebrow} onChange={(event) => updateMegaMenuEditorial(key, { eyebrow: event.target.value })} />
-                            </div>
-                            <div className="space-y-2">
-                              <Label>Título</Label>
-                              <Input value={editorial.title} onChange={(event) => updateMegaMenuEditorial(key, { title: event.target.value })} />
-                            </div>
-                            <div className="space-y-2">
-                              <Label>Texto do CTA</Label>
-                              <Input value={editorial.ctaText} onChange={(event) => updateMegaMenuEditorial(key, { ctaText: event.target.value })} />
-                            </div>
-                            <div className="space-y-2">
-                              <Label>Link</Label>
-                              <Input value={editorial.href} onChange={(event) => updateMegaMenuEditorial(key, { href: event.target.value })} placeholder="/produtos" />
-                            </div>
-                          </div>
-                          {key === "restocks" ? (
-                            <div className="space-y-2">
-                              <Label>Descrição</Label>
-                              <Input value={editorial.description || ""} onChange={(event) => updateMegaMenuEditorial(key, { description: event.target.value || null })} />
-                            </div>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </>
-              ) : null}
             </CardContent>
           </Card>
 
@@ -1367,138 +1310,71 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
           </CardContent>
         </Card>
 
-        {/* Category Banners */}
-        <Card id="category-banners">
+        {/* Groovy category banners */}
+        <Card
+          id="category-banners"
+          aria-disabled={activeTemplate.key !== "groovy"}
+          className={activeTemplate.key !== "groovy" ? "bg-muted/40" : undefined}
+        >
           <CardHeader>
-            <CardTitle className="flex items-center gap-2"><ImageIcon className="h-5 w-5" />{tAdmin(locale, "admin.appearance.categoryBanners.title", "Category Banners")}</CardTitle>
-            <CardDescription>{tAdmin(locale, "admin.appearance.categoryBanners.description", "Select categories to display on homepage")}</CardDescription>
+            <CardTitle className="flex flex-wrap items-center gap-2">
+              <ImageIcon className="h-5 w-5" />
+              Banners do tema Groovy
+              {activeTemplate.key !== "groovy" ? <Badge variant="secondary">Não disponível neste tema</Badge> : null}
+            </CardTitle>
+            <CardDescription>
+              Envie as três imagens verticais exibidas entre os dois carrosséis de produtos da Home.
+            </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="space-y-4">
-              <Label className="text-base font-medium">{tAdmin(locale, "admin.appearance.categoryBanners.displayMode.title", "Modo de Exibicao")}</Label>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                {(['auto', 'custom', 'disabled'] as const).map((mode) => {
-                  const labels = {
-                    auto: tAdmin(locale, "admin.appearance.categoryBanners.displayMode.auto.label", "Automatico"),
-                    custom: tAdmin(locale, "admin.appearance.categoryBanners.displayMode.custom.label", "Personalizado"),
-                    disabled: tAdmin(locale, "admin.appearance.categoryBanners.displayMode.disabled.label", "Desativado"),
-                  };
-                  const descriptions = {
-                    auto: tAdmin(locale, "admin.appearance.categoryBanners.displayMode.auto.description", "Usa a foto mais recente de cada categoria"),
-                    custom: tAdmin(locale, "admin.appearance.categoryBanners.displayMode.custom.description", "Faca upload de imagens personalizadas"),
-                    disabled: tAdmin(locale, "admin.appearance.categoryBanners.displayMode.disabled.description", "Nao exibir banners de categoria"),
-                  };
-                  const isSelected = (settings.customization.categoryBannerMode || 'custom') === mode;
-                  return (
-                    <div key={mode} className={`cursor-pointer rounded-lg border p-4 transition-colors ${isSelected ? 'border-primary bg-primary/5' : 'hover:border-muted-foreground/50'}`} onClick={() => updateCustomization({ categoryBannerMode: mode })}>
-                      <div className="mb-2 flex items-center gap-2">
-                        <div className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${isSelected ? 'border-primary' : 'border-muted-foreground'}`}>
-                          {isSelected && <div className="h-2 w-2 rounded-full bg-primary" />}
-                        </div>
-                        <span className="text-sm font-medium">{labels[mode]}</span>
-                      </div>
-                      <p className="text-xs text-muted-foreground">{descriptions[mode]}</p>
+          <CardContent className={activeTemplate.key !== "groovy" ? "pointer-events-none opacity-45" : undefined}>
+            <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
+              {groovyCategoryBanners.map((banner, index) => (
+                <div key={`groovy-category-banner-${index + 1}`} className="space-y-4 rounded-xl border p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold">Banner {index + 1}</p>
+                      <p className="text-xs text-muted-foreground">Posição {index + 1} da esquerda para a direita</p>
                     </div>
-                  );
-                })}
-              </div>
-            </div>
+                    <Badge variant={banner.imageUrl ? "default" : "secondary"}>
+                      {banner.imageUrl ? "Imagem enviada" : "Aguardando imagem"}
+                    </Badge>
+                  </div>
 
-            {(settings.customization.categoryBannerMode || 'custom') !== 'disabled' && (
-              <>
-                <Separator />
-                <div className="space-y-4">
-                  <Label className="text-base font-medium">{tAdmin(locale, "admin.appearance.categoryBanners.selectedCategories", "Categorias Selecionadas")}</Label>
-                  <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                    {categories.map((cat) => {
-                      const isSelected = categoryBanners.some((b) => b.categoryId === cat.id);
-                      return (
-                        <div
-                          key={cat.id}
-                          className={`cursor-pointer rounded-lg border p-3 transition-all ${isSelected ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'hover:border-muted-foreground/50'}`}
-                          onClick={() => {
-                            if (isSelected) {
-                              updateCustomization({ categoryBanners: categoryBanners.filter((b) => b.categoryId !== cat.id) });
-                            } else {
-                              updateCustomization({
-                                categoryBanners: [...categoryBanners, {
-                                  categoryId: cat.id, imageUrl: '', altText: cat.name, isActive: true,
-                                  mode: (settings.customization.categoryBannerMode || 'custom') === 'auto' ? 'auto' : 'custom',
-                                }],
-                              });
-                            }
-                          }}
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className={`flex h-5 w-5 items-center justify-center rounded border-2 ${isSelected ? 'border-primary bg-primary' : 'border-muted-foreground/50'}`}>
-                              {isSelected && <Check className="h-3 w-3 text-primary-foreground" />}
-                            </div>
-                            <p className="truncate text-sm font-medium">{cat.name}</p>
-                          </div>
-                        </div>
-                      );
+                  <ImageUpload
+                    value={banner.imageUrl || null}
+                    onChange={(url) => updateGroovyCategoryBanner(index, {
+                      imageUrl: url || "",
+                      isActive: true,
                     })}
+                    imageType="groovyCategoryBanner"
+                    folder="banners/groovy/categories"
+                    disabled={activeTemplate.key !== "groovy"}
+                  />
+
+                  <div className="space-y-2">
+                    <Label htmlFor={`groovy-category-banner-link-${index}`}>Link do banner (opcional)</Label>
+                    <Input
+                      id={`groovy-category-banner-link-${index}`}
+                      value={banner.linkUrl || ""}
+                      onChange={(event) => updateGroovyCategoryBanner(index, { linkUrl: event.target.value || null })}
+                      placeholder="/produtos?category=vestidos"
+                      disabled={activeTemplate.key !== "groovy"}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor={`groovy-category-banner-alt-${index}`}>Texto alternativo</Label>
+                    <Input
+                      id={`groovy-category-banner-alt-${index}`}
+                      value={banner.altText || ""}
+                      onChange={(event) => updateGroovyCategoryBanner(index, { altText: event.target.value })}
+                      placeholder={`Banner de categoria ${index + 1}`}
+                      disabled={activeTemplate.key !== "groovy"}
+                    />
                   </div>
                 </div>
-
-                {(settings.customization.categoryBannerMode || 'custom') === 'custom' && categoryBanners.length > 0 && (
-                  <>
-                    <Separator />
-                    <div className="space-y-4">
-                      <Label className="text-base font-medium">{tAdmin(locale, "admin.appearance.categoryBanners.customImages", "Imagens Personalizadas")}</Label>
-                      {categoryBanners.map((banner, index) => {
-                        const category = categories.find((c) => c.id === banner.categoryId);
-                        if (!category) return null;
-                        return (
-                          <div key={banner.categoryId} className="space-y-4 rounded-lg border p-4">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-3">
-                                <span className="font-medium">{category.name}</span>
-                                <Badge variant={banner.imageUrl ? 'default' : 'secondary'}>{banner.imageUrl ? tAdmin(locale, "admin.appearance.categoryBanners.imageSet", "Imagem definida") : tAdmin(locale, "admin.appearance.categoryBanners.noImage", "Sem imagem")}</Badge>
-                              </div>
-                              <Switch checked={banner.isActive} onCheckedChange={(checked) => updateCategoryBanner(index, { isActive: checked })} />
-                            </div>
-                            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                              <div className="space-y-2">
-                                <Label>{tAdmin(locale, "admin.appearance.categoryBanners.imageLabel", "Imagem")}</Label>
-                                <ImageUpload value={banner.imageUrl || null} onChange={(url) => updateCategoryBanner(index, { imageUrl: url || '' })} imageType="categoryBanner" folder="banners/categories" />
-                              </div>
-                              <div className="space-y-2">
-                                <Label>{tAdmin(locale, "admin.appearance.categoryBanners.altTextLabel", "Texto Alternativo")}</Label>
-                                <Input value={banner.altText} onChange={(e) => updateCategoryBanner(index, { altText: e.target.value })} placeholder={tAdmin(locale, "admin.appearance.mainBanners.altTextPlaceholder", "Banner description")} />
-                              </div>
-                              <div className="space-y-2">
-                                <Label>Link do banner</Label>
-                                <Input value={banner.linkUrl || ""} onChange={(e) => updateCategoryBanner(index, { linkUrl: e.target.value || null })} placeholder="/produtos?category=vestidos" />
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </>
-                )}
-
-                {(settings.customization.categoryBannerMode || 'custom') === 'auto' && categoryBanners.length > 0 && (
-                  <>
-                    <Separator />
-                    <div className="rounded-lg bg-muted/50 p-4">
-                      <p className="text-sm text-muted-foreground mb-4">{tAdmin(locale, "admin.appearance.categoryBanners.autoModeInfo", "Modo Automatico: O sistema usara automaticamente a foto mais recente de cada categoria.")}</p>
-                      {categoryBanners.map((banner, index) => {
-                        const category = categories.find((c) => c.id === banner.categoryId);
-                        if (!category) return null;
-                        return (
-                          <div key={banner.categoryId} className="flex items-center justify-between rounded bg-background p-2">
-                            <span className="text-sm">{category.name}</span>
-                            <Switch checked={banner.isActive} onCheckedChange={(checked) => updateCategoryBanner(index, { isActive: checked })} />
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </>
-                )}
-              </>
-            )}
+              ))}
+            </div>
           </CardContent>
         </Card>
 

@@ -587,6 +587,31 @@ export interface MegaMenuEditorialItem {
   href: string
 }
 
+/**
+ * Associates a top-level navigation item with one of the layouts supported by
+ * the active storefront template. The editorial content remains keyed by
+ * layout for backwards compatibility, while the assignment survives renames
+ * and menu reordering because it uses the menu item id.
+ */
+export type MegaMenuAssignments = Record<string, MegaMenuEditorialKey>
+
+export interface MegaMenuNavigationColumn {
+  title: string
+  itemIds: string[]
+}
+
+/**
+ * Controls how the real child items of a top-level menu entry are distributed
+ * in the Groovy mega menu. Links remain owned by Páginas > Menu; this metadata
+ * only stores the visual grouping, so categories, pages and external links can
+ * be freely mixed without duplicating their content in the theme settings.
+ */
+export interface MegaMenuNavigationItem {
+  columns: MegaMenuNavigationColumn[]
+}
+
+export type MegaMenuNavigation = Record<string, MegaMenuNavigationItem>
+
 export interface SiteCustomization {
   templateKey?: 'classic' | 'groovy'
   templateVersion?: number
@@ -618,6 +643,8 @@ export interface SiteCustomization {
   // Menu
   menuTransparent: boolean
   megaMenuEditorial?: Partial<Record<MegaMenuEditorialKey, MegaMenuEditorialItem>>
+  megaMenuAssignments?: MegaMenuAssignments
+  megaMenuNavigation?: MegaMenuNavigation
   // Announcement bar
   announcementBar: AnnouncementBarConfig
   popupCoupon?: CouponPopupConfig

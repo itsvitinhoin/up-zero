@@ -263,7 +263,7 @@ const navSections: NavSection[] = [
           { name: 'Popup', anchor: 'popup' },
           { name: 'Banner Principal', anchor: 'main-banner' },
           { name: 'Mini Banners', anchor: 'mini-banners' },
-          { name: 'Banners de Categoria', anchor: 'category-banners' },
+          { name: 'Banners do Tema', anchor: 'category-banners' },
           { name: 'Banners Informativos', anchor: 'info-banners' },
           { name: 'Categorias da Home', anchor: 'home-categories' },
           { name: 'Cores do Site', anchor: 'site-colors' },

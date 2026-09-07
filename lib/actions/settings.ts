@@ -34,6 +34,9 @@ import type {
   MarketingSettings,
   ErpSettings,
   User,
+  MegaMenuEditorialItem,
+  MegaMenuEditorialKey,
+  MegaMenuNavigationItem,
 } from '@/lib/types'
 import {
   appendStoreScopeParam,
@@ -1134,6 +1137,48 @@ function normalizeThemeMeta(meta: Record<string, unknown>, fallback: SiteCustomi
       }]]
     })) as SiteCustomization['megaMenuEditorial']
   }
+  const normalizeMegaMenuAssignments = (): SiteCustomization['megaMenuAssignments'] => {
+    const rawAssignments = meta.megaMenuAssignments ?? meta.mega_menu_assignments
+    if (!rawAssignments || typeof rawAssignments !== 'object' || Array.isArray(rawAssignments)) {
+      return fallback.megaMenuAssignments || {}
+    }
+
+    const validKeys = new Set<MegaMenuEditorialKey>(['newArrivals', 'clothing', 'bestSellers', 'restocks'])
+    return Object.fromEntries(
+      Object.entries(rawAssignments as Record<string, unknown>)
+        .map(([itemId, value]) => [String(itemId).trim(), String(value).trim()] as const)
+        .filter(([itemId, value]) => itemId.length > 0 && validKeys.has(value as MegaMenuEditorialKey)),
+    ) as SiteCustomization['megaMenuAssignments']
+  }
+  const normalizeMegaMenuNavigation = (): SiteCustomization['megaMenuNavigation'] => {
+    const rawNavigation = meta.megaMenuNavigation ?? meta.mega_menu_navigation
+    if (!rawNavigation || typeof rawNavigation !== 'object' || Array.isArray(rawNavigation)) {
+      return fallback.megaMenuNavigation || {}
+    }
+
+    return Object.fromEntries(
+      Object.entries(rawNavigation as Record<string, unknown>).flatMap(([itemId, rawItem]) => {
+        if (!itemId.trim() || !rawItem || typeof rawItem !== 'object' || Array.isArray(rawItem)) return []
+        const rawColumns = (rawItem as Record<string, unknown>).columns
+        if (!Array.isArray(rawColumns)) return []
+        const columns = rawColumns.slice(0, 2).map((rawColumn, index) => {
+          const column = rawColumn && typeof rawColumn === 'object' && !Array.isArray(rawColumn)
+            ? rawColumn as Record<string, unknown>
+            : {}
+          const itemIds = Array.isArray(column.itemIds)
+            ? column.itemIds.map((value) => String(value).trim()).filter(Boolean)
+            : []
+          return {
+            title: typeof column.title === 'string' && column.title.trim()
+              ? column.title.trim()
+              : (index === 0 ? 'Categorias' : 'Compre por'),
+            itemIds: Array.from(new Set(itemIds)),
+          }
+        })
+        return [[itemId.trim(), { columns }]]
+      }),
+    ) as SiteCustomization['megaMenuNavigation']
+  }
 
   return {
     templateKey,
@@ -1157,6 +1202,8 @@ function normalizeThemeMeta(meta: Record<string, unknown>, fallback: SiteCustomi
     forceUppercaseText: parseBoolean(forceUppercaseRaw) ?? fallbackForceUppercaseText,
     menuTransparent: parseBoolean(meta.menuTransparent) ?? false,
     megaMenuEditorial: normalizeMegaMenuEditorial(),
+    megaMenuAssignments: normalizeMegaMenuAssignments(),
+    megaMenuNavigation: normalizeMegaMenuNavigation(),
     announcementBar,
     popupCoupon,
     mainBanners,
@@ -3671,6 +3718,8 @@ export async function updateCustomizationAction(formData: FormData): Promise<Api
   const infoBannersRaw = getFormString(formData, 'infoBanners')
   const homeCategoriesRaw = getFormString(formData, 'homeCategories')
   const megaMenuEditorialRaw = getFormString(formData, 'megaMenuEditorial')
+  const megaMenuAssignmentsRaw = getFormString(formData, 'megaMenuAssignments')
+  const megaMenuNavigationRaw = getFormString(formData, 'megaMenuNavigation')
 
   const rawStorefrontDefaultSort = getFormString(formData, 'storefrontDefaultSort')
   const storefrontDefaultSort: SiteCustomization['storefrontDefaultSort'] =
@@ -3725,6 +3774,12 @@ export async function updateCustomizationAction(formData: FormData): Promise<Api
     megaMenuEditorial: megaMenuEditorialRaw
       ? JSON.parse(megaMenuEditorialRaw)
       : currentSettings.customization.megaMenuEditorial,
+    megaMenuAssignments: megaMenuAssignmentsRaw
+      ? JSON.parse(megaMenuAssignmentsRaw)
+      : currentSettings.customization.megaMenuAssignments,
+    megaMenuNavigation: megaMenuNavigationRaw
+      ? JSON.parse(megaMenuNavigationRaw)
+      : currentSettings.customization.megaMenuNavigation,
     announcementBar: announcementBarRaw ? JSON.parse(announcementBarRaw) : currentSettings.customization.announcementBar,
     popupCoupon: popupCouponRaw
       ? JSON.parse(popupCouponRaw)
@@ -3811,6 +3866,121 @@ export async function updateCustomizationAction(formData: FormData): Promise<Api
   revalidatePath('/settings')
   revalidatePath('/')
 
+  return { success: true, data: updated }
+}
+
+export interface UpdateMegaMenuPresentationInput {
+  menuItemId: string
+  layoutKey: MegaMenuEditorialKey | null
+  editorial?: MegaMenuEditorialItem
+  navigation?: MegaMenuNavigationItem
+}
+
+export async function updateMegaMenuPresentationAction(
+  input: UpdateMegaMenuPresentationInput,
+): Promise<ApiResponse<SiteSettings>> {
+  const session = await getSession()
+  const authCookieHeader = await buildAdminCookieHeader()
+  if (!isSettingsAuthorized(session, authCookieHeader)) {
+    return { success: false, error: 'Não autorizado' }
+  }
+  if (!(await hasSettingsEditPermission())) {
+    return { success: false, error: 'Você não tem permissão para editar configurações' }
+  }
+
+  const menuItemId = String(input.menuItemId || '').trim()
+  const validLayoutKeys = new Set<MegaMenuEditorialKey>(['newArrivals', 'clothing', 'bestSellers', 'restocks'])
+  if (!menuItemId || (input.layoutKey !== null && !validLayoutKeys.has(input.layoutKey))) {
+    return { success: false, error: 'Configuração de mega menu inválida' }
+  }
+
+  const base = process.env.NEXT_PUBLIC_RUST_URL
+  const cookieHeader = await buildAdminCookieHeader()
+  if (!base) return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  if (!cookieHeader) return { success: false, error: 'Não autenticado' }
+
+  const currentSettings = await getSiteSettings()
+  const themeResult = await getThemeSettingsMetaFromBackend(base, cookieHeader)
+  if (!themeResult.success) {
+    return { success: false, error: themeResult.error || 'Erro ao carregar o tema atual' }
+  }
+
+  const currentCustomization = normalizeThemeMeta(
+    themeResult.data || {},
+    currentSettings.customization,
+  )
+  const assignments = { ...(currentCustomization.megaMenuAssignments || {}) }
+
+  delete assignments[menuItemId]
+  if (input.layoutKey) {
+    for (const [assignedItemId, assignedLayout] of Object.entries(assignments)) {
+      if (assignedLayout === input.layoutKey) {
+        delete assignments[assignedItemId]
+      }
+    }
+    assignments[menuItemId] = input.layoutKey
+  }
+
+  const editorial = { ...(currentCustomization.megaMenuEditorial || {}) }
+  if (input.layoutKey && input.editorial) {
+    editorial[input.layoutKey] = {
+      imageUrl: typeof input.editorial.imageUrl === 'string' && input.editorial.imageUrl.trim()
+        ? input.editorial.imageUrl.trim()
+        : null,
+      eyebrow: String(input.editorial.eyebrow || '').trim(),
+      title: String(input.editorial.title || '').trim(),
+      description: String(input.editorial.description || '').trim() || null,
+      ctaText: String(input.editorial.ctaText || '').trim(),
+      href: String(input.editorial.href || '').trim() || '/produtos',
+    }
+  }
+
+  const navigation = { ...(currentCustomization.megaMenuNavigation || {}) }
+  if (input.layoutKey && input.navigation) {
+    navigation[menuItemId] = {
+      columns: input.navigation.columns.slice(0, 2).map((column, index) => ({
+        title: String(column.title || '').trim() || (index === 0 ? 'Categorias' : 'Compre por'),
+        itemIds: Array.from(new Set(column.itemIds.map((itemId) => String(itemId).trim()).filter(Boolean))),
+      })),
+    }
+  } else if (!input.layoutKey) {
+    delete navigation[menuItemId]
+  }
+
+  const publishedAt = new Date().toISOString()
+  const customization: SiteCustomization = {
+    ...currentCustomization,
+    megaMenuAssignments: assignments,
+    megaMenuEditorial: editorial,
+    megaMenuNavigation: navigation,
+    templatePublishedAt: publishedAt,
+  }
+  const actorUserId = session?.id || 'store-session'
+  const saveResult = await saveThemeSettingsMetaToBackend(base, cookieHeader, customization, actorUserId)
+  if (!saveResult.success) {
+    return { success: false, error: saveResult.error || 'Erro ao salvar o mega menu' }
+  }
+
+  const updated = await updateSiteSettings({ customization })
+  await createAuditLog({
+    actorUserId,
+    action: 'MEGA_MENU_PRESENTATION_UPDATED',
+    entityType: 'MenuItem',
+    entityId: menuItemId,
+    beforeJson: {
+      assignment: currentCustomization.megaMenuAssignments?.[menuItemId] || null,
+      navigation: currentCustomization.megaMenuNavigation?.[menuItemId] || null,
+    },
+    afterJson: {
+      assignment: input.layoutKey,
+      editorial: input.layoutKey ? editorial[input.layoutKey] : null,
+      navigation: input.layoutKey ? navigation[menuItemId] || null : null,
+    },
+  })
+
+  revalidatePath('/pages/menu')
+  revalidatePath('/settings/appearance')
+  revalidatePath('/')
   return { success: true, data: updated }
 }
 
