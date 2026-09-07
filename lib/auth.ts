@@ -184,7 +184,9 @@ async function resolveAdminSessionFromToken(
         }
 
         if (response.status === 401 || response.status === 403) {
-          return null
+          return verifiedLocalPayload
+            ? buildAdminSessionFromPayload(decodedPayload)
+            : null
         }
       } catch {
         // ignore and fallback to decoded token

@@ -7,6 +7,7 @@ import { getValidationErrorMessage } from '@/lib/utils/validation-error'
 import type { ApiResponse, SessionUser } from '@/lib/types'
 import { cookies, headers } from 'next/headers'
 import { getCurrentB2bCustomerAction } from './customers'
+import { isLocalAdminToken, verifyLocalAdminToken } from '@/lib/local-admin-session'
 
 const ADMIN_ME_TIMEOUT_MS = 5000
 
@@ -156,6 +157,24 @@ export async function getAdminSession(): Promise<{ id: string; name: string; ema
   if (!adminAuthToken) return null
 
   const fallbackSession = buildFallbackAdminSessionFromToken(adminAuthToken)
+  const localAdminSecret = (
+    process.env.LOCAL_ADMIN_SESSION_SECRET
+    || process.env.LOCAL_ADMIN_PASSWORD
+    || ''
+  ).trim()
+  const verifiedLocalPayload = isLocalAdminToken(adminAuthToken)
+    ? await verifyLocalAdminToken(adminAuthToken, localAdminSecret)
+    : null
+  const configuredLocalStoreId = normalizeStoreId(
+    process.env.LOCAL_ADMIN_STORE_ID
+    ?? process.env.STORE_ID
+  )
+  const verifiedLocalFallbackSession = verifiedLocalPayload && fallbackSession
+    ? {
+        ...fallbackSession,
+        storeId: configuredLocalStoreId ?? fallbackSession.storeId,
+      }
+    : null
 
   const base = (process.env.NEXT_PUBLIC_RUST_URL ?? '').trim()
   if (!base) {
@@ -172,7 +191,7 @@ export async function getAdminSession(): Promise<{ id: string; name: string; ema
 
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) {
-        return null
+        return verifiedLocalFallbackSession
       }
 
       return fallbackSession
@@ -180,7 +199,7 @@ export async function getAdminSession(): Promise<{ id: string; name: string; ema
 
     const admin = await response.json()
     if (admin?.authenticated === false) {
-      return null
+      return verifiedLocalFallbackSession
     }
 
     const refreshedSetCookie = response.headers.get('set-cookie') || ''
