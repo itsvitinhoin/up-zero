@@ -318,6 +318,23 @@ export async function getAdminStoreIdFromToken(): Promise<number | null> {
   }
 
   const resolveStorePromise = (async (): Promise<number | null> => {
+    if (isLocalAdminToken(adminToken)) {
+      const localAdminSecret = (
+        process.env.LOCAL_ADMIN_SESSION_SECRET
+        || process.env.LOCAL_ADMIN_PASSWORD
+        || ''
+      ).trim()
+      const verifiedLocalPayload = await verifyLocalAdminToken(adminToken, localAdminSecret)
+      const configuredLocalStoreId = normalizeStoreId(
+        process.env.LOCAL_ADMIN_STORE_ID
+        ?? process.env.STORE_ID
+      )
+
+      if (verifiedLocalPayload && configuredLocalStoreId) {
+        return configuredLocalStoreId
+      }
+    }
+
     const base = (process.env.NEXT_PUBLIC_RUST_URL ?? '').trim()
     if (base) {
       try {
@@ -523,50 +540,55 @@ export async function getSession(storeId?: number | string | null): Promise<Sess
   }
 }
 
+async function authenticateConfiguredLocalAdmin(
+  email: string,
+  password: string,
+): Promise<SessionUser | null> {
+  const configuredEmail = (process.env.LOCAL_ADMIN_EMAIL ?? '').trim()
+  const configuredPassword = process.env.LOCAL_ADMIN_PASSWORD ?? ''
+  const signingSecret = (
+    process.env.LOCAL_ADMIN_SESSION_SECRET
+    || configuredPassword
+  ).trim()
+
+  if (!configuredEmail || !configuredPassword || !signingSecret) return null
+
+  const [emailMatches, passwordMatches] = await Promise.all([
+    secureTextEqual(email.trim().toLowerCase(), configuredEmail.toLowerCase()),
+    secureTextEqual(password, configuredPassword),
+  ])
+  if (!emailMatches || !passwordMatches) return null
+
+  const now = await requestNowSec()
+  const storeId = normalizeStoreId(
+    process.env.LOCAL_ADMIN_STORE_ID
+    ?? process.env.STORE_ID
+    ?? 1043,
+  ) ?? 1043
+  const token = await createLocalAdminToken({
+    sub: 'sandbox-admin',
+    id: 'sandbox-admin',
+    name: 'Admin Sandbox',
+    email: configuredEmail,
+    role: 'ADMIN',
+    store_id: storeId,
+    iat: now,
+    exp: now + (7 * 24 * 60 * 60),
+  }, signingSecret)
+
+  await persistAdminAuthCookie(token)
+
+  return {
+    id: 'sandbox-admin',
+    name: 'Admin Sandbox',
+    email: configuredEmail,
+    role: 'ADMIN' as UserRole,
+  }
+}
+
 export async function authenticateUser(email: string, password: string): Promise<SessionUser | null> {
   const base = (process.env.NEXT_PUBLIC_RUST_URL ?? '').trim()
-  if (!base) {
-    const configuredEmail = (process.env.LOCAL_ADMIN_EMAIL ?? '').trim()
-    const configuredPassword = process.env.LOCAL_ADMIN_PASSWORD ?? ''
-    const signingSecret = (
-      process.env.LOCAL_ADMIN_SESSION_SECRET
-      || configuredPassword
-    ).trim()
-
-    if (!configuredEmail || !configuredPassword || !signingSecret) return null
-
-    const [emailMatches, passwordMatches] = await Promise.all([
-      secureTextEqual(email.trim().toLowerCase(), configuredEmail.toLowerCase()),
-      secureTextEqual(password, configuredPassword),
-    ])
-    if (!emailMatches || !passwordMatches) return null
-
-    const now = await requestNowSec()
-    const storeId = normalizeStoreId(
-      process.env.LOCAL_ADMIN_STORE_ID
-      ?? process.env.STORE_ID
-      ?? 1043,
-    ) ?? 1043
-    const token = await createLocalAdminToken({
-      sub: 'sandbox-admin',
-      id: 'sandbox-admin',
-      name: 'Admin Sandbox',
-      email: configuredEmail,
-      role: 'ADMIN',
-      store_id: storeId,
-      iat: now,
-      exp: now + (7 * 24 * 60 * 60),
-    }, signingSecret)
-
-    await persistAdminAuthCookie(token)
-
-    return {
-      id: 'sandbox-admin',
-      name: 'Admin Sandbox',
-      email: configuredEmail,
-      role: 'ADMIN' as UserRole,
-    }
-  }
+  if (!base) return authenticateConfiguredLocalAdmin(email, password)
 
   try {
     const response = await fetch(new URL('/admin/login', base), {
@@ -576,7 +598,7 @@ export async function authenticateUser(email: string, password: string): Promise
       cache: 'no-store',
     })
 
-    if (!response.ok) return null
+    if (!response.ok) return authenticateConfiguredLocalAdmin(email, password)
 
     const data = (await response.json()) as { token?: string; admin?: { id?: number; name?: string; email?: string; role?: string } }
     const setCookieHeader = response.headers.get('set-cookie') || ''
@@ -587,7 +609,7 @@ export async function authenticateUser(email: string, password: string): Promise
       .replace(/^adminAuthToken=/, '')
 
     const token = data?.token || cookieToken
-    if (!token) return null
+    if (!token) return authenticateConfiguredLocalAdmin(email, password)
 
     await persistAdminAuthCookie(token)
 
@@ -598,7 +620,7 @@ export async function authenticateUser(email: string, password: string): Promise
       role: (String(data?.admin?.role || 'ADMIN').toUpperCase() as UserRole),
     }
   } catch {
-    return null
+    return authenticateConfiguredLocalAdmin(email, password)
   }
 }
 
