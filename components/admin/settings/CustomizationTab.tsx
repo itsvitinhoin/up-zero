@@ -173,6 +173,9 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
 
   const currentAnnouncementBar = settings.customization.announcementBar || getDefaultAnnouncementBar(locale);
   const currentPopupCoupon = settings.customization.popupCoupon || getDefaultPopupCoupon();
+  const categoryBanners = Array.isArray(settings.customization.categoryBanners)
+    ? settings.customization.categoryBanners
+    : [];
   const announcementItems: AnnouncementBarItem[] = Array.isArray(currentAnnouncementBar.items)
     ? currentAnnouncementBar.items.map((item) => typeof item === "string" ? { text: item, ctaText: null, url: null } : item)
     : getDefaultAnnouncementBar(locale).items;
@@ -275,7 +278,7 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
   }
 
   function updateCategoryBanner(index: number, updates: Partial<CategoryBannerConfig>) {
-    const newBanners = [...settings.customization.categoryBanners];
+    const newBanners = [...categoryBanners];
     newBanners[index] = { ...newBanners[index], ...updates };
     updateCustomization({ categoryBanners: newBanners });
   }
@@ -1408,17 +1411,17 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                   <Label className="text-base font-medium">{tAdmin(locale, "admin.appearance.categoryBanners.selectedCategories", "Categorias Selecionadas")}</Label>
                   <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
                     {categories.map((cat) => {
-                      const isSelected = settings.customization.categoryBanners.some((b) => b.categoryId === cat.id);
+                      const isSelected = categoryBanners.some((b) => b.categoryId === cat.id);
                       return (
                         <div
                           key={cat.id}
                           className={`cursor-pointer rounded-lg border p-3 transition-all ${isSelected ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'hover:border-muted-foreground/50'}`}
                           onClick={() => {
                             if (isSelected) {
-                              updateCustomization({ categoryBanners: settings.customization.categoryBanners.filter((b) => b.categoryId !== cat.id) });
+                              updateCustomization({ categoryBanners: categoryBanners.filter((b) => b.categoryId !== cat.id) });
                             } else {
                               updateCustomization({
-                                categoryBanners: [...settings.customization.categoryBanners, {
+                                categoryBanners: [...categoryBanners, {
                                   categoryId: cat.id, imageUrl: '', altText: cat.name, isActive: true,
                                   mode: (settings.customization.categoryBannerMode || 'custom') === 'auto' ? 'auto' : 'custom',
                                 }],
@@ -1438,12 +1441,12 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                   </div>
                 </div>
 
-                {(settings.customization.categoryBannerMode || 'custom') === 'custom' && settings.customization.categoryBanners.length > 0 && (
+                {(settings.customization.categoryBannerMode || 'custom') === 'custom' && categoryBanners.length > 0 && (
                   <>
                     <Separator />
                     <div className="space-y-4">
                       <Label className="text-base font-medium">{tAdmin(locale, "admin.appearance.categoryBanners.customImages", "Imagens Personalizadas")}</Label>
-                      {settings.customization.categoryBanners.map((banner, index) => {
+                      {categoryBanners.map((banner, index) => {
                         const category = categories.find((c) => c.id === banner.categoryId);
                         if (!category) return null;
                         return (
@@ -1476,12 +1479,12 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                   </>
                 )}
 
-                {(settings.customization.categoryBannerMode || 'custom') === 'auto' && settings.customization.categoryBanners.length > 0 && (
+                {(settings.customization.categoryBannerMode || 'custom') === 'auto' && categoryBanners.length > 0 && (
                   <>
                     <Separator />
                     <div className="rounded-lg bg-muted/50 p-4">
                       <p className="text-sm text-muted-foreground mb-4">{tAdmin(locale, "admin.appearance.categoryBanners.autoModeInfo", "Modo Automatico: O sistema usara automaticamente a foto mais recente de cada categoria.")}</p>
-                      {settings.customization.categoryBanners.map((banner, index) => {
+                      {categoryBanners.map((banner, index) => {
                         const category = categories.find((c) => c.id === banner.categoryId);
                         if (!category) return null;
                         return (
