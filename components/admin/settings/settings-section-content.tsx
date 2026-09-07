@@ -1,5 +1,6 @@
 import { GeneralTab } from "@/components/admin/settings/GeneralTab";
 import { CustomizationTab } from "@/components/admin/settings/CustomizationTab";
+import { StorefrontTemplatesTab } from "@/components/admin/settings/StorefrontTemplatesTab";
 import { PaymentsTab } from "@/components/admin/settings/PaymentsTab";
 import { MarketingTab } from "@/components/admin/settings/MarketingTab";
 import { DomainTab } from "@/components/admin/settings/DomainTab";
@@ -173,6 +174,14 @@ export function SettingsSectionContent({
           categories={categories}
           isSaving={isSaving || !canEditSettings}
           onSave={handleSaveCustomization}
+        />
+      );
+    case "templates":
+      return (
+        <StorefrontTemplatesTab
+          settings={settings!}
+          setSettings={setSettings}
+          canEdit={canEditSettings}
         />
       );
     case "payments":

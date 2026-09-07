@@ -17,24 +17,34 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Inter, Montserrat, Poppins, Zen_Kaku_Gothic_New } from "next/font/google";
-import { Save, Megaphone, AlertCircle, ImageIcon, Palette, Check, ChevronDown, ChevronUp, Plus, Smartphone, TicketPercent, Trash2, Menu, Package } from "lucide-react";
+import { Heebo, Inter, Montserrat, Poppins, Zen_Kaku_Gothic_New } from "next/font/google";
+import { Save, Megaphone, AlertCircle, ImageIcon, Palette, Check, ChevronDown, ChevronUp, Plus, Smartphone, TicketPercent, Trash2, Menu, Package, LayoutTemplate } from "lucide-react";
 import { ImageUpload } from "@/components/ui/image-upload";
-import type { SiteSettings, Category, SiteCustomization, BannerConfig, CategoryBannerConfig, InfoBannerConfig, HomeCategoryConfig, ProductCustomField } from "@/lib/types";
+import { VideoUpload } from "@/components/ui/video-upload";
+import type { SiteSettings, Category, SiteCustomization, BannerConfig, CategoryBannerConfig, InfoBannerConfig, HomeCategoryConfig, ProductCustomField, AnnouncementBarItem, MegaMenuEditorialKey } from "@/lib/types";
 import { tAdmin } from "@/lib/i18n/admin";
+import { GROOVY_MEGA_MENU_EDITORIAL, isTemplateCapabilityAvailable, resolveAdminTemplate } from "@/lib/storefront-templates";
 
 const inter = Inter({ subsets: ["latin"], weight: ["400", "600"] });
 const poppins = Poppins({ subsets: ["latin"], weight: ["400", "600"] });
 const montserrat = Montserrat({ subsets: ["latin"], weight: ["400", "600"] });
 const zenKaku = Zen_Kaku_Gothic_New({ subsets: ["latin"], weight: ["400", "700"] });
+const heebo = Heebo({ subsets: ["latin"], weight: ["400", "600"] });
+
+const MEGA_MENU_EDITORIAL_LABELS: Record<MegaMenuEditorialKey, string> = {
+  newArrivals: "Novidades",
+  clothing: "Roupas",
+  bestSellers: "Mais vendidos",
+  restocks: "Reposições",
+};
 
 function getDefaultAnnouncementBar(locale = "en") {
   return {
     enabled: true,
     items: [
-      tAdmin(locale, "admin.appearance.defaults.announcement.item1", "Frete gratis para compras acima de R$ 1000"),
-      tAdmin(locale, "admin.appearance.defaults.announcement.item2", "Novidades toda semana"),
-      tAdmin(locale, "admin.appearance.defaults.announcement.item3", "Atacado exclusivo para lojistas"),
+      { text: tAdmin(locale, "admin.appearance.defaults.announcement.item1", "Frete gratis para compras acima de R$ 1000"), ctaText: null, url: null },
+      { text: tAdmin(locale, "admin.appearance.defaults.announcement.item2", "Novidades toda semana"), ctaText: null, url: null },
+      { text: tAdmin(locale, "admin.appearance.defaults.announcement.item3", "Atacado exclusivo para lojistas"), ctaText: null, url: null },
     ],
     separator: "|",
     backgroundColor: "#1a1a1a",
@@ -96,6 +106,10 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
     return {
       imageUrl: "",
       mobileImageUrl: null,
+      mediaType: "image",
+      videoUrl: null,
+      mobileVideoUrl: null,
+      posterUrl: null,
       altText: "",
       linkUrl: null,
       isActive: true,
@@ -123,6 +137,22 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
     setSettings({ ...settings, customization: { ...settings.customization, ...updates } });
   }
 
+  function updateMegaMenuEditorial(
+    key: MegaMenuEditorialKey,
+    updates: Partial<NonNullable<SiteCustomization["megaMenuEditorial"]>[MegaMenuEditorialKey]>,
+  ) {
+    const current = {
+      ...GROOVY_MEGA_MENU_EDITORIAL,
+      ...(settings.customization.megaMenuEditorial || {}),
+    };
+    updateCustomization({
+      megaMenuEditorial: {
+        ...current,
+        [key]: { ...current[key], ...updates },
+      },
+    });
+  }
+
   function updateAnnouncementBar(updates: Partial<SiteCustomization["announcementBar"]>) {
     updateCustomization({
       announcementBar: {
@@ -143,21 +173,23 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
 
   const currentAnnouncementBar = settings.customization.announcementBar || getDefaultAnnouncementBar(locale);
   const currentPopupCoupon = settings.customization.popupCoupon || getDefaultPopupCoupon();
-  const announcementItems = Array.isArray(currentAnnouncementBar.items)
-    ? currentAnnouncementBar.items
+  const announcementItems: AnnouncementBarItem[] = Array.isArray(currentAnnouncementBar.items)
+    ? currentAnnouncementBar.items.map((item) => typeof item === "string" ? { text: item, ctaText: null, url: null } : item)
     : getDefaultAnnouncementBar(locale).items;
   const announcementSeparator = (currentAnnouncementBar.separator || getDefaultAnnouncementBar(locale).separator).trim() || "|";
-  const announcementPreviewText = announcementItems.join(` ${announcementSeparator} `);
+  const announcementPreviewText = announcementItems
+    .map((item) => [item.text, item.ctaText].filter(Boolean).join(" "))
+    .join(` ${announcementSeparator} `);
 
   function addAnnouncementItem() {
     updateAnnouncementBar({
-      items: [...announcementItems, ""],
+      items: [...announcementItems, { text: "", ctaText: null, url: null }],
     });
   }
 
-  function updateAnnouncementItem(index: number, value: string) {
+  function updateAnnouncementItem(index: number, updates: Partial<AnnouncementBarItem>) {
     const nextItems = [...announcementItems];
-    nextItems[index] = value;
+    nextItems[index] = { ...nextItems[index], ...updates };
     updateAnnouncementBar({
       items: nextItems,
     });
@@ -166,7 +198,7 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
   function removeAnnouncementItem(index: number) {
     const nextItems = announcementItems.filter((_, currentIndex) => currentIndex !== index);
     updateAnnouncementBar({
-      items: nextItems.length > 0 ? nextItems : [""],
+      items: nextItems.length > 0 ? nextItems : [{ text: "", ctaText: null, url: null }],
     });
   }
 
@@ -257,9 +289,13 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
     updateCustomization({ homeCategories: next });
   }
 
-  const selectedHomeCategories = Array.isArray(settings.customization.homeCategories)
-    ? settings.customization.homeCategories
-    : [];
+  const selectedHomeCategories = useMemo(
+    () =>
+      Array.isArray(settings.customization.homeCategories)
+        ? settings.customization.homeCategories
+        : [],
+    [settings.customization.homeCategories],
+  );
 
   const selectedHomeCategoryIds = useMemo(
     () => new Set(selectedHomeCategories.map((entry) => entry.categoryId)),
@@ -383,6 +419,9 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
 
   const mainBanners = getMainBanners();
   const miniBanners = getMiniBanners();
+  const activeTemplate = resolveAdminTemplate(settings.customization);
+  const supportsVideoHero = isTemplateCapabilityAvailable(activeTemplate, "videoHero");
+  const supportsBenefitsBar = isTemplateCapabilityAvailable(activeTemplate, "benefitsBar");
   const selectedFontFamily = settings.customization.fontFamily || "SYSTEM";
   const selectedFontPreview =
     selectedFontFamily === "INTER"
@@ -391,6 +430,8 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
         ? poppins.style.fontFamily
         : selectedFontFamily === "MONTSERRAT"
           ? montserrat.style.fontFamily
+          : selectedFontFamily === "HEEBO"
+            ? heebo.style.fontFamily
           : selectedFontFamily === "ZEN_KAKU_GOTHIC_NEW"
             ? zenKaku.style.fontFamily
             : "var(--font-sans), sans-serif";
@@ -450,6 +491,26 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
   return (
     <div className="space-y-6">
       <div className="grid gap-6">
+          <Card id="active-template" className="border-primary/30 bg-primary/5">
+            <CardHeader>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    <LayoutTemplate className="h-5 w-5" />
+                    Template ativo: {activeTemplate.name}
+                  </CardTitle>
+                  <CardDescription className="mt-1">{activeTemplate.description}</CardDescription>
+                </div>
+                <Badge variant="secondary">Versão {activeTemplate.version}</Badge>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                As opções que não pertencem a este template continuam salvas e aparecem desabilitadas.
+              </p>
+            </CardContent>
+          </Card>
+
           {/* Menu */}
           <Card id="menu">
             <CardHeader>
@@ -470,6 +531,65 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                   onCheckedChange={(checked) => updateCustomization({ menuTransparent: checked })}
                 />
               </div>
+
+              {activeTemplate.key === "groovy" ? (
+                <>
+                  <Separator />
+                  <div className="space-y-1">
+                    <h3 className="text-sm font-semibold">Destaques editoriais do mega menu</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Configure a mídia e o CTA exibidos na terceira coluna dos menus do Groovy.
+                    </p>
+                  </div>
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    {(Object.keys(MEGA_MENU_EDITORIAL_LABELS) as MegaMenuEditorialKey[]).map((key) => {
+                      const editorial = {
+                        ...GROOVY_MEGA_MENU_EDITORIAL[key],
+                        ...(settings.customization.megaMenuEditorial?.[key] || {}),
+                      };
+
+                      return (
+                        <div key={key} className="space-y-4 rounded-lg border p-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="font-medium">{MEGA_MENU_EDITORIAL_LABELS[key]}</p>
+                            <Badge variant="outline">Mega menu</Badge>
+                          </div>
+                          <ImageUpload
+                            value={editorial.imageUrl}
+                            onChange={(url) => updateMegaMenuEditorial(key, { imageUrl: url })}
+                            imageType="categoryBanner"
+                            folder="banners/mega-menu"
+                          />
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <div className="space-y-2">
+                              <Label>Chamada</Label>
+                              <Input value={editorial.eyebrow} onChange={(event) => updateMegaMenuEditorial(key, { eyebrow: event.target.value })} />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Título</Label>
+                              <Input value={editorial.title} onChange={(event) => updateMegaMenuEditorial(key, { title: event.target.value })} />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Texto do CTA</Label>
+                              <Input value={editorial.ctaText} onChange={(event) => updateMegaMenuEditorial(key, { ctaText: event.target.value })} />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Link</Label>
+                              <Input value={editorial.href} onChange={(event) => updateMegaMenuEditorial(key, { href: event.target.value })} placeholder="/produtos" />
+                            </div>
+                          </div>
+                          {key === "restocks" ? (
+                            <div className="space-y-2">
+                              <Label>Descrição</Label>
+                              <Input value={editorial.description || ""} onChange={(event) => updateMegaMenuEditorial(key, { description: event.target.value || null })} />
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              ) : null}
             </CardContent>
           </Card>
 
@@ -634,16 +754,36 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
               </div>
               <div className="space-y-2">
                 {announcementItems.map((item, index) => (
-                  <div key={`announcement-item-${index}`} className="flex items-center gap-2">
-                    <Input
-                      value={item}
-                      onChange={(e) => updateAnnouncementItem(index, e.target.value)}
-                      placeholder={tAdmin(locale, "admin.appearance.announcement.itemPlaceholder", "Item {index} do anuncio").replace("{index}", String(index + 1))}
-                    />
+                  <div key={`announcement-item-${index}`} className="grid gap-2 rounded-lg border p-3 md:grid-cols-[1.3fr_0.8fr_1fr_auto]">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Texto</Label>
+                      <Input
+                        value={item.text}
+                        onChange={(e) => updateAnnouncementItem(index, { text: e.target.value })}
+                        placeholder={tAdmin(locale, "admin.appearance.announcement.itemPlaceholder", "Item {index} do anuncio").replace("{index}", String(index + 1))}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">CTA sublinhado</Label>
+                      <Input
+                        value={item.ctaText || ""}
+                        onChange={(e) => updateAnnouncementItem(index, { ctaText: e.target.value || null })}
+                        placeholder="CONFIRA"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Link do anúncio</Label>
+                      <Input
+                        value={item.url || ""}
+                        onChange={(e) => updateAnnouncementItem(index, { url: e.target.value || null })}
+                        placeholder="/produtos"
+                      />
+                    </div>
                     <Button
                       type="button"
                       variant="outline"
                       size="icon"
+                      className="self-end"
                       onClick={() => removeAnnouncementItem(index)}
                       disabled={announcementItems.length === 1}
                       aria-label={tAdmin(locale, "admin.appearance.announcement.removeItemAria", "Remover item {index}").replace("{index}", String(index + 1))}
@@ -957,7 +1097,7 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
               <Label>{tAdmin(locale, "admin.appearance.typography.storeFont", "Store Font")}</Label>
               <Select
                 value={settings.customization.fontFamily || "SYSTEM"}
-                onValueChange={(value) => updateCustomization({ fontFamily: value as "SYSTEM" | "INTER" | "POPPINS" | "MONTSERRAT" | "ZEN_KAKU_GOTHIC_NEW" })}
+                onValueChange={(value) => updateCustomization({ fontFamily: value as SiteCustomization["fontFamily"] })}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -967,6 +1107,7 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                   <SelectItem value="INTER">Inter</SelectItem>
                   <SelectItem value="POPPINS">Poppins</SelectItem>
                   <SelectItem value="MONTSERRAT">Montserrat</SelectItem>
+                  <SelectItem value="HEEBO">Heebo</SelectItem>
                   <SelectItem value="ZEN_KAKU_GOTHIC_NEW">Zen Kaku Gothic New</SelectItem>
                 </SelectContent>
               </Select>
@@ -1048,31 +1189,66 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
 
                     <Separator />
 
-                    <div className="space-y-2">
-                      <Label>{tAdmin(locale, "admin.appearance.mainBanners.imageDesktop", "Desktop image")}</Label>
-                      <ImageUpload value={banner.imageUrl || null} onChange={(url) => updateMainBanner(index, { imageUrl: url || '' })} imageType="mainBanner" folder="banners" />
-                    </div>
+                    {supportsVideoHero ? (
+                      <div className="space-y-2">
+                        <Label>Tipo de mídia</Label>
+                        <Select
+                          value={banner.mediaType || "image"}
+                          onValueChange={(value: "image" | "video") => updateMainBanner(index, { mediaType: value })}
+                        >
+                          <SelectTrigger className="max-w-56"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="image">Imagem</SelectItem>
+                            <SelectItem value="video">Vídeo</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    ) : null}
+
+                    {(banner.mediaType || "image") === "video" && supportsVideoHero ? (
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <Label>Vídeo desktop</Label>
+                          <VideoUpload value={banner.videoUrl || null} onChange={(url) => updateMainBanner(index, { videoUrl: url })} folder="banners/video" />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Imagem de capa do vídeo (opcional)</Label>
+                          <ImageUpload value={banner.posterUrl || null} onChange={(url) => updateMainBanner(index, { posterUrl: url })} imageType="mainBanner" folder="banners/video-posters" />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <Label>{tAdmin(locale, "admin.appearance.mainBanners.imageDesktop", "Desktop image")}</Label>
+                        <ImageUpload value={banner.imageUrl || null} onChange={(url) => updateMainBanner(index, { imageUrl: url || '' })} imageType="mainBanner" folder="banners" />
+                      </div>
+                    )}
 
                     <div className="flex items-center justify-between rounded-lg border bg-muted/20 px-4 py-3">
                       <div className="space-y-0.5">
                         <Label className="flex items-center gap-2"><Smartphone className="h-4 w-4" />{tAdmin(locale, "admin.appearance.mainBanners.useMobile", "Use mobile version")}</Label>
-                        <p className="text-sm text-muted-foreground">{tAdmin(locale, "admin.appearance.mainBanners.useMobileHelp", "Enable to upload a separate image for small screens")}</p>
+                        <p className="text-sm text-muted-foreground">Use uma mídia diferente em telas pequenas.</p>
                       </div>
                       <Switch
                         checked={banner.useMobileImage}
                         onCheckedChange={(checked) => updateMainBanner(index, {
                           useMobileImage: checked,
                           mobileImageUrl: checked ? banner.mobileImageUrl : null,
+                          mobileVideoUrl: checked ? banner.mobileVideoUrl : null,
                         })}
                       />
                     </div>
 
-                    {banner.useMobileImage && (
+                    {banner.useMobileImage && (banner.mediaType || "image") === "video" && supportsVideoHero ? (
+                      <div className="space-y-2">
+                        <Label>Vídeo mobile</Label>
+                        <VideoUpload value={banner.mobileVideoUrl || null} onChange={(url) => updateMainBanner(index, { mobileVideoUrl: url, useMobileImage: true })} folder="banners/video-mobile" />
+                      </div>
+                    ) : banner.useMobileImage ? (
                       <div className="space-y-2">
                         <Label>{tAdmin(locale, "admin.appearance.mainBanners.imageMobile", "Mobile image")}</Label>
                         <ImageUpload value={banner.mobileImageUrl || null} onChange={(url) => updateMainBanner(index, { mobileImageUrl: url || null, useMobileImage: Boolean(url) || banner.useMobileImage })} imageType="mainBannerMobile" folder="banners/mobile" />
                       </div>
-                    )}
+                    ) : null}
 
                     <div className="grid gap-4 md:grid-cols-2">
                       <div className="space-y-2">
@@ -1279,7 +1455,7 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                               </div>
                               <Switch checked={banner.isActive} onCheckedChange={(checked) => updateCategoryBanner(index, { isActive: checked })} />
                             </div>
-                            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                               <div className="space-y-2">
                                 <Label>{tAdmin(locale, "admin.appearance.categoryBanners.imageLabel", "Imagem")}</Label>
                                 <ImageUpload value={banner.imageUrl || null} onChange={(url) => updateCategoryBanner(index, { imageUrl: url || '' })} imageType="categoryBanner" folder="banners/categories" />
@@ -1287,6 +1463,10 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
                               <div className="space-y-2">
                                 <Label>{tAdmin(locale, "admin.appearance.categoryBanners.altTextLabel", "Texto Alternativo")}</Label>
                                 <Input value={banner.altText} onChange={(e) => updateCategoryBanner(index, { altText: e.target.value })} placeholder={tAdmin(locale, "admin.appearance.mainBanners.altTextPlaceholder", "Banner description")} />
+                              </div>
+                              <div className="space-y-2">
+                                <Label>Link do banner</Label>
+                                <Input value={banner.linkUrl || ""} onChange={(e) => updateCategoryBanner(index, { linkUrl: e.target.value || null })} placeholder="/produtos?category=vestidos" />
                               </div>
                             </div>
                           </div>
@@ -1320,12 +1500,16 @@ export function CustomizationTab({ locale = "en", settings, setSettings, categor
         </Card>
 
         {/* Info Banners */}
-        <Card id="info-banners">
+        <Card id="info-banners" aria-disabled={!supportsBenefitsBar} className={!supportsBenefitsBar ? "bg-muted/40" : undefined}>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2"><AlertCircle className="h-5 w-5" />{tAdmin(locale, "admin.appearance.infoBanners.title", "Info Banners")}</CardTitle>
+            <CardTitle className="flex flex-wrap items-center gap-2">
+              <AlertCircle className="h-5 w-5" />
+              {tAdmin(locale, "admin.appearance.infoBanners.title", "Info Banners")}
+              {!supportsBenefitsBar ? <Badge variant="secondary">Não disponível neste tema</Badge> : null}
+            </CardTitle>
             <CardDescription>{tAdmin(locale, "admin.appearance.infoBanners.description", "Configure information banners shown below the main banner")}</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-6">
+          <CardContent className={`space-y-6 ${!supportsBenefitsBar ? "pointer-events-none opacity-45" : ""}`}>
             {(["pedidoMinimo", "entrega", "pagamento", "atendimento"] as const).map((key) => {
               const labels = {
                 pedidoMinimo: tAdmin(locale, "admin.appearance.defaults.info.pedidoMinimo.title", "Pedido Minimo"),

@@ -16,6 +16,7 @@ export type SettingsPageKey =
   | "permissions"
   | "b2b"
   | "appearance"
+  | "templates"
   | "payments"
   | "shipping"
   | "marketing"

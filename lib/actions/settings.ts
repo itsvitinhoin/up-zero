@@ -22,6 +22,7 @@ import type {
   ApiResponse,
   SiteSettings,
   SiteCustomization,
+  BannerConfig,
   PaymentSettings,
   PaymentMethod,
   PriceTable,
@@ -40,6 +41,11 @@ import {
   withStorefrontScopeHeaders,
 } from '@/lib/actions/storefront-scope'
 import { checkUserPermission } from '@/lib/actions/permissions'
+import {
+  applyStorefrontTemplateDefaults,
+  STOREFRONT_TEMPLATES,
+  type StorefrontTemplateKey,
+} from '@/lib/storefront-templates'
 
 type FixedShippingOptionBackend = {
   id: number
@@ -720,6 +726,7 @@ function normalizeThemeMeta(meta: Record<string, unknown>, fallback: SiteCustomi
     if (normalized === 'INTER') return 'INTER'
     if (normalized === 'POPPINS') return 'POPPINS'
     if (normalized === 'MONTSERRAT') return 'MONTSERRAT'
+    if (normalized === 'HEEBO') return 'HEEBO'
     if (normalized === 'ZEN_KAKU_GOTHIC_NEW' || normalized === 'ZENKAKUGOTHICNEW') return 'ZEN_KAKU_GOTHIC_NEW'
 
     return null
@@ -741,9 +748,9 @@ function normalizeThemeMeta(meta: Record<string, unknown>, fallback: SiteCustomi
   const fallbackAnnouncementBar = fallback.announcementBar ?? {
     enabled: true,
     items: [
-      'Frete gratis para compras acima de R$ 1000',
-      'Novidades toda semana',
-      'Atacado exclusivo para lojistas',
+      { text: 'Frete gratis para compras acima de R$ 1000', ctaText: null, url: null },
+      { text: 'Novidades toda semana', ctaText: null, url: null },
+      { text: 'Atacado exclusivo para lojistas', ctaText: null, url: null },
     ],
     separator: '|',
     backgroundColor: '#1a1a1a',
@@ -841,6 +848,22 @@ function normalizeThemeMeta(meta: Record<string, unknown>, fallback: SiteCustomi
         typeof banner.mobileImageUrl === 'string'
           ? banner.mobileImageUrl
           : defaultBanner?.mobileImageUrl || null,
+      mediaType:
+        banner.mediaType === 'video' || banner.media_type === 'video'
+          ? 'video'
+          : (defaultBanner?.mediaType || 'image'),
+      videoUrl:
+        typeof banner.videoUrl === 'string'
+          ? banner.videoUrl
+          : (typeof banner.video_url === 'string' ? banner.video_url : defaultBanner?.videoUrl || null),
+      mobileVideoUrl:
+        typeof banner.mobileVideoUrl === 'string'
+          ? banner.mobileVideoUrl
+          : (typeof banner.mobile_video_url === 'string' ? banner.mobile_video_url : defaultBanner?.mobileVideoUrl || null),
+      posterUrl:
+        typeof banner.posterUrl === 'string'
+          ? banner.posterUrl
+          : (typeof banner.poster_url === 'string' ? banner.poster_url : defaultBanner?.posterUrl || null),
       altText:
         typeof banner.altText === 'string'
           ? banner.altText
@@ -869,11 +892,25 @@ function normalizeThemeMeta(meta: Record<string, unknown>, fallback: SiteCustomi
       }
     : defaultInfoBanners
 
-  const parseAnnouncementItems = (value: unknown): string[] => {
+  const parseAnnouncementItems = (value: unknown): SiteCustomization['announcementBar']['items'] => {
     if (Array.isArray(value)) {
       const normalized = value
-        .map((entry) => String(entry || '').trim())
-        .filter(Boolean)
+        .map((entry) => {
+          if (typeof entry === 'string') {
+            const text = entry.trim()
+            return text ? { text, ctaText: null, url: null } : null
+          }
+          if (!entry || typeof entry !== 'object') return null
+          const item = entry as Record<string, unknown>
+          const text = typeof item.text === 'string' ? item.text.trim() : ''
+          if (!text) return null
+          return {
+            text,
+            ctaText: typeof item.ctaText === 'string' ? item.ctaText.trim() || null : null,
+            url: typeof item.url === 'string' ? item.url.trim() || null : null,
+          }
+        })
+        .filter((entry) => entry !== null) as SiteCustomization['announcementBar']['items']
 
       if (normalized.length > 0) return normalized
     }
@@ -883,6 +920,7 @@ function normalizeThemeMeta(meta: Record<string, unknown>, fallback: SiteCustomi
         .split('|')
         .map((entry) => entry.trim())
         .filter(Boolean)
+        .map((text) => ({ text, ctaText: null, url: null }))
 
       if (normalized.length > 0) return normalized
     }
@@ -1001,6 +1039,7 @@ function normalizeThemeMeta(meta: Record<string, unknown>, fallback: SiteCustomi
             categoryId: typeof entry.categoryId === 'string' ? entry.categoryId : '',
             imageUrl: typeof entry.imageUrl === 'string' ? entry.imageUrl : '',
             altText: typeof entry.altText === 'string' ? entry.altText : '',
+            linkUrl: typeof entry.linkUrl === 'string' ? entry.linkUrl : null,
             isActive: typeof entry.isActive === 'boolean' ? entry.isActive : true,
             mode,
           }
@@ -1068,7 +1107,45 @@ function normalizeThemeMeta(meta: Record<string, unknown>, fallback: SiteCustomi
         .filter((entry): entry is SiteCustomization['homeCategories'][number] => Boolean(entry))
     : fallbackHomeCategories
 
+  const rawTemplateKey = meta.templateKey ?? meta.template_key ?? meta.storefrontTemplate ?? meta.storefront_template
+  const rawTemplateVersion = meta.templateVersion ?? meta.template_version
+  const templateKey: SiteCustomization['templateKey'] = rawTemplateKey === 'groovy'
+    ? 'groovy'
+    : (fallback.templateKey || 'classic')
+  const rawMegaMenuEditorial = meta.megaMenuEditorial ?? meta.mega_menu_editorial
+  const normalizeMegaMenuEditorial = (): SiteCustomization['megaMenuEditorial'] => {
+    if (!rawMegaMenuEditorial || typeof rawMegaMenuEditorial !== 'object') {
+      return fallback.megaMenuEditorial
+    }
+
+    const source = rawMegaMenuEditorial as Record<string, unknown>
+    const entries = ['newArrivals', 'clothing', 'bestSellers', 'restocks'] as const
+    return Object.fromEntries(entries.flatMap((key) => {
+      const value = source[key]
+      if (!value || typeof value !== 'object') return []
+      const item = value as Record<string, unknown>
+      return [[key, {
+        imageUrl: typeof item.imageUrl === 'string' ? item.imageUrl : null,
+        eyebrow: typeof item.eyebrow === 'string' ? item.eyebrow : '',
+        title: typeof item.title === 'string' ? item.title : '',
+        description: typeof item.description === 'string' ? item.description : null,
+        ctaText: typeof item.ctaText === 'string' ? item.ctaText : '',
+        href: typeof item.href === 'string' ? item.href : '/produtos',
+      }]]
+    })) as SiteCustomization['megaMenuEditorial']
+  }
+
   return {
+    templateKey,
+    templateVersion: typeof rawTemplateVersion === 'number' && Number.isFinite(rawTemplateVersion)
+      ? Math.max(1, Math.round(rawTemplateVersion))
+      : (fallback.templateVersion || 1),
+    templateInstalledAt: typeof meta.templateInstalledAt === 'string'
+      ? meta.templateInstalledAt
+      : (fallback.templateInstalledAt || null),
+    templatePublishedAt: typeof meta.templatePublishedAt === 'string'
+      ? meta.templatePublishedAt
+      : (fallback.templatePublishedAt || null),
     primaryColor: typeof meta.primaryColor === 'string' ? meta.primaryColor : fallback.primaryColor,
     secondaryColor: typeof meta.secondaryColor === 'string' ? meta.secondaryColor : fallback.secondaryColor,
     accentColor: typeof meta.accentColor === 'string' ? meta.accentColor : fallback.accentColor,
@@ -1076,9 +1153,10 @@ function normalizeThemeMeta(meta: Record<string, unknown>, fallback: SiteCustomi
     textColor: typeof meta.textColor === 'string' ? meta.textColor : fallback.textColor,
     buttonColor: typeof meta.buttonColor === 'string' ? meta.buttonColor : fallback.buttonColor,
     buttonTextColor: typeof meta.buttonTextColor === 'string' ? meta.buttonTextColor : fallback.buttonTextColor,
-    fontFamily: normalizeFontFamily(fontFamilyRaw) ?? fallbackFontFamily,
+    fontFamily: normalizeFontFamily(fontFamilyRaw) ?? (templateKey === 'groovy' ? 'HEEBO' : fallbackFontFamily),
     forceUppercaseText: parseBoolean(forceUppercaseRaw) ?? fallbackForceUppercaseText,
     menuTransparent: parseBoolean(meta.menuTransparent) ?? false,
+    megaMenuEditorial: normalizeMegaMenuEditorial(),
     announcementBar,
     popupCoupon,
     mainBanners,
@@ -2801,6 +2879,9 @@ export async function getSiteSettingsAction(
     }
 
     const cookieHeader = await buildAdminCookieHeader()
+    const resolvedSettingsStoreId = include.theme
+      ? await getStoreIdFromBackend(base, cookieHeader, storeId)
+      : normalizeStoreIdInput(storeId)
 
     const [
       shippingResult,
@@ -2888,7 +2969,11 @@ export async function getSiteSettingsAction(
     }
 
     if (include.theme && themeResult.success && themeResult.data) {
-      settings.customization = normalizeThemeMeta(themeResult.data, settings.customization)
+      settings.customization = normalizeThemeMeta(themeResult.data, {
+        ...settings.customization,
+        templateKey: resolvedSettingsStoreId === 1043 ? 'groovy' : (settings.customization.templateKey || 'classic'),
+        templateVersion: settings.customization.templateVersion || 1,
+      })
     }
 
     if (include.product) {
@@ -3550,6 +3635,7 @@ export async function updateCustomizationAction(formData: FormData): Promise<Api
     || rawFontFamily === 'INTER'
     || rawFontFamily === 'POPPINS'
     || rawFontFamily === 'MONTSERRAT'
+    || rawFontFamily === 'HEEBO'
     || rawFontFamily === 'ZEN_KAKU_GOTHIC_NEW'
       ? rawFontFamily
       : (currentSettings.customization.fontFamily || 'SYSTEM')
@@ -3584,6 +3670,7 @@ export async function updateCustomizationAction(formData: FormData): Promise<Api
   const categoryBannersRaw = getFormString(formData, 'categoryBanners')
   const infoBannersRaw = getFormString(formData, 'infoBanners')
   const homeCategoriesRaw = getFormString(formData, 'homeCategories')
+  const megaMenuEditorialRaw = getFormString(formData, 'megaMenuEditorial')
 
   const rawStorefrontDefaultSort = getFormString(formData, 'storefrontDefaultSort')
   const storefrontDefaultSort: SiteCustomization['storefrontDefaultSort'] =
@@ -3613,6 +3700,14 @@ export async function updateCustomizationAction(formData: FormData): Promise<Api
   const loginSideImageUrl = getFormString(formData, 'loginSideImageUrl')
 
   const customization: SiteCustomization = {
+    templateKey: getFormString(formData, 'templateKey') === 'groovy' ? 'groovy' : (currentSettings.customization.templateKey || 'classic'),
+    templateVersion: Math.max(1, Number(getFormString(formData, 'templateVersion')) || currentSettings.customization.templateVersion || 1),
+    templateInstalledAt: hasFormField(formData, 'templateInstalledAt')
+      ? getFormString(formData, 'templateInstalledAt') || null
+      : currentSettings.customization.templateInstalledAt || null,
+    templatePublishedAt: hasFormField(formData, 'templatePublishedAt')
+      ? getFormString(formData, 'templatePublishedAt') || null
+      : currentSettings.customization.templatePublishedAt || null,
     primaryColor: currentSettings.customization.primaryColor,
     secondaryColor: currentSettings.customization.secondaryColor,
     accentColor: accentColor || currentSettings.customization.accentColor,
@@ -3627,6 +3722,9 @@ export async function updateCustomizationAction(formData: FormData): Promise<Api
     menuTransparent: hasFormField(formData, 'menuTransparent')
       ? getFormString(formData, 'menuTransparent') === 'true'
       : currentSettings.customization.menuTransparent,
+    megaMenuEditorial: megaMenuEditorialRaw
+      ? JSON.parse(megaMenuEditorialRaw)
+      : currentSettings.customization.megaMenuEditorial,
     announcementBar: announcementBarRaw ? JSON.parse(announcementBarRaw) : currentSettings.customization.announcementBar,
     popupCoupon: popupCouponRaw
       ? JSON.parse(popupCouponRaw)
@@ -3713,6 +3811,68 @@ export async function updateCustomizationAction(formData: FormData): Promise<Api
   revalidatePath('/settings')
   revalidatePath('/')
 
+  return { success: true, data: updated }
+}
+
+export async function installStorefrontTemplateAction(
+  requestedTemplateKey: StorefrontTemplateKey,
+): Promise<ApiResponse<SiteSettings>> {
+  const session = await getSession()
+  const authCookieHeader = await buildAdminCookieHeader()
+  if (!isSettingsAuthorized(session, authCookieHeader)) {
+    return { success: false, error: 'Não autorizado' }
+  }
+  if (!(await hasSettingsEditPermission())) {
+    return { success: false, error: 'Você não tem permissão para editar configurações' }
+  }
+  if (requestedTemplateKey !== 'classic' && requestedTemplateKey !== 'groovy') {
+    return { success: false, error: 'Template inválido' }
+  }
+
+  const base = process.env.NEXT_PUBLIC_RUST_URL
+  const cookieHeader = await buildAdminCookieHeader()
+  if (!base) return { success: false, error: 'NEXT_PUBLIC_RUST_URL não configurado' }
+  if (!cookieHeader) return { success: false, error: 'Não autenticado' }
+
+  const currentSettings = await getSiteSettings()
+  const themeResult = await getThemeSettingsMetaFromBackend(base, cookieHeader)
+  if (!themeResult.success) {
+    return { success: false, error: themeResult.error || 'Erro ao carregar o tema atual' }
+  }
+
+  const currentCustomization = normalizeThemeMeta(
+    themeResult.data || {},
+    currentSettings.customization,
+  )
+  const publishedAt = new Date().toISOString()
+  const customization = applyStorefrontTemplateDefaults(
+    currentCustomization,
+    requestedTemplateKey,
+    publishedAt,
+  )
+  const actorUserId = session?.id || 'store-session'
+  const saveResult = await saveThemeSettingsMetaToBackend(base, cookieHeader, customization, actorUserId)
+  if (!saveResult.success) {
+    return { success: false, error: saveResult.error || 'Erro ao instalar e publicar o template' }
+  }
+
+  const updated = await updateSiteSettings({ customization })
+  await createAuditLog({
+    actorUserId,
+    action: 'STOREFRONT_TEMPLATE_PUBLISHED',
+    entityType: 'StorefrontTemplate',
+    entityId: requestedTemplateKey,
+    beforeJson: currentCustomization as unknown as Record<string, unknown>,
+    afterJson: {
+      templateKey: requestedTemplateKey,
+      templateVersion: STOREFRONT_TEMPLATES[requestedTemplateKey].version,
+      templatePublishedAt: publishedAt,
+    },
+  })
+
+  revalidatePath('/settings/templates')
+  revalidatePath('/settings/appearance')
+  revalidatePath('/')
   return { success: true, data: updated }
 }
 

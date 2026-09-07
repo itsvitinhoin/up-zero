@@ -13,7 +13,7 @@ export const IMAGE_DIMENSIONS = {
   logo: { width: 200, height: 60, label: 'Logo', aspectRatio: '200x60px' },
   favicon: { width: 32, height: 32, label: 'Favicon', aspectRatio: '32x32px' },
   loginSideImage: { width: 768, height: 885, label: 'Imagem de Login', aspectRatio: '768x885px' },
-  mainBanner: { width: 1500, height: 600, label: 'Banner Principal', aspectRatio: '1500x600px' },
+  mainBanner: { width: 1920, height: 780, label: 'Banner Principal', aspectRatio: '1920x780px' },
   mainBannerMobile: { width: 1000, height: 1500, label: 'Banner Mobile', aspectRatio: '1000x1500px' },
   popupSquare: { width: 1500, height: 1500, label: 'Popup', aspectRatio: '1500x1500px' },
   categoryBanner: { width: 1200, height: 400, label: 'Banner de Categoria', aspectRatio: '1200x400px' },

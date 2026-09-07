@@ -16,6 +16,7 @@ import {
   Globe,
   Languages,
   LayoutDashboard,
+  LayoutTemplate,
   Link2,
   ListFilter,
   LogOut,
@@ -228,6 +229,7 @@ const navSections: NavSection[] = [
         ],
       },
       { name: 'Filiais', href: '/settings/branches', icon: GitBranch },
+      { name: 'Templates', href: '/settings/templates', icon: LayoutTemplate },
       {
         name: 'B2B',
         href: '/settings/b2b',

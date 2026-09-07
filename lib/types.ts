@@ -568,9 +568,30 @@ export interface ShippingSettings {
   customMethods: CustomShippingMethod[]
 }
 
-export type StoreFontFamily = 'SYSTEM' | 'INTER' | 'POPPINS' | 'MONTSERRAT' | 'ZEN_KAKU_GOTHIC_NEW'
+export type StoreFontFamily = 'SYSTEM' | 'INTER' | 'POPPINS' | 'MONTSERRAT' | 'HEEBO' | 'ZEN_KAKU_GOTHIC_NEW'
+
+export interface AnnouncementBarItem {
+  text: string
+  ctaText?: string | null
+  url?: string | null
+}
+
+export type MegaMenuEditorialKey = 'newArrivals' | 'clothing' | 'bestSellers' | 'restocks'
+
+export interface MegaMenuEditorialItem {
+  imageUrl: string | null
+  eyebrow: string
+  title: string
+  description?: string | null
+  ctaText: string
+  href: string
+}
 
 export interface SiteCustomization {
+  templateKey?: 'classic' | 'groovy'
+  templateVersion?: number
+  templateInstalledAt?: string | null
+  templatePublishedAt?: string | null
   // Colors
   primaryColor: string
   secondaryColor: string
@@ -594,8 +615,9 @@ export interface SiteCustomization {
   // current default proportions are kept (683x1024px).
   mediaAspectWidth?: number | null
   mediaAspectHeight?: number | null
-    // Menu
-    menuTransparent: boolean
+  // Menu
+  menuTransparent: boolean
+  megaMenuEditorial?: Partial<Record<MegaMenuEditorialKey, MegaMenuEditorialItem>>
   // Announcement bar
   announcementBar: AnnouncementBarConfig
   popupCoupon?: CouponPopupConfig
@@ -617,7 +639,7 @@ export interface SiteCustomization {
 
 export interface AnnouncementBarConfig {
   enabled: boolean
-  items: string[]
+  items: AnnouncementBarItem[]
   separator: string
   backgroundColor: string
   textColor: string
@@ -635,6 +657,10 @@ export interface CouponPopupConfig {
 export interface BannerConfig {
   imageUrl: string
   mobileImageUrl: string | null
+  mediaType?: 'image' | 'video'
+  videoUrl?: string | null
+  mobileVideoUrl?: string | null
+  posterUrl?: string | null
   altText: string
   linkUrl: string | null
   isActive: boolean
@@ -645,6 +671,7 @@ export interface CategoryBannerConfig {
   categoryId: string
   imageUrl: string
   altText: string
+  linkUrl?: string | null
   isActive: boolean
   mode: 'auto' | 'custom'
 }

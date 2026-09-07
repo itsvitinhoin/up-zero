@@ -4,9 +4,9 @@ export function getDefaultAnnouncementBar() {
   return {
     enabled: true,
     items: [
-      "Frete gratis para compras acima de R$ 1000",
-      "Novidades toda semana",
-      "Atacado exclusivo para lojistas",
+      { text: "Frete gratis para compras acima de R$ 1000", ctaText: null, url: null },
+      { text: "Novidades toda semana", ctaText: null, url: null },
+      { text: "Atacado exclusivo para lojistas", ctaText: null, url: null },
     ],
     separator: "|",
     backgroundColor: "#1a1a1a",

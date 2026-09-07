@@ -88,6 +88,10 @@ export function useSettingsSaveHandlers({
     setIsSaving(true);
 
     const formData = new FormData();
+    formData.append("templateKey", settings.customization.templateKey || "classic");
+    formData.append("templateVersion", String(settings.customization.templateVersion || 1));
+    formData.append("templateInstalledAt", settings.customization.templateInstalledAt || "");
+    formData.append("templatePublishedAt", settings.customization.templatePublishedAt || "");
     formData.append("accentColor", settings.customization.accentColor);
     formData.append("backgroundColor", settings.customization.backgroundColor);
     formData.append("textColor", settings.customization.textColor);
@@ -96,6 +100,7 @@ export function useSettingsSaveHandlers({
     formData.append("fontFamily", settings.customization.fontFamily || "SYSTEM");
     formData.append("forceUppercaseText", String(settings.customization.forceUppercaseText ?? false));
     formData.append("menuTransparent", String(settings.customization.menuTransparent ?? false));
+    formData.append("megaMenuEditorial", JSON.stringify(settings.customization.megaMenuEditorial || {}));
     formData.append("announcementBar", JSON.stringify(settings.customization.announcementBar || getDefaultAnnouncementBar()));
     formData.append("popupCoupon", JSON.stringify(settings.customization.popupCoupon || getDefaultPopupCoupon()));
     formData.append("mainBanners", JSON.stringify(settings.customization.mainBanners || []));
