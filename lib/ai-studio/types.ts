@@ -78,6 +78,7 @@ export type Job = JobInput & {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  completedAt?: string;
   status:
     | "queued_analysis"
     | "analyzing"

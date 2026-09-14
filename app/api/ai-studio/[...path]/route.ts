@@ -1,3 +1,4 @@
+import { studioRequiresSetup } from "@/lib/ai-studio/runtime";
 import { downloadJobImages } from "@/lib/ai-studio/download";
 import { normalizeColors } from "@/lib/ai-studio/catalog";
 import { randomUUID } from "node:crypto";
@@ -57,6 +58,7 @@ async function limitedBody(request: Request, limit: number) {
 async function handle(request: Request, context: Context) {
   try {
     const admin = await requireAdmin(request);
+    if (studioRequiresSetup()) throw new StudioError(503, "O Estúdio IA está em preparação. Aguarde a liberação do recurso.");
     const { path } = await context.params,
       [resource, id, action] = path;
     const url = new URL(request.url);

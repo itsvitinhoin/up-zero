@@ -51,6 +51,7 @@ export const listJobs = (storeId: number) =>
   listJson<Job>(path.join(storeDir(storeId), "jobs"));
 export async function saveJob(job: Job) {
   job.updatedAt = new Date().toISOString();
+  if (!job.completedAt && ["front", "back", "side", "detail"].every(shot => job.outputs.some(output => output.shot === shot))) job.completedAt = job.updatedAt;
   await atomicJson(jobPath(job.storeId, job.id), job);
 }
 const defaultAvatarId = "1fd64a9d-5bd1-49d0-b512-d21e3382877c";

@@ -156,12 +156,12 @@ const navSections: NavSection[] = [
     label: 'Catálogo',
     items: [
       { name: 'Produtos', href: '/products', exact: true, icon: Package },
-      { name: 'Estúdio IA', href: '/ai-studio', icon: Palette },
       { name: 'Composição de produtos', href: '/compositions', icon: Boxes },
       { name: 'Categorias', href: '/categories', icon: Tag },
       { name: 'Vitrine', href: '/products/showcase', icon: Store },
     ],
   },
+  { id: 'ai-studio', icon: Palette, label: 'Estúdio IA', href: '/ai-studio' },
   {
     id: 'assets',
     icon: Boxes,
@@ -352,7 +352,7 @@ const navSections: NavSection[] = [
 
 const navGroups: NavGroup[] = [
   { heading: 'Principal', sectionIds: ['dashboard', 'clientes', 'b2c'] },
-  { heading: 'Operação', sectionIds: ['pedidos', 'offline', 'comunicacao', 'whatsapp', 'catalogo', 'assets', 'precos', 'wms', 'paginas'] },
+  { heading: 'Operação', sectionIds: ['pedidos', 'offline', 'comunicacao', 'whatsapp', 'catalogo', 'ai-studio', 'assets', 'precos', 'wms', 'paginas'] },
   { heading: 'Gestão', sectionIds: ['admin', 'settings'] },
 ]
 
@@ -382,10 +382,10 @@ function getSectionForPathname(pathname: string): string {
   ) return 'comunicacao'
   if (
     pathname.startsWith('/products') ||
-    pathname.startsWith('/ai-studio') ||
     pathname.startsWith('/categories') ||
     pathname.startsWith('/compositions')
   ) return 'catalogo'
+  if (pathname.startsWith('/ai-studio')) return 'ai-studio'
   if (pathname.startsWith('/assets')) return 'assets'
   if (
     pathname.startsWith('/sales-channels') ||

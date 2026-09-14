@@ -19,7 +19,8 @@
     "sync:vesti:sizes": "bash ./scripts/sync-vesti-sizes-to-external.sh",
     "sync:vesti:attributes": "bash ./scripts/sync-vesti-attributes.sh",
     "studio:worker": "node --import tsx scripts/ai-studio-worker.ts",
-    "test:studio": "node --import tsx --test tests/ai-studio*.test.ts"
+    "test:studio": "node --import tsx --test tests/ai-studio*.test.ts",
+    "test:billing": "node --import tsx --test tests/billing*.test.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
