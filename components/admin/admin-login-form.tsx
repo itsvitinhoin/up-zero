@@ -27,7 +27,7 @@ const adminLoginSchema = z.object({
 
 type AdminLoginFormData = z.infer<typeof adminLoginSchema>
 
-export default function AdminLoginForm() {
+export default function AdminLoginForm({ destination = '/', serviceError }: { destination?: string; serviceError?: string }) {
   const router = useRouter()
   const [state, formAction, isPending] = useActionState(adminStoreLoginAction, null)
   const [showPassword, setShowPassword] = useState(false)
@@ -45,17 +45,17 @@ export default function AdminLoginForm() {
     mode: 'onSubmit',
   })
 
-  // Navega para /admin quando login for bem-sucedido
+  // Retorna à página interna solicitada antes da autenticação.
   useEffect(() => {
     if (state?.success) {
-      router.push('/')
+      router.replace(destination)
       return
     }
 
     if (state?.error) {
       toast.error(state.error)
     }
-  }, [state, router])
+  }, [state, router, destination])
 
   const onSubmit = handleSubmit(data => {
     const formData = new FormData()
@@ -86,6 +86,7 @@ export default function AdminLoginForm() {
           <CardDescription>Acesse o painel administrativo</CardDescription>
         </CardHeader>
         <CardContent>
+          {serviceError && <p role="alert" className="mb-4 rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{serviceError}</p>}
           <form onSubmit={onSubmit} noValidate className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="email">E-mail</Label>

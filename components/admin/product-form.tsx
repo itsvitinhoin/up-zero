@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
+import Link from "next/link";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
@@ -5846,6 +5847,14 @@ export function ProductForm({
         {/* Images Tab */}
         {hasProductTabPermission.images && (
         <TabsContent value="images" className="space-y-4 mt-4">
+          {product?.id && hasProductTabPermission.images && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-muted/20 p-4">
+              <p className="text-sm text-muted-foreground">Crie fotos de outras cores a partir das referências desta peça.</p>
+              <Button type="button" variant="outline" asChild>
+                <Link href={`/ai-studio?productId=${encodeURIComponent(product.id)}`}>Gerar fotos no Estúdio IA</Link>
+              </Button>
+            </div>
+          )}
           <Card>
             <CardHeader>
               <CardTitle className="text-lg">Nível das Imagens</CardTitle>

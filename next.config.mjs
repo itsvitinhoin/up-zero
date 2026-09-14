@@ -6,6 +6,7 @@ const projectRoot = dirname(fileURLToPath(import.meta.url))
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
+  outputFileTracingIncludes: { '/api/ai-studio/*': ['./assets/ai-studio/avatar-clara.jpg'] },
   cacheComponents: true,
   partialPrefetching: true,
   turbopack: {

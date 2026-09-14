@@ -52,6 +52,10 @@ export function canAccessNavHref(
     return permissionSet.has(PRODUCT_MENU_VIEW_CODE)
   }
 
+  if (normalizedHref === '/ai-studio' || normalizedHref.startsWith('/ai-studio/')) {
+    return permissionSet.has('products.manage_images')
+  }
+
   if (normalizedHref === '/custom-links' || normalizedHref.startsWith('/custom-links/')) {
     return permissionSet.has(CUSTOM_LINKS_MENU_VIEW_CODE)
   }

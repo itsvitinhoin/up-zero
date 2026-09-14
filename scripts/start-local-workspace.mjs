@@ -13,6 +13,12 @@ if (!existsSync(resolve(storefrontRoot, 'package.json'))) {
 
 const services = [
   {
+    name: 'ESTUDIO',
+    cwd: adminRoot,
+    command: 'npm',
+    args: ['run', 'studio:worker'],
+  },
+  {
     name: 'API',
     cwd: adminRoot,
     command: process.execPath,

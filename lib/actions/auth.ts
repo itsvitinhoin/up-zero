@@ -352,12 +352,18 @@ export async function adminStoreLoginAction(
     return { success: true, data: { authenticated: true } }
   }
 
-  const response = await fetch(new URL('/admin/login', base), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-    cache: 'no-store',
-  })
+  let response: Response
+  try {
+    response = await fetch(new URL('/admin/login', base), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(10000),
+    })
+  } catch {
+    return { success: false, error: 'O serviço de login está indisponível. Tente novamente em alguns instantes.' }
+  }
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => '')

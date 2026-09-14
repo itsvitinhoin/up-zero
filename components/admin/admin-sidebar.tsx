@@ -156,6 +156,7 @@ const navSections: NavSection[] = [
     label: 'Catálogo',
     items: [
       { name: 'Produtos', href: '/products', exact: true, icon: Package },
+      { name: 'Estúdio IA', href: '/ai-studio', icon: Palette },
       { name: 'Composição de produtos', href: '/compositions', icon: Boxes },
       { name: 'Categorias', href: '/categories', icon: Tag },
       { name: 'Vitrine', href: '/products/showcase', icon: Store },
@@ -381,6 +382,7 @@ function getSectionForPathname(pathname: string): string {
   ) return 'comunicacao'
   if (
     pathname.startsWith('/products') ||
+    pathname.startsWith('/ai-studio') ||
     pathname.startsWith('/categories') ||
     pathname.startsWith('/compositions')
   ) return 'catalogo'
