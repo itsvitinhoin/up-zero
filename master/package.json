@@ -1,0 +1,14 @@
+{
+  "name": "upzero-master",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --hostname 127.0.0.1 --port 3010",
+    "dev:demo": "MASTER_DEMO_MODE=true next dev --hostname 127.0.0.1 --port 3010",
+    "build": "next build --webpack",
+    "start": "next start --port 3010",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:http": "node tests/http-smoke.mjs"
+  }
+}

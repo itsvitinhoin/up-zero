@@ -103,6 +103,7 @@
     "baseline-browser-mapping": "^2.10.16",
     "postcss": "^8.5",
     "tailwindcss": "^4.2.2",
+    "tsx": "^4.23.12",
     "typescript": "^6"
   }
 }
