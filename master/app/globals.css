@@ -1,0 +1,13 @@
+@import '../../app/globals.css';
+@source '../components';
+@source '../app';
+@source '../../components/ui';
+@source '../../components/dashboard/shared.tsx';
+@source '../../components/admin/admin-pagination-controls.tsx';
+
+@theme inline {
+  --font-sans: var(--master-font-sans);
+  --font-mono: var(--master-font-mono);
+}
+.master-table th { white-space: nowrap; }
+.master-table td { vertical-align: middle; }
