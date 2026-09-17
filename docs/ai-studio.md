@@ -1,6 +1,6 @@
 # Estúdio IA
 
-## Fluxo atual: análise antes da geração (v10)
+## Fluxo atual: análise antes da geração (v12)
 
 Esta seção substitui as menções abaixo à conferência automática após gerar. Novos ensaios executam uma análise Astra com as referências da roupa/cor e do avatar, produzindo observações da frente/costas, estimativas da lateral, invariantes, conflitos, cenário e instruções por ângulo. Não é necessário enviar foto lateral ou de detalhe. O gerador mantém qualidade alta e 1024×1536.
 
@@ -23,7 +23,7 @@ npm run studio:worker
 
 Modelos: `gpt-6-astra` para análise e conferência; `gpt-image-2.5-sunburst` ou `gpt-image-2.5-flare` para edição, uma foto por chamada, qualidade high e 1024×1536. O modelo de análise pode ser configurado por `AI_STUDIO_ANALYSIS_MODEL`. As imagens originais são sempre enviadas junto da ficha, com papéis explícitos para roupa, cor, avatar e imagem gerada.
 
-## Fluxo original (histórico; substituído pelas revisões v7–v10)
+## Fluxo original (histórico; substituído pelas revisões v7–v12)
 
 1. Escolher um produto/grupo ou enviar referências sem produto. Marcar o papel de cada foto: frente, costas, lateral, detalhe ou cor real. Limite de oito referências por ensaio, JPG/PNG/WebP estáticos, até 8 MB cada. As imagens são normalizadas, removendo metadados.
 2. Definir nome da cor e tom aproximado. Uma referência de cor real tem prioridade, mas iluminação e balanço de branco ainda afetam a fidelidade. Para usar apenas a região de tecido, enviar a referência já recortada.
@@ -100,5 +100,15 @@ A frente gerada serve somente para medidas de composição (escala, margens e ba
 Não há máscara, composição de pixels originais ou garantia de pele idêntica: regiões antes cobertas e novos ângulos ainda exigem síntese. A alteração é de seleção de referências e instruções, com validação visual pendente em uma nova geração. Não modifica fotos já prontas. Mantém os modelos, qualidade, resolução e quantidade de chamadas (uma análise prévia e três gerações; detalhe local), sem conferência paga posterior. Os testes com respostas simuladas verificam os bytes do avatar enviados como base, os ângulos, a política de enquadramento e a ausência de chamadas adicionais.
 
 
-### Pose natural (v10)
-A pose do avatar não fica travada: braços, mãos, apoio do corpo e expressão podem variar naturalmente conforme a vista solicitada, sem esconder a peça. Identidade, textura da pele e cenário continuam sendo referências de preservação; mudar de pose não autoriza retocar ou remodelar a pessoa. Dobras e sombras podem se adaptar ao movimento. Continuam valendo o padrão de enquadramento e as instruções contra suavização. A validação automatizada verifica o fluxo e os pedidos enviados; não comprova fidelidade visual.
+### Alternância de poses (v11)
+Seis poses discretas de catálogo alternam automaticamente por loja, avatar e ângulo. A seleção ocorre no servidor, sob a trava da loja, antes de enfileirar a geração. O arquivo privado `pose-sequences.json` mantém a sequência; `job.poseIds` registra a escolha e `job.calls[].poseId` registra a pose solicitada em cada chamada concluída. Refazer avança somente os ângulos solicitados e evita repetir a pose anterior daquele ensaio. Uma reserva interrompida pode pular uma posição, sem repetição automática de geração paga.
+
+Frente, costas e lateral recebem orientações específicas, preservando vista, enquadramento e detalhes da roupa. Mãos não devem cobrir a peça, inventar bolsos ou puxar o tecido. A frente gerada não é referência de pose. O recorte de detalhe continua local. Ensaios antigos na fila recebem uma opção determinística; o próximo pedido do usuário passa a reservar a sequência persistente. Não há nova chamada de IA para escolher poses; adesão visual às instruções continua sujeita ao modelo.
+
+
+### Diagnóstico, progresso e Sunburst fixo (v12)
+Novos pedidos e novas tentativas usam sempre `gpt-image-2.5-sunburst`, inclusive ao refazer um ensaio antigo de Flare. O seletor de qualidade foi removido; qualidade da API continua `high`. O schema aceita o nome antigo para compatibilidade, mas o normaliza para Sunburst. Registros históricos de chamadas não são alterados.
+
+Respostas de análise incompletas, vazias, recusadas ou fora do schema geram mensagens distintas. O worker persiste em `job.calls` o uso retornado, request ID, modelo, etapa, limite de saída, status e código de falha. Não armazena resposta parcial, texto de recusa ou raciocínio. Falhas de transporte/HTTP sem resposta de uso continuam sem consumo mensurável localmente. Ensaios antigos sem diagnóstico não podem ser reconstruídos retroativamente. O limite continua em 6.000 tokens, incluindo raciocínio; não foi elevado e nenhuma nova tentativa é automática.
+
+`job.generationProgress` registra as fotos desta solicitação, as concluídas e a etapa atual. A interface mostra spinner, contador e estados de frente, detalhe, costas e lateral. Refazer reinicia a contagem só para os ângulos solicitados. O detalhe conta quando o recorte está salvo. A barra representa fotos prontas, não tempo estimado nem andamento interno do provedor. A análise usa um indicador indeterminado. A interface consulta o estado a cada cinco segundos enquanto visível.

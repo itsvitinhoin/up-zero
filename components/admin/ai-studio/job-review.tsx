@@ -13,6 +13,7 @@ import {
 } from "@/lib/ai-studio/types";
 import { api, media, Photo } from "./helpers";
 import { GarmentKeywords } from "./garment-keywords";
+import { GenerationProgress } from "./generation-progress";
 
 export function JobReview({
   job,
@@ -68,11 +69,7 @@ export function JobReview({
         <p className="mt-4 text-sm" role="status">
           {job.progress}
         </p>
-        {working && (
-          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted">
-            <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
-          </div>
-        )}
+        <GenerationProgress job={job} />
         {["queued_analysis", "queued_generation"].includes(job.status) && (
           <Button
             size="sm"

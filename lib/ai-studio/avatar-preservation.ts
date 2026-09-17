@@ -39,7 +39,7 @@ export function generationReferences(job: Job, angle: Angle, avatar?: Avatar | n
   const front = matchingFront(job);
   if (angle !== "front" && front) {
     add({ assetId: front.assetId, role: "front" },
-      "GENERATED FRONT — COMPOSITION MEASUREMENTS ONLY: camera distance, subject scale, headroom and foot baseline; NOT a source for skin, face, texture, lighting or retouching; original references remain authoritative",
+      "GENERATED FRONT — COMPOSITION MEASUREMENTS ONLY: camera distance, subject scale, headroom and foot baseline; NOT a source for pose, skin, face, texture, lighting or retouching; original references remain authoritative",
     );
   }
   return { refs, manifest };

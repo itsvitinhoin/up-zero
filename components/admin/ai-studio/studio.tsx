@@ -15,6 +15,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
+  IMAGE_MODEL,
   isBusy,
   shotLabels,
   statusLabels,
@@ -61,9 +62,6 @@ export function Studio() {
   const [allColors, setAllColors] = useState(false);
   const [avatarId, setAvatarId] = useState(""),
     [angles, setAngles] = useState<Angle[]>(["front", "back", "side"]);
-  const [imageModel, setImageModel] = useState<
-    "gpt-image-2.5-sunburst" | "gpt-image-2.5-flare"
-  >("gpt-image-2.5-sunburst");
   const [avatarName, setAvatarName] = useState(""),
     [avatarRefs, setAvatarRefs] = useState<Reference[]>([]),
     [rights, setRights] = useState(false);
@@ -278,7 +276,6 @@ export function Studio() {
     setHex(selected.hex);
     setAvatarId(selected.avatarId || "");
     setAngles(selected.angles);
-    setImageModel(selected.imageModel);
     setGroupKey(selected.groupKey || "");
     requestId.current = null;
     setView("new");
@@ -537,25 +534,6 @@ export function Studio() {
                     : "Inclua a frente para obter também a foto de detalhe."}
                 </p>
               </div>
-              <label className="block text-sm">
-                Qualidade do processamento
-                <select
-                  className={`${fieldClass} mt-2`}
-                  disabled={locked}
-                  value={imageModel}
-                  onChange={(e) => {
-                    setImageModel(e.target.value as typeof imageModel);
-                    requestId.current = null;
-                  }}
-                >
-                  <option value="gpt-image-2.5-sunburst">
-                    Sunburst · mais detalhe
-                  </option>
-                  <option value="gpt-image-2.5-flare">
-                    Flare · comparar velocidade
-                  </option>
-                </select>
-              </label>
               <Button
                 className="w-full"
                 disabled={
@@ -582,7 +560,7 @@ export function Studio() {
                         references: [...refs, ...colorRefs],
                         avatarId: avatarId || null,
                         angles,
-                        imageModel,
+                        imageModel: IMAGE_MODEL,
                       }),
                     );
                   })

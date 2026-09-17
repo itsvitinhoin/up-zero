@@ -7,6 +7,8 @@ import {
   isBusy,
   angleSchema,
   garmentGuidanceSchema,
+  IMAGE_MODEL,
+  newGenerationProgress,
   type Job,
   type Shot,
 } from "./types";
@@ -24,6 +26,7 @@ import {
 } from "./storage";
 import { PROMPT_VERSION, requireColorPhotos } from "./provider";
 import { backend, getProduct, StudioError, type Admin } from "./server";
+import { reservePoses } from "./poses";
 
 // Reservations count attempts, including uncertain provider failures. Never silently spend on retries.
 export async function reserve(
@@ -232,8 +235,11 @@ export async function mutateJob(admin: Admin, id: string, body: unknown) {
               "Limite de tentativas deste ensaio atingido.",
             );
           await reserve(admin.storeId, angles.length, 0);
+          if (job.avatarId) job.poseIds = await reservePoses(job, angles);
           job.attempts += angles.length;
           job.pendingAngles = angles;
+          job.imageModel = IMAGE_MODEL;
+          job.generationProgress = newGenerationProgress(angles);
           job.status = "queued_generation";
         }
         delete job.error;

@@ -2,7 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import { analyze, generate } from "./provider";
-import { portraitDetailPixels, verifiedAngles, type Job, type Output } from "./types";
+import { IMAGE_MODEL, newGenerationProgress, portraitDetailPixels, verifiedAngles, type Job, type Output } from "./types";
+import { AnalysisResponseError } from "./analysis-response";
 import {
   atomicJson,
   dataRoot,
@@ -61,7 +62,10 @@ export async function processJob(job: Job) {
       job.status = "ready";
       job.progress = "Análise concluída. Revise antes de gerar.";
     } else {
+      job.imageModel = IMAGE_MODEL;
+      job.generationProgress ||= newGenerationProgress(job.pendingAngles);
       for (const angle of job.pendingAngles) {
+        job.generationProgress.current = angle;
         job.progress = `Gerando ${angle === "front" ? "frente" : angle === "back" ? "costas" : "lateral"}…`;
         await update(job);
         const result = await generate(job, angle);
@@ -88,11 +92,16 @@ export async function processJob(job: Job) {
             o.shot !== angle && !(angle === "front" && o.shot === "detail"),
         );
         job.outputs.push(output);
+        if (!job.generationProgress.completed.includes(angle)) job.generationProgress.completed.push(angle);
         job.progress = "Foto gerada e disponível para baixar.";
         await update(job);
         if (angle === "front") {
+          job.generationProgress.current = "detail";
+          job.progress = "Preparando o recorte de detalhe…";
+          await update(job);
           try {
             job.outputs.push(await cropDetail(job, output));
+            if (!job.generationProgress.completed.includes("detail")) job.generationProgress.completed.push("detail");
           } catch {
             output.review.issues.push(
               "Ajuste o recorte do detalhe manualmente.",
@@ -102,12 +111,14 @@ export async function processJob(job: Job) {
         await update(job);
       }
       job.pendingAngles = [];
+      delete job.generationProgress.current;
       job.status = "review";
       job.progress =
         "Imagens prontas para baixar. A análise foi feita antes da geração; confirme as fotos apenas se quiser publicá-las no produto.";
     }
     delete job.error;
   } catch (error) {
+    if (error instanceof AnalysisResponseError) job.calls.push(error.call);
     job.status = "failed";
     job.error =
       error instanceof Error && !/fetch|abort|timeout/i.test(error.message)

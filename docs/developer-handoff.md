@@ -28,6 +28,15 @@ A coleta de dados do cartão exige HTTPS e tratamento adequado de logs/APM. Não
 
 ### Estúdio IA
 
+Versão final entregue em 17/09/2026:
+
+- Seis poses básicas alternadas automaticamente por avatar e ângulo, com sequência persistida por loja. Refazer escolhe outra pose para o ângulo solicitado.
+- Loader com etapa atual, contador de fotos prontas/restantes e barra baseada em entregas concluídas, não em estimativa de tempo. A análise tem indicador indeterminado.
+- Sunburst fixado no servidor e sem seletor de qualidade. Novas tentativas de ensaios antigos também usam Sunburst; chamadas históricas permanecem intactas.
+- Falhas de análise diferenciadas por limite de resposta, filtro, recusa, resposta vazia ou inválida. Consumo e request ID retornados são registrados também nessas falhas; nenhuma repetição automática é feita. Falhas antigas não têm diagnóstico recuperável. O limite permanece em 6.000 tokens.
+- Validação: 24 testes do Estúdio e 15 de Billing aprovados; teste de Billing dependente de banco não executado nesta publicação. Testes com respostas simuladas, sem novas gerações pagas.
+
+
 Atualização de 17/09/2026, prompt `garment-v10-natural-pose-original-skin`:
 
 - Uma análise prévia das referências; palavras-chave de peças, conjunto, modelagem e estampa corrigíveis pelo usuário antes de gerar (inclusive saia versus calça).

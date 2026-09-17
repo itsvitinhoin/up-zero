@@ -1,4 +1,5 @@
 import { z } from "zod";
+export const IMAGE_MODEL = "gpt-image-2.5-sunburst" as const;
 
 export const angleSchema = z.enum(["front", "back", "side"]);
 export type Angle = z.infer<typeof angleSchema>;
@@ -30,7 +31,7 @@ export const createJobSchema = z.object({
     .min(1)
     .max(3)
     .refine((v) => new Set(v).size === v.length),
-  imageModel: z.enum(["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"]),
+  imageModel: z.enum([IMAGE_MODEL, "gpt-image-2.5-flare"]).default(IMAGE_MODEL).transform(() => IMAGE_MODEL),
 });
 export type JobInput = z.infer<typeof createJobSchema>;
 export const analysisSchema = z.object({
@@ -121,9 +122,11 @@ export type Job = JobInput & {
   error?: string;
   progress: string;
   pendingAngles: Angle[];
+  generationProgress?: { shots: Shot[]; completed: Shot[]; current?: Shot };
+  poseIds?: Partial<Record<Angle, string>>;
   attempts: number;
   analysisAttempts: number;
-  calls: Array<{ model: string; usage: unknown; requestId: string | null; stage?: string; at?: string }>;
+  calls: Array<{ model: string; usage: unknown; requestId: string | null; stage?: string; at?: string; poseId?: string; outcome?: "completed" | "failed"; failureReason?: string; responseStatus?: string; maxOutputTokens?: number }>;
   promptVersion: string;
   analysisModel: string;
 };
@@ -165,6 +168,9 @@ export function isBusy(job: Job) {
     "queued_generation",
     "generating",
   ].includes(job.status);
+}
+export function newGenerationProgress(angles: Angle[]): NonNullable<Job["generationProgress"]> {
+  return { shots: angles.flatMap(angle => angle === "front" ? ["front", "detail"] as Shot[] : [angle]), completed: [] };
 }
 export function verifiedAngles(job: Job): Angle[] {
   return job.angles.filter(
