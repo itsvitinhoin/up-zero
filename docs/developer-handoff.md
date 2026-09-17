@@ -28,6 +28,18 @@ A coleta de dados do cartão exige HTTPS e tratamento adequado de logs/APM. Não
 
 ### Estúdio IA
 
+Atualização de 17/09/2026, prompt `garment-v10-natural-pose-original-skin`:
+
+- Uma análise prévia das referências; palavras-chave de peças, conjunto, modelagem e estampa corrigíveis pelo usuário antes de gerar (inclusive saia versus calça).
+- Frente e costas bastam; lateral pode ser estimada, com aviso. A cor vem das fotos reais da etapa 3; HEX serve somente para seleção/publicação.
+- Três chamadas de imagem geram frente, costas e lateral; detalhe é recorte local 2:3. Sem conferência de IA após gerar. As quatro fotos ficam disponíveis para baixar; publicação exige aprovação humana.
+- Avatar original priorizado como referência de pessoa, pele e cenário. Pose e expressão ficam livres para naturalidade; margens de topo/base permanecem padronizadas. Frente gerada guia apenas medidas de enquadramento.
+- As instruções proíbem suavização/aperfeiçoamento de pele, mas não são uma máscara nem garantem fidelidade visual. Validar em fotos reais antes de liberar comercialmente.
+- O pacote não tem teto financeiro de US$ 0,90: essa é uma referência comercial. Uso retornado pela API fica em `job.calls`; novas tentativas geram novo consumo.
+
+Para testar no computador do Dev, criar `.env.local` a partir das variáveis de `.env.example`, configurar o backend habitual (`NEXT_PUBLIC_RUST_URL`) e inserir `OPENAI_API_KEY` somente nesse arquivo privado. Não usar prefixo `NEXT_PUBLIC_` na chave. Rodar `npm run dev` e, em outro terminal na mesma pasta, `npm run studio:worker`. Usar a conta habitual do Admin com permissão de gerenciar imagens. O worker lê a chave na inicialização: reiniciar depois de configurá-la. Não é preciso ter a chave para instalar, executar os testes simulados ou publicar o código.
+
+
 **Não falta apenas a chave.** A versão atual usa arquivos privados e um worker contínuo. Ela funciona em desenvolvimento; produção precisa de host persistente compartilhado com o worker. A Vercel não executa essa arquitetura diretamente. A tela e a API ficam em preparação na Vercel até ser implementada uma adaptação de armazenamento e execução.
 
 Caminhos possíveis: serviço separado com volume persistente, conectado ao Admin; ou migração para banco/armazenamento privado e fila gerenciada. Não usar `/tmp` para dados permanentes. Veja `docs/ai-studio.md`. No host apropriado: configurar `OPENAI_API_KEY`, `AI_STUDIO_DATA_DIR` e supervisionar `npm run studio:worker`. Não há endpoint remoto de worker pronto nesta entrega.

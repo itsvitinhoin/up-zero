@@ -45,7 +45,29 @@ export const analysisSchema = z.object({
   supportedAngles: z.array(angleSchema),
   warnings: z.array(z.string()),
 });
-export type Analysis = z.infer<typeof analysisSchema>;
+export const preparationSchema = z.object({
+  observedFront: z.string(),
+  observedBack: z.string(),
+  estimatedSide: z.string(),
+  preserve: z.array(z.string()),
+  avatarAndScene: z.string(),
+  conflicts: z.array(z.string()),
+  front: z.string(),
+  back: z.string(),
+  side: z.string(),
+  detailRegion: z.enum(["upper", "waist", "lower"]),
+});
+export const garmentKeywordsSchema = z.object({
+  pieces: z.array(z.string().trim().min(1).max(80)).min(1).max(8),
+  composition: z.enum(["Peça única", "Conjunto", "Não identificado"]),
+  fit: z.string().trim().min(1).max(160),
+  pattern: z.string().trim().min(1).max(160),
+});
+export const garmentGuidanceSchema = garmentKeywordsSchema.extend({ notes: z.string().trim().max(1500) }).strict();
+export type GarmentGuidance = z.infer<typeof garmentGuidanceSchema>;
+export const preGenerationAnalysisSchema = analysisSchema.extend({ preparation: preparationSchema, keywords: garmentKeywordsSchema });
+// Legacy analyses remain readable; new analyses require preparation.
+export type Analysis = z.infer<typeof analysisSchema> & { preparation?: z.infer<typeof preparationSchema>; keywords?: z.infer<typeof garmentKeywordsSchema> };
 export const cropSchema = z.object({
   x: z.number().min(0).max(1),
   y: z.number().min(0).max(1),
@@ -70,6 +92,8 @@ export type Output = {
   publishedUrl?: string;
   uploadedUrl?: string;
   parentAssetId?: string;
+  reviewMode?: "manual";
+  guidanceRevision?: number;
 };
 export type Job = JobInput & {
   groupLabel?: string;
@@ -89,13 +113,17 @@ export type Job = JobInput & {
     | "failed"
     | "cancelled";
   analysis?: Analysis;
+  garmentGuidance?: GarmentGuidance;
+  guidanceRevision?: number;
+  guidanceUpdatedBy?: string;
+  guidanceUpdatedAt?: string;
   outputs: Output[];
   error?: string;
   progress: string;
   pendingAngles: Angle[];
   attempts: number;
   analysisAttempts: number;
-  calls: Array<{ model: string; usage: unknown; requestId: string | null }>;
+  calls: Array<{ model: string; usage: unknown; requestId: string | null; stage?: string; at?: string }>;
   promptVersion: string;
   analysisModel: string;
 };
@@ -126,7 +154,7 @@ export const statusLabels: Record<Job["status"], string> = {
   ready: "Pronto para gerar",
   queued_generation: "Na fila de geração",
   generating: "Gerando imagens",
-  review: "Revisar imagens",
+  review: "Imagens disponíveis",
   failed: "Precisa de atenção",
   cancelled: "Cancelado",
 };

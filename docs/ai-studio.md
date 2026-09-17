@@ -1,5 +1,15 @@
 # Estúdio IA
 
+## Fluxo atual: análise antes da geração (v10)
+
+Esta seção substitui as menções abaixo à conferência automática após gerar. Novos ensaios executam uma análise Astra com as referências da roupa/cor e do avatar, produzindo observações da frente/costas, estimativas da lateral, invariantes, conflitos, cenário e instruções por ângulo. Não é necessário enviar foto lateral ou de detalhe. O gerador mantém qualidade alta e 1024×1536.
+
+O worker faz três chamadas de geração para o pacote padrão e **nenhuma chamada de conferência posterior**. O detalhe é recortado localmente da frente numa região aproximada (parte superior, cintura ou inferior), planejada na análise e ajustável pelo usuário sem custo de API. Quatro chamadas pagas no caminho completo bem-sucedido: uma preparação + três gerações. Refazer um ângulo custa uma nova geração; não repete automaticamente a análise ou a conferência.
+
+Outputs novos têm `reviewMode: manual`, ficam disponíveis para baixar imediatamente e não são marcados como aprovados pela IA. A aprovação humana continua necessária apenas para publicar no catálogo. As conferências de ensaios antigos são preservadas como histórico. Para testar a nova preparação completa com referências antigas, criar um novo ensaio com essas fotos.
+
+O orçamento de US$ 0,90 é uma referência comercial, **não um limite imposto à API nem uma tarifa garantida**. A qualidade visual e o custo do novo prompt precisam ser medidos em testes reais. A análise de entrada não comprova que a imagem gerada está correta. Cada chamada concluída registra etapa, horário, modelo e uso retornado. Testes com respostas simuladas cobrem frente/costas + avatar, ausência de conferência, ZIP sem aprovação, recorte 2:3, refazer e preservação de resultados após falha parcial.
+
 O Admin oferece `/ai-studio`, no menu Catálogo e na aba Imagens do formulário de produto. O recurso usa referências existentes do catálogo ou uploads privados, uma cor alvo e opcionalmente um avatar da biblioteca da loja. Não altera preços, estoque, variantes nem remove fotografias existentes.
 
 ## Executar localmente
@@ -13,7 +23,7 @@ npm run studio:worker
 
 Modelos: `gpt-6-astra` para análise e conferência; `gpt-image-2.5-sunburst` ou `gpt-image-2.5-flare` para edição, uma foto por chamada, qualidade high e 1024×1536. O modelo de análise pode ser configurado por `AI_STUDIO_ANALYSIS_MODEL`. As imagens originais são sempre enviadas junto da ficha, com papéis explícitos para roupa, cor, avatar e imagem gerada.
 
-## Fluxo
+## Fluxo original (histórico; substituído pelas revisões v7–v10)
 
 1. Escolher um produto/grupo ou enviar referências sem produto. Marcar o papel de cada foto: frente, costas, lateral, detalhe ou cor real. Limite de oito referências por ensaio, JPG/PNG/WebP estáticos, até 8 MB cada. As imagens são normalizadas, removendo metadados.
 2. Definir nome da cor e tom aproximado. Uma referência de cor real tem prioridade, mas iluminação e balanço de branco ainda afetam a fidelidade. Para usar apenas a região de tecido, enviar a referência já recortada.
@@ -72,3 +82,23 @@ O botão “Baixar Imagens” exporta todas as imagens geradas do ensaio em ZIP 
 Sem referências da peça na etapa 1, o usuário pode gerar com avatar selecionado e fotos da etapa 3. Nesse modo, as fotos da etapa 3 definem tanto a construção da roupa quanto a cor, enquanto o avatar define somente identidade e proporções da pessoa. Ângulos sem comprovação continuam sinalizados para revisão.
 
 Frente, costas e lateral usam composição vertical 1024×1536, com alvo de 5% de margem no topo e na base. A frente gerada não reprovada serve de referência de escala/enquadramento para as outras vistas. A conferência sinaliza divergências acima de 2% e reprova enquadramento claramente incompatível. A regra não altera proporções anatômicas nem se aplica ao detalhe. Imagens anteriores não são reenquadradas automaticamente.
+
+
+### Identificação corrigível da roupa (v8)
+A análise prévia extrai palavras-chave de peças, composição (peça única/conjunto), modelagem e estampa. O usuário pode corrigir esses campos e adicionar até 1.500 caracteres de orientação na página da análise. Salvar não chama a IA nem consome uma tentativa de geração. Análises antigas usam rótulos extraídos localmente da descrição existente, com campos desconhecidos identificados.
+
+A ação autenticada `update_guidance` persiste a orientação por loja, autor, data e revisão, e é recusada enquanto o ensaio está em processamento. Correções substituem a descrição e o plano automático no prompt para não manter uma classificação conflitante (saia/calça). Fotografias continuam definindo detalhes visíveis, cor e avatar. Nenhum pós-processamento pago é adicionado.
+
+Cada nova foto recebe a revisão da orientação usada; fotos anteriores não são modificadas. Uma frente de outra revisão não é reutilizada como referência de costas/lateral. A interface informa quando a imagem antecede a correção e exige salvar/cancelar o formulário antes de gerar/refazer. Aprovação humana para publicar continua separada de download. Estas instruções reduzem erros, sem garantir fidelidade da geração.
+
+
+### Preservação do avatar original (v9)
+O pedido de geração passa a ser uma edição da roupa sobre a fotografia original do avatar. A referência do avatar no ângulo solicitado é enviada primeiro; sem esse ângulo, usa a frente original, mantendo a possibilidade de estimar outras vistas. As fotos da etapa 3 também respeitam seus rótulos de ângulo na ordenação. Todas as referências originais continuam presentes.
+
+A frente gerada serve somente para medidas de composição (escala, margens e base dos pés), nunca como fonte de rosto, pele ou iluminação. A análise descreve textura e contraste observados sem recomendar aperfeiçoamento. Uma instrução final de preservação prevalece sobre sugestões estéticas do plano: sem suavização, uniformização de tom, rejuvenescimento, alteração da luz sobre a pele ou aplicação de poros artificiais.
+
+Não há máscara, composição de pixels originais ou garantia de pele idêntica: regiões antes cobertas e novos ângulos ainda exigem síntese. A alteração é de seleção de referências e instruções, com validação visual pendente em uma nova geração. Não modifica fotos já prontas. Mantém os modelos, qualidade, resolução e quantidade de chamadas (uma análise prévia e três gerações; detalhe local), sem conferência paga posterior. Os testes com respostas simuladas verificam os bytes do avatar enviados como base, os ângulos, a política de enquadramento e a ausência de chamadas adicionais.
+
+
+### Pose natural (v10)
+A pose do avatar não fica travada: braços, mãos, apoio do corpo e expressão podem variar naturalmente conforme a vista solicitada, sem esconder a peça. Identidade, textura da pele e cenário continuam sendo referências de preservação; mudar de pose não autoriza retocar ou remodelar a pessoa. Dobras e sombras podem se adaptar ao movimento. Continuam valendo o padrão de enquadramento e as instruções contra suavização. A validação automatizada verifica o fluxo e os pedidos enviados; não comprova fidelidade visual.

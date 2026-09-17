@@ -421,7 +421,7 @@ export function Studio() {
                 onError={setError}
               />
               <p className="text-sm text-muted-foreground">
-                Use as fotos que tiver, mesmo que seja apenas uma. Sem referência de algum ângulo, a IA estimará os detalhes não visíveis e poderá gerar diferenças em relação à peça real. Quanto mais referências, maior a fidelidade.
+                Frente e costas são um bom ponto de partida. A lateral será estimada a partir delas, e o detalhe será recortado da frente gerada. Use as fotos que tiver, mesmo que seja apenas uma. Detalhes não visíveis podem ficar diferentes da peça real; mais referências ajudam a reduzir esse risco.
               </p>
             </Section>
             <Section number={2} title="Defina a nova cor">

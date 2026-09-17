@@ -12,6 +12,7 @@ import {
   type Shot,
 } from "@/lib/ai-studio/types";
 import { api, media, Photo } from "./helpers";
+import { GarmentKeywords } from "./garment-keywords";
 
 export function JobReview({
   job,
@@ -30,8 +31,9 @@ export function JobReview({
   const [cropOpen, setCropOpen] = useState(false);
   const [crop, setCrop] = useState({ x: 0.2, y: 0.3, width: 0.4, height: 0.4 });
   const [publishConfirmed, setPublishConfirmed] = useState(false);
+  const [editingJobId, setEditingJobId] = useState<string | null>(null);
   const working = isBusy(job),
-    blocked = busy || working;
+    blocked = busy || working || editingJobId === job.id;
   const supported = verifiedAngles(job);
   const missing = job.angles.filter((a) => !supported.includes(a));
   const approved = job.outputs.filter((o) => o.approved && !o.publishedUrl);
@@ -101,7 +103,8 @@ export function JobReview({
         )}
         {job.analysis && (
           <div className="mt-5 space-y-3 border-t pt-4">
-            <h3 className="font-medium">O que identificamos na peça</h3>
+            <GarmentKeywords key={job.id} job={job} blocked={busy || working} run={run} onChange={onChange} onEditingChange={editing => setEditingJobId(editing ? job.id : null)} />
+            <h3 className="font-medium">{job.garmentGuidance ? "Análise original da IA (antes das suas correções)" : "O que identificamos na peça"}</h3>
             <p className="text-sm text-muted-foreground">
               {job.analysis.summary}
             </p>
@@ -119,6 +122,11 @@ export function JobReview({
                     ["Preservar", job.analysis.fixedDetails.join("; ")],
                     ["Alterar a cor", job.analysis.recolorRegions.join("; ")],
                     ["Não visível / incerto", job.analysis.unknowns.join("; ")],
+                    ["Frente observada", job.analysis.preparation?.observedFront || ""],
+                    ["Costas observadas", job.analysis.preparation?.observedBack || ""],
+                    ["Lateral estimada", job.analysis.preparation?.estimatedSide || ""],
+                    ["Avatar e cenário", job.analysis.preparation?.avatarAndScene || ""],
+                    ["Referências conflitantes", job.analysis.preparation?.conflicts.join("; ") || ""],
                     ["Atenção", job.analysis.warnings.join("; ")],
                   ] as const
                 ).map(([label, value]) => (
@@ -148,7 +156,7 @@ export function JobReview({
                       : ""}
                   </p>
                   <p className="mt-1 max-w-lg text-xs text-muted-foreground">
-                    Geração e conferência utilizam créditos da OpenAI. O custo
+                    A análise prévia e a geração utilizam créditos da OpenAI. Não há conferência paga após gerar. O custo
                     varia com as referências e o modelo. Nenhuma imagem será
                     publicada automaticamente.
                   </p>
@@ -189,7 +197,7 @@ export function JobReview({
                           ? "Aprovada por você"
                           : output.review.verdict === "reject"
                             ? "Reprovada na conferência"
-                            : "Aguardando sua revisão"}
+                            : output.reviewMode === "manual" ? "Pronta para baixar" : "Aguardando sua revisão"}
                     </span>
                   )}
                 </div>
@@ -234,6 +242,7 @@ export function JobReview({
                 <div className="space-y-3 p-4">
                   {output && (
                     <>
+                      {(output.guidanceRevision || 0) !== (job.guidanceRevision || 0) && <p className="text-xs text-amber-700">Gerada antes da correção da roupa. Use “Refazer foto” para aplicar a orientação atual.</p>}
                       <div className="flex flex-wrap gap-2">
                         <Button size="sm" variant="outline" asChild>
                           <a href={`${media(output.assetId)}?download=1`}>
@@ -256,7 +265,7 @@ export function JobReview({
                       </div>
                       <details className="text-xs text-muted-foreground">
                         <summary className="cursor-pointer">
-                          Conferência automática
+                          {output.reviewMode === "manual" ? "Orientações da análise prévia" : "Conferência automática anterior"}
                           {output.review.issues.length
                             ? ` · ${output.review.issues.length} observações`
                             : ""}

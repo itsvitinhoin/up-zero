@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
-import { analyze, generate, review } from "./provider";
-import { portraitDetailPixels, type Job, type Output } from "./types";
+import { analyze, generate } from "./provider";
+import { portraitDetailPixels, verifiedAngles, type Job, type Output } from "./types";
 import {
   atomicJson,
   dataRoot,
@@ -13,6 +13,12 @@ import {
   saveJob,
   withStoreLock,
 } from "./storage";
+
+export function plannedDetailCrop(job: Job) {
+  // Approximate region within the standard full-body frame; adjustable without API usage.
+  const region = job.analysis?.preparation?.detailRegion || "upper";
+  return { x: 0.25, y: region === "lower" ? 0.5 : region === "waist" ? 0.34 : 0.2, width: 0.5, height: 0.5 };
+}
 
 export async function cropDetail(
   job: Job,
@@ -31,6 +37,8 @@ export async function cropDetail(
     assetId: await saveAsset(job.storeId, cropped, true),
     approved: false,
     parentAssetId: source.assetId,
+    reviewMode: source.reviewMode,
+    guidanceRevision: source.guidanceRevision,
     review: {
       ...source.review,
       crop: null,
@@ -59,18 +67,20 @@ export async function processJob(job: Job) {
         const result = await generate(job, angle);
         job.calls.push(result.call);
         const assetId = await saveAsset(job.storeId, result.bytes, true);
-        // Persist the paid output before calling the inspector; an inspection failure must not lose it.
+        // Persist every paid output immediately; no automatic API inspection follows generation.
         const output: Output = {
           shot: angle,
           assetId,
           approved: false,
+          reviewMode: "manual",
+          guidanceRevision: job.guidanceRevision || 0,
           review: {
             verdict: "review",
-            issues: ["Conferência automática pendente."],
+            issues: verifiedAngles(job).includes(angle) ? [] : ["Ângulo estimado sem referência verificada; a análise prévia orientou os detalhes não visíveis."],
             clothing: "",
             color: "",
             skin: "",
-            crop: null,
+            crop: angle === "front" ? plannedDetailCrop(job) : null,
           },
         };
         job.outputs = job.outputs.filter(
@@ -78,16 +88,9 @@ export async function processJob(job: Job) {
             o.shot !== angle && !(angle === "front" && o.shot === "detail"),
         );
         job.outputs.push(output);
-        job.progress = "Conferindo roupa, cor e pele…";
+        job.progress = "Foto gerada e disponível para baixar.";
         await update(job);
-        const inspected = await review(job, angle, assetId);
-        output.review = inspected.value;
-        job.calls.push(inspected.call);
-        if (
-          angle === "front" &&
-          output.review.crop &&
-          output.review.verdict !== "reject"
-        ) {
+        if (angle === "front") {
           try {
             job.outputs.push(await cropDetail(job, output));
           } catch {
@@ -101,7 +104,7 @@ export async function processJob(job: Job) {
       job.pendingAngles = [];
       job.status = "review";
       job.progress =
-        "Imagens salvas na biblioteca. Revise cada foto antes de publicar.";
+        "Imagens prontas para baixar. A análise foi feita antes da geração; confirme as fotos apenas se quiser publicá-las no produto.";
     }
     delete job.error;
   } catch (error) {

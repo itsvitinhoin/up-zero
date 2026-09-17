@@ -6,6 +6,7 @@ import {
   generationAngles,
   isBusy,
   angleSchema,
+  garmentGuidanceSchema,
   type Job,
   type Shot,
 } from "./types";
@@ -137,9 +138,11 @@ export async function mutateJob(admin: Admin, id: string, body: unknown) {
         "retry",
         "approve",
         "cancel",
+        "update_guidance",
       ]),
       shot: z.enum(["front", "back", "side", "detail"]).optional(),
       approved: z.boolean().optional(),
+      guidance: garmentGuidanceSchema.optional(),
     })
     .parse(body);
   return withStoreLock(admin.storeId, async () => {
@@ -156,7 +159,16 @@ export async function mutateJob(admin: Admin, id: string, body: unknown) {
     } else {
       if (isBusy(job))
         throw new StudioError(409, "Aguarde o processamento atual.");
-      if (action.action === "approve") {
+      if (action.action === "update_guidance") {
+        if (!job.analysis) throw new StudioError(409, "Aguarde a análise da peça antes de corrigir.");
+        const guidance = garmentGuidanceSchema.parse(action.guidance);
+        if (JSON.stringify(job.garmentGuidance) !== JSON.stringify(guidance)) {
+          job.garmentGuidance = guidance;
+          job.guidanceRevision = (job.guidanceRevision || 0) + 1;
+          job.guidanceUpdatedBy = admin.userId;
+          job.guidanceUpdatedAt = new Date().toISOString();
+        }
+      } else if (action.action === "approve") {
         const output = job.outputs.find((o) => o.shot === action.shot);
         if (!output || output.publishedUrl)
           throw new StudioError(409, "Imagem indisponível para revisão.");
@@ -219,7 +231,7 @@ export async function mutateJob(admin: Admin, id: string, body: unknown) {
               429,
               "Limite de tentativas deste ensaio atingido.",
             );
-          await reserve(admin.storeId, angles.length, angles.length);
+          await reserve(admin.storeId, angles.length, 0);
           job.attempts += angles.length;
           job.pendingAngles = angles;
           job.status = "queued_generation";

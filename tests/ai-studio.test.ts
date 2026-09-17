@@ -24,7 +24,7 @@ import {
   listJobs,
   withStoreLock,
 } from "../lib/ai-studio/storage";
-import { processJob, tick } from "../lib/ai-studio/worker";
+import { processJob, tick, plannedDetailCrop } from "../lib/ai-studio/worker";
 const analysis: Analysis = {
   summary: "Pe\xE7a de teste",
   garment: "Camiseta",
@@ -80,6 +80,88 @@ function makeJob(storeId: number, assetId: string): Job {
   };
 }
 makeJob;
+test("front/back references and avatar are prepared once; three generations deliver four downloadable images without reviews", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "studio-preparation-"));
+  const oldDir = process.env.AI_STUDIO_DATA_DIR, oldKey = process.env.OPENAI_API_KEY;
+  const originalFetch = globalThis.fetch;
+  process.env.AI_STUDIO_DATA_DIR = root;
+  process.env.OPENAI_API_KEY = "fixture-not-a-real-key";
+  try {
+    const bytes = await sharp({ create: { width: 1024, height: 1536, channels: 3, background: "#998877" } }).jpeg().toBuffer();
+    const front = await saveAsset(1, bytes), back = await saveAsset(1, bytes);
+    const { listAvatars } = await import("../lib/ai-studio/storage");
+    const prepared = { ...analysis, supportedAngles: ["front", "back"], keywords: { pieces: ["Blusa"], composition: "Peça única", fit: "Reta", pattern: "Lisa" }, preparation: {
+      observedFront: "Gola e costuras visíveis", observedBack: "Costas lisas", estimatedSide: "Continuidade estimada",
+      preserve: ["Gola"], avatarAndScene: "Pele natural, mesmos calçados e cenário", conflicts: [],
+      front: "Plano específico da frente", back: "Plano específico das costas", side: "Plano específico da lateral estimada", detailRegion: "upper",
+    } };
+    let analyses = 0, generations = 0;
+    globalThis.fetch = async (url, init) => {
+      if (String(url).endsWith("/responses")) {
+        assert.equal(generations, 0, "all vision analysis must precede image generation");
+        analyses++;
+        const sent = JSON.parse(init!.body as string);
+        assert.equal(sent.model, "gpt-6-astra");
+        assert.equal(sent.text.format.name, "garment_preparation");
+        assert.equal(sent.input[0].content.filter((p: {type: string}) => p.type === "input_image").length, 3, "front, back and avatar are all analyzed");
+        assert.match(sent.input[0].content[0].text, /side or detail photo is NOT required/);
+        return Response.json({ status: "completed", output: [{content: [{type: "output_text", text: JSON.stringify(prepared)}]}], usage: {input_tokens: 100, output_tokens: 100} });
+      }
+      assert.ok(String(url).endsWith("/images/edits"));
+      generations++;
+      const body = init!.body as FormData;
+      assert.equal(body.get("quality"), "high");
+      assert.equal(body.get("size"), "1024x1536");
+      assert.match(String(body.get("prompt")), /Plano específico/);
+      assert.equal(body.getAll("image[]").length, generations === 1 ? 3 : 4, "later views retain originals, avatar and front anchor");
+      return Response.json({ data: [{b64_json: bytes.toString("base64")}], usage: {input_tokens: 100, output_tokens: 100} });
+    };
+    const job = makeJob(1, front);
+    job.references = [{assetId: front, role: "color", angle: "front"}, {assetId: back, role: "color", angle: "back"}];
+    job.avatarId = (await listAvatars(1))[0].id;
+    job.angles = ["front", "back", "side"];
+    job.status = "analyzing";
+    delete job.analysis;
+    await processJob(job);
+    assert.equal(job.status, "ready");
+    assert.equal(analyses, 1);
+    assert.equal(generations, 0);
+    assert.deepEqual(verifiedAngles(job), ["front", "back"]);
+    job.status = "generating";
+    job.pendingAngles = ["front", "back", "side"];
+    await processJob(job);
+    assert.equal(job.status, "review");
+    assert.equal(analyses, 1);
+    assert.equal(generations, 3);
+    assert.equal(job.calls.length, 4);
+    assert.deepEqual(job.calls.map(c => c.stage), ["garment_preparation", "generate_front", "generate_back", "generate_side"]);
+    assert.equal(job.outputs.length, 4);
+    assert.ok(job.outputs.every(o => o.reviewMode === "manual" && !o.approved));
+    assert.match(job.outputs.find(o => o.shot === "side")!.review.issues.join(" "), /estimado/);
+    assert.equal(job.outputs.find(o => o.shot === "back")!.review.issues.length, 0);
+    const { downloadJobImages } = await import("../lib/ai-studio/download");
+    const { unzipSync } = await import("fflate");
+    assert.equal(Object.keys(unzipSync(await downloadJobImages(job))).length, 4);
+    const before = job.calls.length;
+    const { cropDetail } = await import("../lib/ai-studio/worker");
+    const { portraitDetailPixels } = await import("../lib/ai-studio/types");
+    for (const region of ["upper", "waist", "lower"] as const) {
+      job.analysis!.preparation!.detailRegion = region;
+      const planned = plannedDetailCrop(job);
+      const pixels = portraitDetailPixels(planned, 1024, 1536);
+      assert.equal(pixels.width / pixels.height, 2 / 3);
+      assert.ok(pixels.top + pixels.height <= 1536);
+      await cropDetail(job, job.outputs[0], planned);
+    }
+    assert.equal(job.calls.length, before);
+    assert.equal(await tick(), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (oldDir === undefined) delete process.env.AI_STUDIO_DATA_DIR; else process.env.AI_STUDIO_DATA_DIR = oldDir;
+    if (oldKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = oldKey;
+    await fs.rm(root, {recursive: true, force: true});
+  }
+});
 test("validation rejects missing roles, duplicate angles, path traversal and unsupported models", () => {
   const job = makeJob(1, randomUUID());
   assert.equal(createJobSchema.safeParse(job).success, true);
@@ -201,7 +283,7 @@ test("crop rejects outside bounds and preserves selected source dimensions", () 
     /fora/,
   );
 });
-test("durable pipeline isolates stores, creates a real crop, preserves paid output on inspection failure, never auto retries", async () => {
+test("pipeline creates a local crop without API inspection, preserves paid output on generation failure, never auto retries", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ai-studio-test-"));
   const previousDir = process.env.AI_STUDIO_DATA_DIR,
     previousKey = process.env.OPENAI_API_KEY,
@@ -234,16 +316,7 @@ test("durable pipeline isolates stores, creates a real crop, preserves paid outp
           usage: { total_tokens: 10 },
         });
       }
-      const sent = JSON.parse(init!.body as string);
-      assert.equal(sent.store, false);
-      assert.equal(sent.model, "gpt-6-astra");
-      return Response.json({
-        status: "completed",
-        output: [
-          { content: [{ type: "output_text", text: JSON.stringify(review) }] },
-        ],
-        usage: { total_tokens: 20 },
-      });
+      throw new Error("No vision API call is allowed after generation");
     };
     const job = makeJob(1, asset);
     await saveJob(job);
@@ -252,6 +325,8 @@ test("durable pipeline isolates stores, creates a real crop, preserves paid outp
     assert.equal(saved.status, "review");
     assert.equal(saved.outputs.length, 2);
     assert.equal(saved.outputs[0].approved, false);
+    assert.equal(saved.outputs[0].reviewMode, "manual");
+    assert.equal(saved.calls.length, 1);
     assert.equal(saved.outputs[1].parentAssetId, saved.outputs[0].assetId);
     const { downloadJobImages } = await import("../lib/ai-studio/download");
     const { unzipSync } = await import("fflate");
@@ -293,17 +368,20 @@ test("durable pipeline isolates stores, creates a real crop, preserves paid outp
     assert.equal(avatarResult.outputs[0].shot, "front");
     assert.equal(avatarResult.outputs[0].review.verdict, "review");
     assert.equal(imageCalls, 3);
-    globalThis.fetch = async (url) =>
-      String(url).endsWith("/images/edits")
-        ? Response.json({ data: [{ b64_json: bytes.toString("base64") }] })
-        : Response.json({ error: "quota" }, { status: 429 });
+    let attempts = 0;
+    globalThis.fetch = async () => ++attempts === 1
+      ? Response.json({ data: [{ b64_json: bytes.toString("base64") }] })
+      : Response.json({ error: "quota" }, { status: 429 });
     const failed = makeJob(1, asset);
+    failed.angles = ["front", "back"];
+    failed.pendingAngles = ["front", "back"];
     await saveJob(failed);
     await processJob(failed);
     const recovered = await readJob(1, failed.id);
     assert.equal(recovered.status, "failed");
-    assert.equal(recovered.outputs.length, 1);
+    assert.equal(recovered.outputs.length, 2);
     assert.equal(recovered.outputs[0].review.verdict, "review");
+    assert.equal(attempts, 2);
     assert.equal(await tick(), false);
     assert.equal((await listJobs(2)).length, 0);
     const order: number[] = [];
