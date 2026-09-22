@@ -23,8 +23,8 @@ export default function manifest(): MetadataRoute.Manifest {
         purpose: 'maskable',
       },
       {
-        src: '/v2.png',
-        sizes: '192x192',
+        src: '/v2-180.png',
+        sizes: '180x180',
         type: 'image/png',
       },
     ],

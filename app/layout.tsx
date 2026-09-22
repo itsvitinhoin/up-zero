@@ -42,12 +42,13 @@ export const metadata: Metadata = {
   },
   icons: {
     icon: [
-      { url: '/v2.png', type: 'image/png' },
+      { url: '/v2-32.png', sizes: '32x32', type: 'image/png' },
+      { url: '/v2.png', sizes: '512x512', type: 'image/png' },
     ],
     apple: [
-      { url: '/v2.png', type: 'image/png' },
+      { url: '/v2-180.png', sizes: '180x180', type: 'image/png' },
     ],
-    shortcut: ['/v2.png'],
+    shortcut: ['/v2-32.png'],
   },
 }
 
