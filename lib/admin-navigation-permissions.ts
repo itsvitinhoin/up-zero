@@ -86,6 +86,8 @@ export function canAccessNavHref(
 
   if (
     normalizedHref === '/whatsapp'
+    || normalizedHref === '/push'
+    || normalizedHref.startsWith('/push/')
     || normalizedHref.startsWith('/whatsapp/')
     || normalizedHref === '/mensageria'
     || normalizedHref.startsWith('/mensageria/')

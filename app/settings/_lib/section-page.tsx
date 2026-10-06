@@ -37,6 +37,7 @@ const SECTION_TITLES: Record<SettingsPageKey, string> = {
   payments: "Payments",
   shipping: "Shipping",
   marketing: "Marketing",
+  push: "Push",
   domain: "Domain",
   billing: "Billing",
   stock: "Stock",

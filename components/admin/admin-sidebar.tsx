@@ -5,6 +5,7 @@ import Image from 'next/image'
 import { usePathname } from 'next/navigation'
 import { useEffect, useMemo, useState, type ElementType } from 'react'
 import {
+  Bell,
   Boxes,
   ChevronDown,
   ChevronRight,
@@ -128,16 +129,6 @@ const navSections: NavSection[] = [
     ],
   },
   {
-    id: 'comunicacao',
-    icon: MessageSquare,
-    label: 'Comunicação',
-    items: [
-      { name: 'Links personalizados', href: '/custom-links', icon: Link2 },
-      { name: 'Smart Lists', href: '/smart-lists', icon: ListFilter },
-      { name: 'Campanhas', href: '/campaigns', icon: Send },
-    ],
-  },
-  {
     id: 'whatsapp',
     icon: SiWhatsapp,
     label: 'WhatsApp',
@@ -147,6 +138,17 @@ const navSections: NavSection[] = [
       { name: 'Templates', href: '/whatsapp/templates', icon: FileText },
       { name: 'Conversas', href: '/whatsapp/conversations', icon: MessageSquare },
       { name: 'Automações', href: '/whatsapp/automations', icon: Zap },
+    ],
+  },
+  {
+    id: 'push',
+    icon: Bell,
+    label: 'Push',
+    items: [
+      { name: 'Visão geral', href: '/push', exact: true, icon: LayoutDashboard },
+      { name: 'Campanhas', href: '/push/campaigns', icon: Send },
+      { name: 'Públicos', href: '/push/audiences', icon: ListFilter },
+      { name: 'Automações', href: '/push/automations', icon: Zap },
     ],
   },
   {
@@ -323,6 +325,7 @@ const navSections: NavSection[] = [
           { name: 'Modelos transacionais', anchor: 'email-templates' },
         ],
       },
+      { name: 'Push', href: '/settings/push', icon: Bell },
       {
         name: 'Integrações',
         href: '/settings/erp',
@@ -349,7 +352,7 @@ const navSections: NavSection[] = [
 
 const navGroups: NavGroup[] = [
   { heading: 'Principal', sectionIds: ['dashboard', 'clientes', 'b2c'] },
-  { heading: 'Operação', sectionIds: ['pedidos', 'offline', 'comunicacao', 'whatsapp', 'catalogo', 'assets', 'precos', 'wms', 'paginas'] },
+  { heading: 'Operação', sectionIds: ['pedidos', 'offline', 'whatsapp', 'push', 'catalogo', 'assets', 'precos', 'wms', 'paginas'] },
   { heading: 'Gestão', sectionIds: ['admin', 'settings'] },
 ]
 
@@ -372,11 +375,7 @@ function getSectionForPathname(pathname: string): string {
   ) return 'pedidos'
   if (pathname.startsWith('/offline')) return 'offline'
   if (pathname.startsWith('/whatsapp')) return 'whatsapp'
-  if (
-    pathname.startsWith('/custom-links') ||
-    pathname.startsWith('/smart-lists') ||
-    pathname.startsWith('/campaigns')
-  ) return 'comunicacao'
+  if (pathname === '/push' || pathname.startsWith('/push/')) return 'push'
   if (
     pathname.startsWith('/products') ||
     pathname.startsWith('/categories') ||

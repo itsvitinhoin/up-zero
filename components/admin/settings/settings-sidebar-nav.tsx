@@ -143,6 +143,13 @@ function getSettingsNav(locale?: string): NavGroup[] {
       ],
     },
     {
+      key: "push",
+      label: "Push",
+      icon: Megaphone,
+      href: "/settings/push",
+      items: [],
+    },
+    {
       key: "integrations",
       label: tAdmin(locale, "admin.nav.integrations"),
       icon: Webhook,

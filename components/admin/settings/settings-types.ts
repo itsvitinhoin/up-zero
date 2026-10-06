@@ -19,6 +19,7 @@ export type SettingsPageKey =
   | "payments"
   | "shipping"
   | "marketing"
+  | "push"
   | "domain"
   | "billing"
   | "stock"

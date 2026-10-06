@@ -1,0 +1,31 @@
+'use client'
+
+import Link from 'next/link'
+import { useState } from 'react'
+import { Plus, Eye, Copy, Pencil, X } from 'lucide-react'
+import { AdminPanel } from '@/components/admin/admin-mobile-ui'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Choice } from './audience-filters'
+import { Empty, Field, PushPage, Status, formatDate, usePushView } from './shared'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
+import { PushPreview } from './message'
+import type { PushView } from '@/lib/push/types'
+
+export function PushCampaigns() {
+  const data = usePushView(), [search, setSearch] = useState(''), [status, setStatus] = useState('ALL'), [from, setFrom] = useState(''), [to, setTo] = useState('')
+  const [selected, setSelected] = useState<string | null>(null), [cancel, setCancel] = useState<string | null>(null)
+  const detail = data.view?.campaigns.find(c => c.id === selected)
+  const campaigns = data.view?.campaigns.filter(c => c.name.toLowerCase().includes(search.toLowerCase()) && (status === 'ALL' || c.status === status) && (!from || (c.scheduledAt || c.createdAt).slice(0, 10) >= from) && (!to || (c.scheduledAt || c.createdAt).slice(0, 10) <= to)) || []
+  async function duplicate(c: PushView['campaigns'][number]) {
+    await data.run('campaign.save', { name: `${c.name} — cópia`.slice(0, 120), audienceId: c.audienceId, message: c.message, scheduledAt: null }, 'Campanha duplicada como rascunho.')
+  }
+  return <PushPage title="Campanhas de Push" description="Crie notificações para seus públicos e acompanhe os disparos pelo aplicativo." data={data} actions={data.view?.canSend ? <Button asChild><Link href="/push/campaigns/new"><Plus className="h-4 w-4" />Nova campanha</Link></Button> : undefined}>
+    <AdminPanel title="Campanhas" description="Os públicos são recalculados no momento do disparo."><div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><Field label="Nome da campanha"><Input aria-label="Buscar campanhas" placeholder="Buscar pelo nome" value={search} onChange={e => setSearch(e.target.value)} /></Field><Field label="Status"><Choice label="Status da campanha" value={status} onChange={setStatus} options={[["ALL","Todos"],["DRAFT","Rascunho"],["SCHEDULED","Agendada"],["QUEUED","Na fila"],["SENDING","Enviando"],["COMPLETED","Concluída"],["PARTIAL","Parcial"],["FAILED","Falha"],["CANCELED","Cancelada"]]} /></Field><Field label="A partir de"><Input aria-label="Campanhas a partir de" type="date" value={from} onChange={e => setFrom(e.target.value)} /></Field><Field label="Até"><Input aria-label="Campanhas até" type="date" value={to} onChange={e => setTo(e.target.value)} /></Field></div>
+      <div className="space-y-3">{campaigns.map(c => <div key={c.id} className="flex flex-col gap-4 rounded-2xl border border-border/60 p-4 lg:flex-row lg:items-center"><div className="flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-medium">{c.name}</p><Status value={c.status} /></div><p className="mt-1 text-sm text-muted-foreground">{data.view?.audiences.find(a => a.id === c.audienceId)?.name || 'Público indisponível'} · {formatDate(c.scheduledAt || c.createdAt, data.view?.settings.timezone)}</p><p className="mt-2 text-xs text-muted-foreground">{c.accepted} aceitos · {c.pending} na fila · {c.failed} falhas · {c.skipped} ignorados</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" onClick={() => setSelected(c.id)}><Eye className="h-4 w-4" />Detalhes</Button>{data.view?.canSend ? <><Button variant="ghost" size="sm" onClick={() => void duplicate(c)} aria-label={`Duplicar ${c.name}`}><Copy className="h-4 w-4" /></Button>{c.status === 'DRAFT' ? <Button asChild variant="outline" size="sm"><Link href={`/push/campaigns/new?draft=${c.id}`}><Pencil className="h-4 w-4" />Editar / enviar</Link></Button> : null}{['DRAFT','SCHEDULED','QUEUED'].includes(c.status) ? <Button variant="ghost" size="sm" onClick={() => setCancel(c.id)} aria-label={`Cancelar ${c.name}`}><X className="h-4 w-4" /></Button> : null}</> : null}</div></div>)}{!campaigns.length ? <Empty>{search || status !== 'ALL' ? 'Nenhuma campanha corresponde aos filtros.' : 'Nenhuma campanha criada. Comece em Nova campanha.'}</Empty> : null}</div>
+    </AdminPanel>
+    <Dialog open={!!selected} onOpenChange={open => { if (!open) setSelected(null) }}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl"><DialogHeader><DialogTitle>{detail?.name}</DialogTitle><DialogDescription>Envios aceitos pelo serviço não equivalem a entrega confirmada no aparelho.</DialogDescription></DialogHeader>{detail ? <div className="space-y-4"><Status value={detail.status} /><PushPreview message={detail.message} /><div className="grid grid-cols-2 gap-3 text-sm"><p>Aceitos: {detail.accepted}</p><p>Falhas: {detail.failed}</p><p>Na fila: {detail.pending}</p><p>Ignorados: {detail.skipped}</p></div><p className="text-xs text-muted-foreground">Criada em {formatDate(detail.createdAt)} · Responsável: {detail.createdBy}</p><div className="space-y-2">{data.view?.logs.filter(j => j.campaignId === detail.id).map(j => <div key={j.id} className="rounded-lg border p-3 text-sm"><Status value={j.status} /><p className="mt-1">{j.reason || formatDate(j.finishedAt || j.dueAt)}</p></div>)}</div></div> : null}</DialogContent></Dialog>
+    <AlertDialog open={!!cancel} onOpenChange={open => { if (!open && !data.busy) setCancel(null) }}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Cancelar esta campanha?</AlertDialogTitle><AlertDialogDescription>O agendamento será cancelado. O histórico será preservado.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel disabled={data.busy}>Voltar</AlertDialogCancel><AlertDialogAction disabled={data.busy} onClick={e => { e.preventDefault(); void data.run('campaign.cancel', { id: cancel }, 'Campanha cancelada.').then(result => { if (result) setCancel(null) }) }}>Cancelar campanha</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+  </PushPage>
+}

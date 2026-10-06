@@ -1,4 +1,5 @@
 import {
+  Bell,
   LayoutDashboard,
   MessageSquare,
   Users,
@@ -78,11 +79,13 @@ export const ADMIN_NAVIGATION: AdminNavigationItem[] = [
     ],
   },
   {
-    name: 'Comunicação',
-    icon: MessageSquare,
+    name: 'Push',
+    icon: Bell,
     children: [
-      { name: 'Smart Lists', href: '/smart-lists', exact: true },
-      { name: 'Campanhas', href: '/campaigns', exact: true },
+      { name: 'Visão geral', href: '/push', exact: true },
+      { name: 'Campanhas', href: '/push/campaigns', exact: true },
+      { name: 'Públicos', href: '/push/audiences', exact: true },
+      { name: 'Automações', href: '/push/automations', exact: true },
     ],
   },
   {
